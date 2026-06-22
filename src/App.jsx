@@ -5782,6 +5782,152 @@ const THEME_PRESETS = [
   { id:"gold",        label:"Royal Gold",      dark:true,  accent:"#f59e0b", accentDark:"#d97706", bg:"#0c0800",   card:"#1a1200",  border:"#3d2e00", header:"linear-gradient(160deg,#0c0800,#1e1500,#160f00)",   statusBar:"#0c0800", text:"#fffbeb", sub:"#9a7a3a", nav:"#1a1200", navActive:"#f59e0b", headingColor:"#fcd34d", meshD:["rgba(245,158,11,0.32)","rgba(251,191,36,0.26)","rgba(234,88,12,0.18)","rgba(220,150,0,0.22)"], meshL:null },
 ];
 
+// ─── Dashboard ভিজ্যুয়াল টোকেন — dark থিমে Glassmorphism, light থিমে POS Bold ──────
+// T.dark true হলে (Forest, Volcano, Aurora, Royal Gold ইত্যাদি) → ব্লার+গ্লো গ্লাস কার্ড।
+// T.dark false হলে (Light, Rose Gold, Arctic, Mint ইত্যাদি) → কালারফুল সলিড গ্রেডিয়েন্ট কার্ড।
+// সব কার্ডের রং থিমের নিজস্ব accent (T.accent) থেকে মোনোক্রোমেটিক ভ্যারিয়েন্ট হিসেবে আসে —
+// hue অপরিবর্তিত রেখে শুধু lightness/saturation শিফট করে আলাদা আলাদা কার্ড বোঝানো হয়,
+// ফলে প্রতিটা থিমে (Forest/Volcano/Arctic/Rose Gold ইত্যাদি) ড্যাশবোর্ড সেই থিমের নিজস্ব রঙেই দেখাবে।
+function hexToHsl(hex) {
+  const h = (hex || "#15803d").replace("#", "");
+  const v = h.length === 3 ? h.split("").map(c => c + c).join("") : h;
+  const num = parseInt(v, 16);
+  let r = ((num >> 16) & 255) / 255, g = ((num >> 8) & 255) / 255, b = (num & 255) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h2 = 0, s = 0, l = (max + min) / 2;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    if (max === r) h2 = (g - b) / d + (g < b ? 6 : 0);
+    else if (max === g) h2 = (b - r) / d + 2;
+    else h2 = (r - g) / d + 4;
+    h2 /= 6;
+  }
+  return { h: h2 * 360, s: s * 100, l: l * 100 };
+}
+function hslToHex(h, s, l) {
+  s /= 100; l /= 100;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+  const m = l - c / 2;
+  let r = 0, g = 0, b = 0;
+  if (h < 60) { r = c; g = x; b = 0; }
+  else if (h < 120) { r = x; g = c; b = 0; }
+  else if (h < 180) { r = 0; g = c; b = x; }
+  else if (h < 240) { r = 0; g = x; b = c; }
+  else if (h < 300) { r = x; g = 0; b = c; }
+  else { r = c; g = 0; b = x; }
+  const toHex = (v) => Math.round((v + m) * 255).toString(16).padStart(2, "0");
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+// থিমের accent hue ধরে রেখে lightness/saturation শিফট করা ভ্যারিয়েন্ট রং বানায়
+function monoVariant(baseHex, dLight = 0, dSat = 0) {
+  const { h, s, l } = hexToHsl(baseHex);
+  const newS = Math.max(20, Math.min(95, s + dSat));
+  const newL = Math.max(8, Math.min(92, l + dLight));
+  return hslToHex(h, newS, newL);
+}
+function getDashTokens(T) {
+  const dark = !!T.dark;
+  const accent = T.accent || "#15803d";
+  // hex → "r,g,b" কনভার্টার (rgba স্ট্রিং বানানোর জন্য)
+  const hexToRgb = (hex) => {
+    const h = (hex || "#15803d").replace("#", "");
+    const v = h.length === 3 ? h.split("").map(c => c + c).join("") : h;
+    const num = parseInt(v, 16);
+    return `${(num >> 16) & 255},${(num >> 8) & 255},${num & 255}`;
+  };
+  const accentRgb = hexToRgb(accent);
+  // ৬টা কার্ডের জন্য accent hue থেকে lightness/saturation শিফট করা মোনোক্রোমেটিক প্যালেট
+  // index: 0=প্রধান(সবচেয়ে উজ্জ্বল) ... 5=সবচেয়ে নিভৃত/নিউট্রাল
+  const monoPalette = dark
+    ? [
+        monoVariant(accent, 8, 5),    // 0 — উজ্জ্বলতম
+        monoVariant(accent, -2, 0),   // 1
+        monoVariant(accent, -10, -5), // 2
+        monoVariant(accent, 14, 10),  // 3 — সবচেয়ে হালকা (positive/profit)
+        monoVariant(accent, -16, -8), // 4 — গাঢ়
+        "#94a3b8",                    // 5 — নিউট্রাল ধূসর (বাতিল/নিষ্ক্রিয় অবস্থা)
+      ]
+    : [
+        monoVariant(accent, 0, 0),    // 0 — মূল accent
+        monoVariant(accent, 8, -5),   // 1
+        monoVariant(accent, -10, 5),  // 2
+        monoVariant(accent, 14, -10), // 3
+        monoVariant(accent, -6, 8),   // 4
+        "#64748b",                    // 5 — নিউট্রাল ধূসর
+      ];
+
+  if (dark) {
+    // ── Glassmorphism (dark থিম) ──
+    return {
+      dark: true,
+      cardBg: "rgba(255,255,255,0.06)",
+      cardBorder: "1px solid rgba(255,255,255,0.12)",
+      cardBlur: "blur(20px)",
+      cardShadow: "0 8px 28px -10px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06)",
+      heading: T.text || "#fff",
+      sub: "rgba(255,255,255,0.5)",
+      mono: monoPalette,
+      tint: (idx, alpha1 = 0.22, alpha2 = 0.04) => {
+        const hex = monoPalette[idx % monoPalette.length];
+        const rgb = hexToRgb(hex);
+        return {
+          hex,
+          bg: `linear-gradient(135deg, rgba(${rgb},${alpha1}), rgba(${rgb},${alpha2}))`,
+          border: `1px solid rgba(${rgb},0.3)`,
+          iconBg: `rgba(${rgb},0.18)`,
+          iconBorder: `1px solid rgba(${rgb},0.35)`,
+        };
+      },
+      accentColor: accent,
+      accentRgb,
+      btnBg: `linear-gradient(135deg, ${accent}, ${T.accentDark || accent})`,
+      sectionBarBg: `rgba(${accentRgb},0.10)`,
+      sectionBarBorder: `1px solid rgba(${accentRgb},0.22)`,
+      sectionBarText: T.headingColor || accent,
+    };
+  }
+  // ── POS Bold (light থিম) ──
+  return {
+    dark: false,
+    cardBg: T.card || "#fff",
+    cardBorder: `1px solid ${T.border || "#e2e8f0"}`,
+    cardBlur: "none",
+    cardShadow: "0 4px 14px rgba(0,0,0,0.06)",
+    heading: T.text || "#1e293b",
+    sub: T.sub || "#64748b",
+    mono: monoPalette,
+    tint: (idx) => {
+      const hex = monoPalette[idx % monoPalette.length];
+      return {
+        hex,
+        bg: `linear-gradient(135deg, ${hex}, ${shadeColor(hex, -16)})`,
+        border: "none",
+        solid: true,
+      };
+    },
+    accentColor: accent,
+    accentRgb,
+    btnBg: `linear-gradient(120deg, ${accent}, ${T.accentDark || accent})`,
+    sectionBarBg: `rgba(${accentRgb},0.08)`,
+    sectionBarBorder: `1px solid rgba(${accentRgb},0.18)`,
+    sectionBarText: accent,
+  };
+}
+// hex রঙকে গাঢ়/হালকা করার ছোট হেল্পার (POS Bold গ্রেডিয়েন্টের জন্য)
+function shadeColor(hex, percent) {
+  const h = (hex || "#000000").replace("#", "");
+  const num = parseInt(h.length === 3 ? h.split("").map(c=>c+c).join("") : h, 16);
+  let r = (num >> 16) + Math.round(2.55 * percent);
+  let g = ((num >> 8) & 0x00FF) + Math.round(2.55 * percent);
+  let b = (num & 0x0000FF) + Math.round(2.55 * percent);
+  r = Math.max(0, Math.min(255, r));
+  g = Math.max(0, Math.min(255, g));
+  b = Math.max(0, Math.min(255, b));
+  return `#${(0x1000000 + r * 0x10000 + g * 0x100 + b).toString(16).slice(1)}`;
+}
+
 // ─── Icons ────────────────────────────────────────────────────────────────────
 const Ic = ({ d, size = 18 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d={d} /></svg>
@@ -6009,13 +6155,29 @@ function VoiceSearchButton({ onResult, lang = "bn-BD", color = "#22c55e" }) {
 }
 
 // ── Live Date & Time display ───────────────────────────────────────────────────
-function LiveDateTime({ themeColor = "#fde68a", accentColor = "#7dffc0" }) {
+function LiveDateTime({ themeColor = "#fde68a", accentColor = "#7dffc0", compact = true }) {
   const [now, setNow] = useState(new Date());
   useEffect(() => { const iv = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(iv); }, []);
-  const time = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  const date = now.toLocaleDateString("en-US", { weekday: "short", year: "numeric", month: "short", day: "numeric" });
-  const hours = now.getHours();
-  const greeting = hours < 5 ? "🌙" : hours < 12 ? "🌅" : hours < 17 ? "☀️" : hours < 20 ? "🌆" : "🌙";
+  const time = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: compact ? undefined : "2-digit" });
+  const date = now.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  if (compact) {
+    // ── কমপ্যাক্ট, এক-লাইন pill — সময় ও তারিখ পাশাপাশি, শপ নামের নিচে আলাদা লাইনে ──
+    return (
+      <div style={{
+        display: "inline-flex", alignItems: "center", gap: 7,
+        background: "rgba(0,0,0,0.24)",
+        borderRadius: 100,
+        padding: "5px 13px",
+        backdropFilter: "blur(8px)",
+        border: `1px solid ${themeColor}33`,
+      }}>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={themeColor} strokeWidth="2.4" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        <span style={{ color: themeColor, fontWeight: 800, fontSize: 13.5, letterSpacing: 0.4, fontVariantNumeric: "tabular-nums" }}>{time}</span>
+        <span style={{ color: `${accentColor}99`, fontSize: 12 }}>•</span>
+        <span style={{ color: accentColor, fontWeight: 700, fontSize: 13, letterSpacing: 0.2 }}>{date}</span>
+      </div>
+    );
+  }
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5 }}>
       {/* Digital time pill */}
@@ -8757,49 +8919,21 @@ function SmartBusinessMgmt() {
         ...S.header,
         flexDirection: "column", padding: "0",
         background: T.header,
-        boxShadow: `0 2px 24px ${T.accent}44, 0 1px 0 ${T.accent}22`,
-        borderBottom: `1.5px solid ${T.accent}33`,
+        boxShadow: `0 2px 20px ${T.accent}3a, 0 1px 0 ${T.accent}22`,
+        borderBottom: `1px solid ${T.accent}33`,
         position: "sticky", top: 0, zIndex: 50,
       }}>
-        {/* ── SBM ticker marks top row ── */}
-        <div style={{
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-          paddingTop: "calc(6px + env(safe-area-inset-top, 0px))",
-          paddingLeft: 14, paddingRight: 14, paddingBottom: 0,
-          width: "100%", boxSizing: "border-box",
-        }}>
-          {/* Left bracket */}
-          <svg width="18" height="22" viewBox="0 0 18 22" fill="none">
-            <path d="M14 2 L4 2 L4 20 L14 20" stroke={T.headingColor} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.5"/>
-          </svg>
-          {/* Top ticker dots */}
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            {[0,1,2,3,4,5,6,7,8].map(i => (
-              <div key={i} style={{
-                width: i % 3 === 0 ? 4 : 2,
-                height: i % 3 === 0 ? 8 : 5,
-                borderRadius: 1,
-                background: i % 3 === 0 ? T.headingColor : `${T.headingColor}44`,
-              }} />
-            ))}
-          </div>
-          {/* Right bracket */}
-          <svg width="18" height="22" viewBox="0 0 18 22" fill="none">
-            <path d="M4 2 L14 2 L14 20 L4 20" stroke={T.headingColor} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.5"/>
-          </svg>
-        </div>
-
         {/* Back button row — only when in detail */}
         {showDetail && (
-          <div style={{ display: "flex", alignItems: "center", width: "100%", padding: "4px 14px 0", boxSizing: "border-box" }}>
+          <div style={{ display: "flex", alignItems: "center", width: "100%", padding: "calc(6px + env(safe-area-inset-top, 0px)) 14px 0", boxSizing: "border-box" }}>
             <button style={{ ...S.backBtn, background: `${T.accent}20`, border: `1px solid ${T.accent}40`, color: T.headingColor }} onClick={() => setDetailCId(null)}><IcBack /></button>
           </div>
         )}
 
-        {/* ── Main content area ── */}
+        {/* ── Main content area — শপ নাম উপরে, নিচে সময়+তারিখ ── */}
         <div style={{
           textAlign: "center",
-          padding: showDetail ? "6px 16px 10px" : "6px 16px 10px",
+          padding: showDetail ? "8px 16px 16px" : `calc(16px + env(safe-area-inset-top, 0px)) 16px 16px`,
           width: "100%", boxSizing: "border-box",
           overflow: "visible",
           position: "relative",
@@ -8808,58 +8942,47 @@ function SmartBusinessMgmt() {
           <div style={{
             position: "absolute", top: "50%", left: "50%",
             transform: "translate(-50%,-50%)",
-            width: 220, height: 60,
-            background: `radial-gradient(ellipse, ${T.accent}22 0%, transparent 70%)`,
+            width: 240, height: 70,
+            background: `radial-gradient(ellipse, ${T.accent}1e 0%, transparent 70%)`,
             pointerEvents: "none",
           }} />
 
           {tab === "dashboard" && !showDetail ? (
-            <>
-              {/* Shop name — সবসময় cyan, থিম ignore */}
-              <div style={{ position: "relative", display: "inline-block", marginBottom: 4 }}>
-                <span style={{
-                  fontWeight: 900,
-                  fontSize: 26,
-                  letterSpacing: 1.5,
-                  lineHeight: 1.2,
-                  display: "block",
-                  wordBreak: "break-word",
-                  background: "linear-gradient(135deg, #ffffff 0%, #bae6fd 30%, #0ea5e9 70%, #0369a1 100%)",
-                  WebkitBackgroundClip: "text",
-                  WebkitTextFillColor: "transparent",
-                  backgroundClip: "text",
-                  filter: "drop-shadow(0 0 12px #38bdf888)",
-                  animation: "neonPulse 2.5s ease-in-out infinite",
-                }}>{shopName}</span>
-              </div>
-              {/* Live clock — সবসময় cyan */}
-              <MemoLiveDateTime themeColor="#38bdf8" accentColor="#0ea5e9" />
-            </>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+              {/* Shop name — থিমের headingColor অনুসরণ করে (cyan-fixed নয়) */}
+              <span style={{
+                fontWeight: 900,
+                fontSize: 27,
+                letterSpacing: 0.8,
+                lineHeight: 1.2,
+                color: T.headingColor,
+                textShadow: `0 0 14px ${T.headingColor}77, 0 1px 8px rgba(0,0,0,0.4)`,
+              }}>{shopName}</span>
+              {/* Live clock — থিম headingColor/accent, শপ নামের ঠিক নিচে আলাদা লাইনে */}
+              <MemoLiveDateTime themeColor={T.headingColor} accentColor={T.accent} compact />
+            </div>
           ) : showDetail ? (
             <>
               <div style={{
-                fontWeight: 900, fontSize: 20, letterSpacing: 0.3,
-                background: "linear-gradient(135deg,#ffffff,#bae6fd,#0ea5e9)",
-                WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text",
-                filter: "drop-shadow(0 0 10px #38bdf866)",
-                marginBottom: 4, lineHeight: 1.2,
+                fontWeight: 900, fontSize: 18, letterSpacing: 0.3,
+                color: T.headingColor,
+                textShadow: `0 0 10px ${T.headingColor}55`,
+                marginBottom: 3, lineHeight: 1.2,
               }}>{detailCust?.name}</div>
-              <div style={{ color: "#38bdf8aa", fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              <div style={{ color: `${T.headingColor}aa`, fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
                 <span>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{verticalAlign:"middle", marginRight:3}}><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.29 6.29l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{verticalAlign:"middle", marginRight:3}}><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.29 6.29l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
                   {detailCust?.mobile}
                 </span>
                 {detailCust?.address && <><span style={{ opacity: 0.4 }}>·</span><span>📍 {detailCust?.address}</span></>}
               </div>
             </>
           ) : (
-            /* Module pages — সবসময় cyan */
+            /* Module pages — থিমের headingColor অনুসরণ করে */
             <div style={{
-              fontWeight: 900, fontSize: 21, letterSpacing: 1.2,
-              background: "linear-gradient(135deg,#ffffff 0%,#bae6fd 30%,#0ea5e9 70%,#0369a1 100%)",
-              WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text",
-              filter: "drop-shadow(0 0 14px #38bdf877)",
-              animation: "neonPulse 2.5s ease-in-out infinite",
+              fontWeight: 900, fontSize: 17, letterSpacing: 0.6,
+              color: T.headingColor,
+              textShadow: `0 0 10px ${T.headingColor}66`,
               lineHeight: 1.2,
             }}>
               {tabTitles[tab] || ""}
@@ -9042,10 +9165,10 @@ function SmartBusinessMgmt() {
             <button key={n.id}
               style={{
                 ...S.navBtn,
-                color: isActive ? T.navActive : T.sub,
+                color: isActive ? "#fff" : `${T.headingColor}80`,
               }}
               onClick={() => { setDetailCId(null); setInvModal(null); setDashModal(null); setCashModal(null); setTab(n.id); }}>
-              {isActive && <span className="nav-active-pill" />}
+              {isActive && <span style={{ position:"absolute", inset:0, background:`${T.accent}55`, border:`1px solid ${T.accent}88`, borderRadius:14, animation:"bounceIn 0.25s cubic-bezier(0.4,0,0.2,1)" }} />}
               <span style={{ position: "relative", zIndex: 1, transition: "transform 0.2s", transform: isActive ? "scale(1.15)" : "scale(1)" }}>
                 <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={isActive ? 2.5 : 1.8} strokeLinecap="round" strokeLinejoin="round">
                   <path d={n.icon} />
@@ -9246,21 +9369,21 @@ function makeS(T) {
     },
     page: { padding: sp(16) },
 
-    // ── Bottom Nav ────────────────────────────────────
+    // ── Bottom Nav — হেডারের সাথে মিল রেখে একই গ্র্যাডিয়েন্ট/রং ────
     nav: {
       position: "fixed",
       bottom: 0,
       left: 0,
       right: 0,
       width: "100%",
-      background: T.nav,
-      borderTop: `1px solid ${T.navBorder}`,
+      background: T.header,
+      borderTop: `1px solid ${T.accent}33`,
       backdropFilter: "blur(20px)",
       WebkitBackdropFilter: "blur(20px)",
       display: "flex",
       padding: `10px 8px calc(10px + env(safe-area-inset-bottom, 0px))`,
       zIndex: 50,
-      boxShadow: `0 -4px 24px rgba(0,0,0,0.3)`,
+      boxShadow: `0 -2px 20px ${T.accent}3a, 0 -1px 0 ${T.accent}22`,
       gap: 4,
     },
     navBtn: {
@@ -9268,7 +9391,7 @@ function makeS(T) {
       display: "flex", flexDirection: "column",
       alignItems: "center", gap: 3,
       background: "none", border: "none",
-      color: T.sub, cursor: "pointer",
+      color: `${T.headingColor}88`, cursor: "pointer",
       padding: "6px 4px",
       fontFamily: "inherit",
       position: "relative",
@@ -11818,6 +11941,7 @@ const AnalyticsSection = React.memo(AnalyticsSection_);
 function InventorySection({ T, S, products, setDashModal, shopName, setInvModal, purchaseOrders = [], onGoToPurchaseEntry }) {
   // setInvModal triggers full-page navigation in Dashboard
   const openPage = setInvModal || (() => {});
+  const DT = getDashTokens(T);
 
   const allStock      = products.filter(p => (p.stock || 0) > 0).sort((a,b) => b.stock - a.stock);
   const criticalStock = products.filter(p => { const m = p.minStockAlert || 5; return (p.stock||0) > 0 && (p.stock||0) <= m; });
@@ -11833,48 +11957,44 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
   const cards = [
     {
       label:"বর্তমান স্টক", value:allStock.length, unit:"টি পণ্য",
-      color:"#a7f3d0", accent:"#1fd15e",
-      bg:"linear-gradient(135deg,#0a3d1e,#126b2f,#0a3d1e)", border:"#1fd15e44",
+      idx:0,
       sub:"স্টক আছে এমন পণ্য",
-      icon:<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#a7f3d0" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>,
+      iconPath: <><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></>,
       onClick:()=>openPage('all'),
     },
     {
       label:"ক্রিটিক্যাল স্টক", value:criticalStock.length, unit:"টি পণ্য",
-      color:"#fde68a", accent:"#f59e0b",
-      bg:"linear-gradient(135deg,#2d1f03,#4a3205,#2d1f03)", border:"#f59e0b44",
+      idx:1,
       sub:"সীমার কাছাকাছি স্টক",
-      icon:<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fde68a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
+      iconPath: <><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,
       onClick:()=>openPage('critical'),
     },
     {
       label:"স্টক আউট", value:stockOut.length, unit:"টি পণ্য",
-      color:"#fca5a5", accent:"#ef4444",
-      bg:"linear-gradient(135deg,#2d0d0d,#4d1a1a,#2d0d0d)", border:"#ef444444",
+      idx:2,
       sub:"স্টক শেষ হয়ে গেছে",
-      icon:<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fca5a5" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>,
+      iconPath: <><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></>,
       onClick:()=>openPage('out'),
     },
     {
       label:"ক্রয় অর্ডার", value:"তৈরি করুন", unit:"",
-      color:"#c4b5fd", accent:"#8b5cf6",
-      bg:"linear-gradient(135deg,#1e0d38,#2d1a52,#1e0d38)", border:"#8b5cf644",
+      idx:3,
       sub:"স্টক দেখে অর্ডার করুন",
-      icon:<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#c4b5fd" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>,
+      iconPath: <><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></>,
       onClick:()=>openPage('order'),
     },
   ];
 
   return (
     <>
-      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12, padding:"10px 14px", background:"linear-gradient(135deg,#1e0d38,#2d1a52)", borderRadius:14, border:"1px solid #8b5cf622" }}>
-        <div style={{ width:4, height:20, borderRadius:2, background:"linear-gradient(180deg,#8b5cf6,#6d28d9)", flexShrink:0 }} />
-        <span style={{ color:"#c4b5fd", fontWeight:900, fontSize:13, letterSpacing:1, textTransform:"uppercase" }}>ইনভেন্টরি/স্টক বিশ্লেষণ</span>
-        <div style={{ marginLeft:"auto", background:"#8b5cf615", border:"1px solid #8b5cf633", borderRadius:8, padding:"3px 10px" }}>
-          <span style={{ color:"#a78bfa", fontSize:11, fontWeight:900 }}>{products.length}টি পণ্য</span>
+      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:9, padding:"8px 12px", background: DT.sectionBarBg, borderRadius:12, border: DT.sectionBarBorder }}>
+        <div style={{ width:4, height:18, borderRadius:2, background: DT.dark ? `linear-gradient(180deg,${DT.accentColor},${T.accentDark||DT.accentColor})` : DT.accentColor, flexShrink:0 }} />
+        <span style={{ color: DT.sectionBarText, fontWeight:900, fontSize:12, letterSpacing:0.8, textTransform:"uppercase" }}>ইনভেন্টরি/স্টক বিশ্লেষণ</span>
+        <div style={{ marginLeft:"auto", background:`${DT.accentRgb ? `rgba(${DT.accentRgb},0.12)` : "transparent"}`, border:`1px solid rgba(${DT.accentRgb},0.3)`, borderRadius:8, padding:"3px 9px" }}>
+          <span style={{ color: DT.sectionBarText, fontSize:10.5, fontWeight:900 }}>{products.length}টি পণ্য</span>
         </div>
       </div>
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:12 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9, marginBottom:9 }}>
         {cards.map((c, i) => {
           // Determine if this card should show a notification badge
           const isStockOutCard = c.label === "স্টক আউট";
@@ -11883,25 +12003,34 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
           const outCount  = products ? products.filter(p => (p.stock||0)===0).length : 0;
           const showOutBadge = isStockOutCard && outCount > 0;
           const showCritBadge = isCriticalCard && critCount > 0;
+          const tint = DT.tint(c.idx);
+          const cAccent = tint.hex;
+          const valueColor = DT.dark ? cAccent : "#fff";
+          const labelColor = DT.dark ? "#e2e8f0" : "rgba(255,255,255,0.92)";
+          const subColor   = DT.dark ? "#64748b" : "rgba(255,255,255,0.7)";
+          const iconColor  = DT.dark ? cAccent : "#fff";
           return (
           <div key={c.label || i} className="tap-card"
             style={{
-              background:c.bg, borderRadius:20, padding:"18px 16px",
-              border: showOutBadge ? `2px solid #ef4444` : showCritBadge ? `2px solid #f59e0b` : `1.5px solid ${c.border}`,
-              boxShadow: showOutBadge ? undefined : showCritBadge ? undefined : `0 4px 24px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.06)`,
+              background: tint.bg, borderRadius:16, padding:"13px 13px",
+              border: showOutBadge ? `2px solid #ef4444` : showCritBadge ? `2px solid #f59e0b` : tint.border,
+              backdropFilter: DT.dark ? "blur(16px)" : "none",
+              boxShadow: showOutBadge ? undefined : showCritBadge ? undefined : (DT.dark ? "0 4px 24px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06)" : "0 8px 18px -8px rgba(0,0,0,0.26)"),
               animation: showOutBadge ? `cardBlinkRed 0.85s ease-in-out infinite` : showCritBadge ? `cardBlinkAmber 0.85s ease-in-out infinite` : `fadeUp 0.3s ease both`,
               animationDelay: showOutBadge || showCritBadge ? `0ms` : `${i * 20}ms`,
               cursor:"pointer", position:"relative", overflow:"hidden",
-              minHeight:130,
+              minHeight:102,
             }}
             onClick={c.onClick}>
-            <div style={{ position:"absolute", bottom:-30, right:-30, width:110, height:110, borderRadius:"50%", background:`radial-gradient(circle,${c.accent}1a 0%,transparent 70%)` }} />
-            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
-              <div style={{ background:`${c.accent}1a`, border:`1px solid ${c.accent}33`, borderRadius:10, padding:"6px 8px" }}>{c.icon}</div>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={c.accent} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+            <div style={{ position:"absolute", bottom:-30, right:-30, width:90, height:90, borderRadius:"50%", background: DT.dark ? `radial-gradient(circle,${cAccent}1a 0%,transparent 70%)` : "rgba(255,255,255,0.10)" }} />
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:9 }}>
+              <div style={{ background: DT.dark ? `${cAccent}1a` : "rgba(255,255,255,0.22)", border: DT.dark ? `1px solid ${cAccent}33` : "1px solid rgba(255,255,255,0.3)", borderRadius:9, padding:"5px 7px" }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">{c.iconPath}</svg>
+              </div>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
             </div>
-            <div style={{ color:c.color, fontWeight:900, fontSize: typeof c.value === "number" ? 34 : 18, letterSpacing:-0.5, lineHeight:1, textShadow:`0 0 20px ${c.accent}44`, marginBottom:6 }}>{c.value}<span style={{ fontSize:14, fontWeight:700, marginLeft:4 }}>{c.unit}</span></div>
-            <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:13, marginBottom:3, display:"flex", alignItems:"center", gap:6 }}>
+            <div style={{ color:valueColor, fontWeight:900, fontSize: typeof c.value === "number" ? 26 : 15, letterSpacing:-0.5, lineHeight:1, textShadow: DT.dark ? `0 0 16px ${cAccent}44` : "none", marginBottom:4 }}>{c.value}<span style={{ fontSize:11, fontWeight:700, marginLeft:4 }}>{c.unit}</span></div>
+            <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, display:"flex", alignItems:"center", gap:6 }}>
               {c.label}
               {showOutBadge && isStockOutCard && (
                 <span style={{ display:"inline-flex", alignItems:"center", gap:4, background:"#ef4444", color:"#fff", fontWeight:900, fontSize:10, borderRadius:20, padding:"2px 8px", letterSpacing:0.5,
@@ -11920,7 +12049,7 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                 </span>
               )}
             </div>
-            <div style={{ color:"#64748b", fontWeight:600, fontSize:11 }}>{c.sub}</div>
+            <div style={{ color:subColor, fontWeight:600, fontSize:10 }}>{c.sub}</div>
           </div>
           );
         })}
@@ -11949,52 +12078,57 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
           return buildPdfHtml(`<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্য</th><th class="num">স্টক</th><th class="num">মেয়াদ</th></tr></thead><tbody>${rows}</tbody></table></div>`, shopName_||"SBM", title);
         };
 
+        const expTint = DT.tint(2);   // লাল-ঘেঁষা ভ্যারিয়েন্ট
+        const nearTint = DT.tint(1);  // অ্যাম্বার-ঘেঁষা ভ্যারিয়েন্ট
+
         return (
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:12 }}>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9, marginBottom:9 }}>
             {/* মেয়াদোত্তীর্ণ পণ্য */}
             <div className="tap-card"
               style={{
-                background:"linear-gradient(135deg,#2d0d0d,#4d1a1a,#2d0d0d)", borderRadius:20, padding:"16px 14px",
-                border: expiredProds.length > 0 ? "2px solid #ef4444" : "1.5px solid #ef444444",
+                background: expTint.bg, borderRadius:16, padding:"13px 12px",
+                border: expiredProds.length > 0 ? "2px solid #ef4444" : expTint.border,
+                backdropFilter: DT.dark ? "blur(16px)" : "none",
                 animation: expiredProds.length > 0 ? "cardBlinkRed 0.85s ease-in-out infinite" : "fadeUp 0.3s ease both",
                 cursor:"pointer", position:"relative", overflow:"hidden",
               }}
               onClick={() => expiredProds.length > 0 && setInvModal('expired')}>
-              <div style={{ position:"absolute", bottom:-20, right:-20, width:80, height:80, borderRadius:"50%", background:"radial-gradient(circle,#ef44441a 0%,transparent 70%)" }} />
-              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
-                <div style={{ background:"#ef444418", border:"1px solid #ef444433", borderRadius:10, padding:"6px 8px" }}>
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fca5a5" strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+              <div style={{ position:"absolute", bottom:-20, right:-20, width:70, height:70, borderRadius:"50%", background: DT.dark ? "radial-gradient(circle,#ef44441a 0%,transparent 70%)" : "rgba(255,255,255,0.10)" }} />
+              <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:8 }}>
+                <div style={{ background: DT.dark ? "#ef444418" : "rgba(255,255,255,0.22)", border: DT.dark ? "1px solid #ef444433" : "1px solid rgba(255,255,255,0.3)", borderRadius:9, padding:"5px 7px" }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={DT.dark?"#fca5a5":"#fff"} strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
                 </div>
                 {expiredProds.length > 0 && (
-                  <span style={{ background:"#ef4444", color:"#fff", fontWeight:900, fontSize:10, borderRadius:20, padding:"2px 8px" }}>EXPIRED</span>
+                  <span style={{ background:"#ef4444", color:"#fff", fontWeight:900, fontSize:9.5, borderRadius:20, padding:"2px 7px" }}>EXPIRED</span>
                 )}
               </div>
-              <div style={{ color:"#fca5a5", fontWeight:900, fontSize:28, letterSpacing:-0.5, marginBottom:4 }}>{expiredProds.length}<span style={{ fontSize:13, fontWeight:700, marginLeft:4 }}>টি</span></div>
-              <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:12, marginBottom:2 }}>মেয়াদোত্তীর্ণ</div>
-              <div style={{ color:"#64748b", fontSize:10 }}>{expiredProds.length>0?"ক্লিক করে দেখুন":"কোনো মেয়াদোত্তীর্ণ নেই"}</div>
+              <div style={{ color: DT.dark?"#fca5a5":"#fff", fontWeight:900, fontSize:22, letterSpacing:-0.5, marginBottom:3 }}>{expiredProds.length}<span style={{ fontSize:11, fontWeight:700, marginLeft:4 }}>টি</span></div>
+              <div style={{ color: DT.dark?"#e2e8f0":"rgba(255,255,255,0.92)", fontWeight:800, fontSize:11.5, marginBottom:2 }}>মেয়াদোত্তীর্ণ</div>
+              <div style={{ color: DT.dark?"#64748b":"rgba(255,255,255,0.7)", fontSize:9.5 }}>{expiredProds.length>0?"ক্লিক করে দেখুন":"কোনো মেয়াদোত্তীর্ণ নেই"}</div>
             </div>
 
             {/* মেয়াদ শেষের কাছাকাছি */}
             <div className="tap-card"
               style={{
-                background:"linear-gradient(135deg,#2d1f03,#4a3205,#2d1f03)", borderRadius:20, padding:"16px 14px",
-                border: nearExpiryProds.length > 0 ? "2px solid #f59e0b" : "1.5px solid #f59e0b44",
+                background: nearTint.bg, borderRadius:16, padding:"13px 12px",
+                border: nearExpiryProds.length > 0 ? "2px solid #f59e0b" : nearTint.border,
+                backdropFilter: DT.dark ? "blur(16px)" : "none",
                 animation: nearExpiryProds.length > 0 ? "cardBlinkAmber 0.85s ease-in-out infinite" : "fadeUp 0.3s ease both",
                 cursor:"pointer", position:"relative", overflow:"hidden",
               }}
               onClick={() => nearExpiryProds.length > 0 && setInvModal('near-expiry')}>
-              <div style={{ position:"absolute", bottom:-20, right:-20, width:80, height:80, borderRadius:"50%", background:"radial-gradient(circle,#f59e0b1a 0%,transparent 70%)" }} />
-              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
-                <div style={{ background:"#f59e0b18", border:"1px solid #f59e0b33", borderRadius:10, padding:"6px 8px" }}>
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fde68a" strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              <div style={{ position:"absolute", bottom:-20, right:-20, width:70, height:70, borderRadius:"50%", background: DT.dark ? "radial-gradient(circle,#f59e0b1a 0%,transparent 70%)" : "rgba(255,255,255,0.10)" }} />
+              <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:8 }}>
+                <div style={{ background: DT.dark ? "#f59e0b18" : "rgba(255,255,255,0.22)", border: DT.dark ? "1px solid #f59e0b33" : "1px solid rgba(255,255,255,0.3)", borderRadius:9, padding:"5px 7px" }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={DT.dark?"#fde68a":"#fff"} strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                 </div>
                 {nearExpiryProds.length > 0 && (
-                  <span style={{ background:"#f59e0b", color:"#fff", fontWeight:900, fontSize:10, borderRadius:20, padding:"2px 8px" }}>NEAR</span>
+                  <span style={{ background:"#f59e0b", color:"#fff", fontWeight:900, fontSize:9.5, borderRadius:20, padding:"2px 7px" }}>NEAR</span>
                 )}
               </div>
-              <div style={{ color:"#fde68a", fontWeight:900, fontSize:28, letterSpacing:-0.5, marginBottom:4 }}>{nearExpiryProds.length}<span style={{ fontSize:13, fontWeight:700, marginLeft:4 }}>টি</span></div>
-              <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:12, marginBottom:2 }}>মেয়াদ শেষের কাছে</div>
-              <div style={{ color:"#64748b", fontSize:10 }}>৩ মাসের মধ্যে মেয়াদ শেষ</div>
+              <div style={{ color: DT.dark?"#fde68a":"#fff", fontWeight:900, fontSize:22, letterSpacing:-0.5, marginBottom:3 }}>{nearExpiryProds.length}<span style={{ fontSize:11, fontWeight:700, marginLeft:4 }}>টি</span></div>
+              <div style={{ color: DT.dark?"#e2e8f0":"rgba(255,255,255,0.92)", fontWeight:800, fontSize:11.5, marginBottom:2 }}>মেয়াদ শেষের কাছে</div>
+              <div style={{ color: DT.dark?"#64748b":"rgba(255,255,255,0.7)", fontSize:9.5 }}>৩ মাসের মধ্যে মেয়াদ শেষ</div>
             </div>
           </div>
         );
@@ -14103,6 +14237,9 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
         return { invs, total, cashSale, baki, profit, bakiInvs, selfUseInvs, selfUseCost, voidedInvs };
       })();
 
+  // ── dark থিমে Glassmorphism, light থিমে POS Bold — থিম অনুযায়ী ড্যাশবোর্ড টোকেন ──
+  const DT = getDashTokens(T);
+
   return (
     <div style={{ ...S.page, padding: "0 0 16px 0" }}>
 
@@ -14110,42 +14247,50 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
         <div style={{ height:14 }} />
 
         {/* ══ 💰 ক্যাশ ড্রয়ার — সবাই দেখতে ও ইনপুট দিতে পারবে ══ */}
-        <div style={{ marginBottom:16, position:"relative", background:"linear-gradient(135deg,#1a1438,#2a1854 55%,#1e1042)", borderRadius:18, border:"1px solid #a78bfa3a", padding:"14px 16px", overflow:"hidden", boxShadow:"0 8px 28px -10px #7c3aed55" }}>
+        <div style={{
+          marginBottom:16, position:"relative",
+          background: DT.dark ? "rgba(255,255,255,0.06)" : `linear-gradient(135deg, ${DT.accentColor}, ${shadeColor(DT.accentColor,-20)})`,
+          backdropFilter: DT.dark ? "blur(20px)" : "none",
+          borderRadius:18,
+          border: DT.dark ? "1px solid rgba(255,255,255,0.12)" : "none",
+          padding:"14px 16px", overflow:"hidden",
+          boxShadow: DT.dark ? "0 8px 28px -10px rgba(0,0,0,0.5)" : "0 10px 26px -10px rgba(0,0,0,0.3)",
+        }}>
           {/* decorative glow */}
-          <div style={{ position:"absolute", top:-40, right:-40, width:120, height:120, borderRadius:"50%", background:"radial-gradient(circle,#a78bfa33,transparent 70%)", pointerEvents:"none" }} />
+          <div style={{ position:"absolute", top:-40, right:-40, width:120, height:120, borderRadius:"50%", background: DT.dark ? `radial-gradient(circle, rgba(${DT.accentRgb},0.25),transparent 70%)` : "rgba(255,255,255,0.12)", pointerEvents:"none" }} />
           <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12, position:"relative" }}>
-            <div style={{ width:30, height:30, borderRadius:9, background:"linear-gradient(135deg,#a78bfa,#7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, boxShadow:"0 4px 12px #7c3aed55", flexShrink:0 }}>💰</div>
-            <span style={{ color:"#f1edff", fontWeight:900, fontSize:13, letterSpacing:0.8 }}>ক্যাশ ড্রয়ার</span>
+            <div style={{ width:30, height:30, borderRadius:9, background: DT.dark ? `linear-gradient(135deg, ${DT.accentColor}, ${T.accentDark||DT.accentColor})` : "rgba(255,255,255,0.22)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, boxShadow: DT.dark ? `0 4px 12px rgba(${DT.accentRgb},0.5)` : "none", flexShrink:0 }}>💰</div>
+            <span style={{ color: DT.dark ? "#fff" : "#fff", fontWeight:900, fontSize:13, letterSpacing:0.8 }}>ক্যাশ ড্রয়ার</span>
             <button onClick={() => setCashModal("history")}
-              style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:5, background:"rgba(167,139,250,0.12)", border:"1px solid #a78bfa55", borderRadius:10, padding:"6px 12px", color:"#ddd6fe", fontSize:11.5, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
+              style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:5, background: DT.dark ? `rgba(${DT.accentRgb},0.16)` : "rgba(255,255,255,0.18)", border: DT.dark ? `1px solid rgba(${DT.accentRgb},0.4)` : "1px solid rgba(255,255,255,0.35)", borderRadius:10, padding:"6px 12px", color:"#fff", fontSize:11.5, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
               হিস্ট্রি
             </button>
           </div>
           <div style={{ display:"flex", gap:8, marginBottom: (todayOpening || todayWithdrawTotal > 0) ? 12 : 0, position:"relative" }}>
             <button onClick={() => setCashModal("opening")}
-              style={{ flex:1, background:"linear-gradient(135deg,#0ea5e9,#0369a1)", color:"#fff", border:"1px solid #38bdf855", borderRadius:14, padding:"12px 8px", fontWeight:800, fontSize:12.5, cursor:"pointer", fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"center", gap:5, boxShadow:"0 6px 16px -6px #0ea5e988" }}>
+              style={{ flex:1, background: DT.dark ? "linear-gradient(135deg,#0ea5e9,#0369a1)" : "rgba(255,255,255,0.95)", color: DT.dark ? "#fff" : "#0c4a6e", border: DT.dark ? "1px solid #38bdf855" : "none", borderRadius:14, padding:"12px 8px", fontWeight:800, fontSize:12.5, cursor:"pointer", fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"center", gap:5, boxShadow: DT.dark ? "0 6px 16px -6px #0ea5e988" : "0 4px 12px rgba(0,0,0,0.15)" }}>
               <span style={{fontSize:20}}>🪙</span>
               ওপেনিং ক্যাশ যুক্ত করুন
             </button>
             <button onClick={() => setCashModal("withdrawal")}
-              style={{ flex:1, background:"linear-gradient(135deg,#f43f5e,#b91c1c)", color:"#fff", border:"1px solid #f8717155", borderRadius:14, padding:"12px 8px", fontWeight:800, fontSize:12.5, cursor:"pointer", fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"center", gap:5, boxShadow:"0 6px 16px -6px #ef444488" }}>
+              style={{ flex:1, background: DT.dark ? "linear-gradient(135deg,#f43f5e,#b91c1c)" : "rgba(20,20,20,0.85)", color:"#fff", border: DT.dark ? "1px solid #f8717155" : "none", borderRadius:14, padding:"12px 8px", fontWeight:800, fontSize:12.5, cursor:"pointer", fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"center", gap:5, boxShadow: DT.dark ? "0 6px 16px -6px #ef444488" : "0 4px 12px rgba(0,0,0,0.2)" }}>
               <span style={{fontSize:20}}>💸</span>
               ক্যাশ উইথড্র করুন
             </button>
           </div>
           {(todayOpening || todayWithdrawTotal > 0) && (
-            <div style={{ display:"flex", gap:8, fontSize:12, color:"#cbd5e1", position:"relative" }}>
+            <div style={{ display:"flex", gap:8, fontSize:12, color: DT.dark ? "#cbd5e1" : "#fff", position:"relative" }}>
               {todayOpening && (
-                <div style={{ flex:1, background:"rgba(14,165,233,0.1)", borderRadius:12, padding:"8px 12px", border:"1px solid #0ea5e93a", backdropFilter:"blur(4px)" }}>
-                  <div style={{ fontSize:10.5, color:"#7dd3fc", fontWeight:700, marginBottom:2 }}>আজকের ওপেনিং</div>
-                  <div style={{ fontWeight:900, fontSize:15, color:"#e0f2fe" }}>৳{fmt(todayOpening.amount)}</div>
+                <div style={{ flex:1, background: DT.dark ? "rgba(14,165,233,0.1)" : "rgba(255,255,255,0.16)", borderRadius:12, padding:"8px 12px", border: DT.dark ? "1px solid #0ea5e93a" : "1px solid rgba(255,255,255,0.3)", backdropFilter:"blur(4px)" }}>
+                  <div style={{ fontSize:10.5, color: DT.dark ? "#7dd3fc" : "rgba(255,255,255,0.85)", fontWeight:700, marginBottom:2 }}>আজকের ওপেনিং</div>
+                  <div style={{ fontWeight:900, fontSize:15, color:"#fff" }}>৳{fmt(todayOpening.amount)}</div>
                 </div>
               )}
               {todayWithdrawTotal > 0 && (
-                <div style={{ flex:1, background:"rgba(244,63,94,0.1)", borderRadius:12, padding:"8px 12px", border:"1px solid #f43f5e3a", backdropFilter:"blur(4px)" }}>
-                  <div style={{ fontSize:10.5, color:"#fca5a5", fontWeight:700, marginBottom:2 }}>আজকের উইথড্রয়াল</div>
-                  <div style={{ fontWeight:900, fontSize:15, color:"#fee2e2" }}>৳{fmt(todayWithdrawTotal)}</div>
+                <div style={{ flex:1, background: DT.dark ? "rgba(244,63,94,0.1)" : "rgba(255,255,255,0.16)", borderRadius:12, padding:"8px 12px", border: DT.dark ? "1px solid #f43f5e3a" : "1px solid rgba(255,255,255,0.3)", backdropFilter:"blur(4px)" }}>
+                  <div style={{ fontSize:10.5, color: DT.dark ? "#fca5a5" : "rgba(255,255,255,0.85)", fontWeight:700, marginBottom:2 }}>আজকের উইথড্রয়াল</div>
+                  <div style={{ fontWeight:900, fontSize:15, color:"#fff" }}>৳{fmt(todayWithdrawTotal)}</div>
                 </div>
               )}
             </div>
@@ -14163,87 +14308,85 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
 
         {/* তারিখ/রেঞ্জ সিলেক্টর বার সরানো হয়েছে — কার্ড ক্লিকের ডিটেইলস পেজে পাওয়া যাবে */}
 
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:16 }}>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9, marginBottom:12 }}>
           {[
             {
               label:`${repLabel} বিক্রয়`, value:`৳${fmt(repData.total)}`,
-              color:"#a7f3d0", accent:"#1fd15e",
-              bg:"linear-gradient(135deg,#0a3d1e,#126b2f,#0a3d1e)",
-              border:"#1fd15e44",
+              idx:0,
               sub:`${repLabel} বিক্রয়ের ইনভয়েস`,
-              icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#a7f3d0" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>,
+              iconPath: <><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></>,
               onClick: () => setDashModal({ title:`${repLabel} বিক্রয়ের ইনভয়েস`, baseTitle:"বিক্রয়ের ইনভয়েস", type:"invoices", items:repData.invs, allItems: invoices.filter(i => !i.isSelfUse && i.status !== "voided") })
             },
             {
               label:`${repLabel} নগদ বিক্রয়`, value:`৳${fmt(repData.cashSale)}`,
-              color:"#fde68a", accent:"#f59e0b",
-              bg:"linear-gradient(135deg,#2d1f03,#4a3205,#2d1f03)",
-              border:"#f59e0b44",
+              idx:1,
               sub:`${repLabel} নগদ ইনভয়েস`,
-              icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fde68a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M12 12a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/><path d="M6 12h.01M18 12h.01"/></svg>,
+              iconPath: <><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M12 12a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/><path d="M6 12h.01M18 12h.01"/></>,
               onClick: () => setDashModal({ title:`${repLabel} নগদ বিক্রয়ের ইনভয়েস`, baseTitle:"নগদ বিক্রয়ের ইনভয়েস", type:"invoices", items:repData.invs.filter(i => i.payType === "cash" || i.payType === "partial"), allItems: invoices.filter(i => !i.isSelfUse && i.status !== "voided" && (i.payType === "cash" || i.payType === "partial")) })
             },
             {
               label:`${repLabel} বাকি`, value:`৳${fmt(repData.baki)}`,
-              color:"#fca5a5", accent:"#ef4444",
-              bg:"linear-gradient(135deg,#2d0d0d,#4d1a1a,#2d0d0d)",
-              border:"#ef444444",
+              idx:2,
               sub:`${repLabel} বাকি ইনভয়েস`,
-              icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fca5a5" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 14l-4-4 4-4"/><path d="M5 10h11a4 4 0 0 1 0 8h-1"/></svg>,
+              iconPath: <><path d="M9 14l-4-4 4-4"/><path d="M5 10h11a4 4 0 0 1 0 8h-1"/></>,
               onClick: () => setDashModal({ title:`${repLabel} বাকির ইনভয়েস`, baseTitle:"বাকির ইনভয়েস", type:"invoices", items:repData.bakiInvs, allItems: invoices.filter(i => i.status !== "voided" && (i.payType === "baki" || (i.payType === "partial" && i.bakiAmount > 0))) })
             },
             {
               label:"", value:`৳${fmt(Math.max(0, repData.profit))}`,
-              color:"#c4b5fd", accent:"#8b5cf6",
-              bg:"linear-gradient(135deg,#1e0d38,#2d1a52,#1e0d38)",
-              border:"#8b5cf644",
+              idx:3,
               sub:"",
-              icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#c4b5fd" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>,
+              iconPath: <><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></>,
               isProfit: true,
               onClick: () => setDashModal({ title:`${repLabel} লাভ ও লসের বিবরণ`, baseTitle:"লাভ ও লসের বিবরণ", type:"product-profit-loss", invs:repData.invs, allInvs: invoices.filter(i => !i.isSelfUse && i.status !== "voided") })
             },
             {
               label:"নিজের ব্যবহার", value:`${repData.selfUseInvs.length}টি`,
-              color:"#fbcfe8", accent:"#ec4899",
-              bg:"linear-gradient(135deg,#2d0d24,#4d1a3d,#2d0d24)",
-              border:"#ec489944",
+              idx:4,
               sub:`${repLabel} নিজের ব্যবহারের ইনভয়েস`,
               topNote: repData.selfUseCost > 0 ? `ক্রয়মূল্য: ৳${fmt(repData.selfUseCost)}` : null,
               onClick: () => setDashModal({ title:`${repLabel} নিজের ব্যবহারের ইনভয়েস`, baseTitle:"নিজের ব্যবহারের ইনভয়েস", type:"invoices", items:repData.selfUseInvs, allItems: invoices.filter(i => i.isSelfUse && i.status !== "voided") })
             },
             {
               label:"বাতিলকৃত ইনভয়েস", value:`${repData.voidedInvs.length}টি`,
-              color:"#cbd5e1", accent:"#64748b",
-              bg:"linear-gradient(135deg,#1c2331,#2a3445,#1c2331)",
-              border:"#64748b44",
+              idx:5,
               sub:`${repLabel} বাতিলকৃত ইনভয়েস`,
-              icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>,
+              iconPath: <><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></>,
               onClick: () => setDashModal({ title:`${repLabel} বাতিলকৃত ইনভয়েস`, baseTitle:"বাতিলকৃত ইনভয়েস", type:"invoices", items:repData.voidedInvs, allItems: invoices.filter(i => i.status === "voided") })
             },
-          ].filter(c => !(currentUser?.role === "staff" && c.isProfit)).filter(c => !c.hidden).map((c, i) => (
+          ].filter(c => !(currentUser?.role === "staff" && c.isProfit)).filter(c => !c.hidden).map((c, i) => {
+            const tint = DT.tint(c.idx);
+            const cAccent = tint.hex;
+            const valueColor = DT.dark ? cAccent : "#fff";
+            const labelColor = DT.dark ? "#e2e8f0" : "rgba(255,255,255,0.92)";
+            const subColor   = DT.dark ? "#64748b" : "rgba(255,255,255,0.7)";
+            const iconColor  = DT.dark ? cAccent : "#fff";
+            return (
             <div key={c.label || i} className="tap-card"
               style={{
-                background:c.bg, borderRadius:20, padding:"18px 16px",
-                border:`1.5px solid ${c.border}`,
-                boxShadow:`0 4px 24px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.06)`,
+                background: tint.bg, borderRadius:16, padding:"13px 13px",
+                border: tint.border,
+                backdropFilter: DT.dark ? "blur(16px)" : "none",
+                boxShadow: DT.dark ? "0 4px 24px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06)" : "0 8px 18px -8px rgba(0,0,0,0.26)",
                 cursor:"pointer", position:"relative", overflow:"hidden",
-                minHeight:130,
+                minHeight:102,
                 gridColumn: c.fullWidth ? "1 / -1" : undefined,
                 animation:`fadeUp 0.3s ease both`,
                 animationDelay:`${i * 20}ms`,
               }}
               onClick={c.onClick}>
-              <div style={{ position:"absolute", bottom:-30, right:-30, width:110, height:110, borderRadius:"50%", background:`radial-gradient(circle,${c.accent}1a 0%,transparent 70%)` }} />
-              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:c.isProfit ? 4 : 12 }}>
-                <div style={{ background:`${c.accent}1a`, border:`1px solid ${c.accent}33`, borderRadius:10, padding:"6px 8px" }}>{c.icon}</div>
+              <div style={{ position:"absolute", bottom:-30, right:-30, width:90, height:90, borderRadius:"50%", background: DT.dark ? `radial-gradient(circle,${cAccent}1a 0%,transparent 70%)` : "rgba(255,255,255,0.10)" }} />
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:c.isProfit ? 3 : 9 }}>
+                <div style={{ background: DT.dark ? `${cAccent}1a` : "rgba(255,255,255,0.22)", border: DT.dark ? `1px solid ${cAccent}33` : "1px solid rgba(255,255,255,0.3)", borderRadius:9, padding:"5px 7px" }}>
+                  {c.iconPath && <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">{c.iconPath}</svg>}
+                </div>
                 {c.isProfit && (
-                  <div style={{ fontSize:10, fontWeight:800, color:"#c4b5fd", letterSpacing:0.5, opacity:0.85 }}>আজকের নেট ফলাফল</div>
+                  <div style={{ fontSize:9, fontWeight:800, color: DT.dark ? cAccent : "rgba(255,255,255,0.85)", letterSpacing:0.4, opacity:0.85 }}>আজকের নেট ফলাফল</div>
                 )}
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={c.accent} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
               </div>
               {/* কার্ডের উপরে অতিরিক্ত তথ্য (যেমন: নিজের ব্যবহারের ক্রয়মূল্য) */}
               {c.topNote && (
-                <div style={{ color:"#f9a8d4", fontSize:11, fontWeight:800, marginBottom:4 }}>{c.topNote}</div>
+                <div style={{ color: DT.dark ? cAccent : "rgba(255,255,255,0.9)", fontSize:10.5, fontWeight:800, marginBottom:3 }}>{c.topNote}</div>
               )}
               {/* লাভ/লস কার্ড — বাম লাভ, ডান লস, নিচে নেট */}
               {c.isProfit ? (() => {
@@ -14252,33 +14395,37 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
                 const _totalProfit = _rows.filter(r => r.profit > 0).reduce((s,r) => s + r.profit, 0);
                 const _totalLoss   = _rows.filter(r => r.profit < 0).reduce((s,r) => s + r.profit, 0);
                 const _net = _totalProfit + _totalLoss;
+                const lossAccent = DT.mono[5]; // লস সবসময় নিউট্রাল/সতর্কতামূলক ধূসর-লাল টোনে
+                const profitCol = DT.dark ? cAccent : "#fff";
+                const lossCol   = DT.dark ? (_totalLoss < 0 ? "#ef4444" : "#475569") : "#fff";
+                const netCol    = DT.dark ? (_net >= 0 ? cAccent : "#ef4444") : "#fff";
                 return (
-                  <div style={{ marginBottom:4 }}>
-                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end", marginBottom:5 }}>
+                  <div style={{ marginBottom:3 }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end", marginBottom:4 }}>
                       <div>
-                        <div style={{ color:"#86efac", fontSize:9, fontWeight:700, marginBottom:1 }}>মোট লাভ</div>
-                        <div style={{ color:"#c4b5fd", fontWeight:900, fontSize:20, letterSpacing:-0.5, lineHeight:1, textShadow:"0 0 24px #8b5cf655" }}>৳{fmt(Number(_totalProfit.toFixed(2)))}</div>
+                        <div style={{ color: DT.dark ? "#86efac" : "rgba(255,255,255,0.75)", fontSize:8.5, fontWeight:700, marginBottom:1 }}>মোট লাভ</div>
+                        <div style={{ color:profitCol, fontWeight:900, fontSize:17, letterSpacing:-0.5, lineHeight:1, textShadow: DT.dark ? `0 0 20px ${cAccent}55` : "none" }}>৳{fmt(Number(_totalProfit.toFixed(2)))}</div>
                       </div>
                       <div style={{ textAlign:"right" }}>
-                        <div style={{ color:"#fca5a5", fontSize:9, fontWeight:700, marginBottom:1 }}>মোট লস</div>
-                        <div style={{ color: _totalLoss < 0 ? "#ef4444" : "#475569", fontWeight:900, fontSize:20, letterSpacing:-0.5, lineHeight:1, textShadow: _totalLoss < 0 ? "0 0 24px #ef444455" : "none" }}>৳{fmt(Math.abs(Number(_totalLoss.toFixed(2))))}</div>
+                        <div style={{ color: DT.dark ? "#fca5a5" : "rgba(255,255,255,0.75)", fontSize:8.5, fontWeight:700, marginBottom:1 }}>মোট লস</div>
+                        <div style={{ color:lossCol, fontWeight:900, fontSize:17, letterSpacing:-0.5, lineHeight:1, textShadow: (DT.dark && _totalLoss < 0) ? "0 0 20px #ef444455" : "none" }}>৳{fmt(Math.abs(Number(_totalLoss.toFixed(2))))}</div>
                       </div>
                     </div>
-                    <div style={{ borderTop:`1px solid ${_net >= 0 ? "#8b5cf633" : "#ef444433"}`, paddingTop:5, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                      <div style={{ color:"#94a3b8", fontSize:9, fontWeight:700 }}>নেট (লাভ−লস)</div>
-                      <div style={{ color: _net >= 0 ? "#a855f7" : "#ef4444", fontWeight:900, fontSize:16, letterSpacing:-0.3 }}>{_net >= 0 ? "+" : "−"}৳{fmt(Math.abs(Number(_net.toFixed(2))))}</div>
+                    <div style={{ borderTop: DT.dark ? `1px solid ${_net >= 0 ? cAccent+"33" : "#ef444433"}` : "1px solid rgba(255,255,255,0.3)", paddingTop:4, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                      <div style={{ color: DT.dark ? "#94a3b8" : "rgba(255,255,255,0.75)", fontSize:8.5, fontWeight:700 }}>নেট (লাভ−লস)</div>
+                      <div style={{ color:netCol, fontWeight:900, fontSize:14, letterSpacing:-0.3 }}>{_net >= 0 ? "+" : "−"}৳{fmt(Math.abs(Number(_net.toFixed(2))))}</div>
                     </div>
                   </div>
                 );
               })() : (
-                <div style={{ color:c.color, fontWeight:900, fontSize:34, letterSpacing:-0.5, lineHeight:1, textShadow:`0 0 24px ${c.accent}55`, marginBottom:6 }}>{c.value}</div>
+                <div style={{ color:valueColor, fontWeight:900, fontSize:26, letterSpacing:-0.5, lineHeight:1, textShadow: DT.dark ? `0 0 20px ${cAccent}55` : "none", marginBottom:4 }}>{c.value}</div>
               )}
-              <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:13, marginBottom:3 }}>{c.label}</div>
-              <div style={{ color:"#64748b", fontWeight:600, fontSize:11 }}>{c.sub}</div>
+              <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2 }}>{c.label}</div>
+              <div style={{ color:subColor, fontWeight:600, fontSize:10 }}>{c.sub}</div>
             </div>
-          ))}
+            );
+          })}
         </div>
-
 
         {/* ══ বাকি পরিসংখ্যান ══ */}
         <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12, padding:"10px 14px", background:"linear-gradient(135deg,#0d1f38,#0f2a50)", borderRadius:14, border:"1px solid #0ea5e922" }}>
@@ -14289,46 +14436,53 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
           </div>
         </div>
 
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:14 }}>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9, marginBottom:12 }}>
           {[
             {
               label:"মোট বাকি", value:`৳${fmt(totalBaki)}`,
-              color:"#fca5a5", accent:"#ef4444",
-              bg:"linear-gradient(135deg,#0d3520,#164d2a,#0d3520)",
-              border:"#1fd15e44",
+              idx:2,
               sub:`${bakiCustomers.length}জন কাস্টমারের বাকি`,
-              icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fca5a5" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M2 10h20"/><path d="M7 15h2"/><path d="M12 15h5"/></svg>,
+              iconPath: <><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M2 10h20"/><path d="M7 15h2"/><path d="M12 15h5"/></>,
               modal: { title:"বাকি আছে এমন কাস্টমার", type:"customer-breakdown", rows: bakiCustomers.map(c => { const cTxns = txns.filter(t => t.customerId === c.id); return { name:c.name, mobile:c.mobile, balance:c.balance, baki:cTxns.filter(t=>t.type==="baki").reduce((s,t)=>s+t.amount,0), joma:cTxns.filter(t=>t.type==="joma").reduce((s,t)=>s+t.amount,0) }; }).sort((a,b)=>b.balance-a.balance) },
             },
             {
               label:"আজকের বাকি আদায়", value:`৳${fmt(todayJoma)}`,
-              color:"#a7f3d0", accent:"#1fd15e",
-              bg:"linear-gradient(135deg,#063d1e,#0d6e2b,#063d1e)",
-              border:"#1fd15e44",
+              idx:0,
               sub:"আজকের বাকি আদায়ের রশিদ",
-              icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#a7f3d0" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>,
+              iconPath: <><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></>,
               modal: { title:"আজকের বাকি আদায়ের রশিদ", type:"payment-receipts", items:todayPayInvs },
             },
-          ].map((c, i) => (
+          ].map((c, i) => {
+            const tint = DT.tint(c.idx);
+            const cAccent = tint.hex;
+            const valueColor = DT.dark ? cAccent : "#fff";
+            const labelColor = DT.dark ? "#e2e8f0" : "rgba(255,255,255,0.92)";
+            const subColor   = DT.dark ? "#64748b" : "rgba(255,255,255,0.7)";
+            const iconColor  = DT.dark ? cAccent : "#fff";
+            return (
             <div key={c.label || i} className="tap-card"
               style={{
-                background:c.bg, borderRadius:20, padding:"18px 16px",
-                border:`1.5px solid ${c.border}`,
-                boxShadow:`0 4px 24px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.06)`,
+                background: tint.bg, borderRadius:16, padding:"13px 13px",
+                border: tint.border,
+                backdropFilter: DT.dark ? "blur(16px)" : "none",
+                boxShadow: DT.dark ? "0 4px 24px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06)" : "0 8px 18px -8px rgba(0,0,0,0.26)",
                 cursor:"pointer", position:"relative", overflow:"hidden",
-                minHeight:130,
+                minHeight:102,
               }}
               onClick={() => setDashModal(c.modal)}>
-              <div style={{ position:"absolute", bottom:-30, right:-30, width:110, height:110, borderRadius:"50%", background:`radial-gradient(circle,${c.accent}1a 0%,transparent 70%)` }} />
-              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
-                <div style={{ background:`${c.accent}1a`, border:`1px solid ${c.accent}33`, borderRadius:10, padding:"6px 8px" }}>{c.icon}</div>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={c.accent} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+              <div style={{ position:"absolute", bottom:-30, right:-30, width:90, height:90, borderRadius:"50%", background: DT.dark ? `radial-gradient(circle,${cAccent}1a 0%,transparent 70%)` : "rgba(255,255,255,0.10)" }} />
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:9 }}>
+                <div style={{ background: DT.dark ? `${cAccent}1a` : "rgba(255,255,255,0.22)", border: DT.dark ? `1px solid ${cAccent}33` : "1px solid rgba(255,255,255,0.3)", borderRadius:9, padding:"5px 7px" }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">{c.iconPath}</svg>
+                </div>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
               </div>
-              <div style={{ color:c.color, fontWeight:900, fontSize:34, letterSpacing:-0.5, lineHeight:1, textShadow:`0 0 24px ${c.accent}55`, marginBottom:6 }}>{c.value}</div>
-              <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:13, marginBottom:3 }}>{c.label}</div>
-              <div style={{ color:"#64748b", fontWeight:600, fontSize:11 }}>{c.sub}</div>
+              <div style={{ color:valueColor, fontWeight:900, fontSize:26, letterSpacing:-0.5, lineHeight:1, textShadow: DT.dark ? `0 0 20px ${cAccent}55` : "none", marginBottom:4 }}>{c.value}</div>
+              <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2 }}>{c.label}</div>
+              <div style={{ color:subColor, fontWeight:600, fontSize:10 }}>{c.sub}</div>
             </div>
-          ))}
+            );
+          })}
         </div>
 
         {/* ══ ইনভেন্টরি/স্টক বিশ্লেষণ ══ */}
