@@ -39,13 +39,14 @@
   if (error) {
     // Silent background token refresh fail — user কে দেখানো উচিত না, চুপচাপ বন্ধ করো
     if (error === 'interaction_required' || error === 'login_required' || error === 'consent_required') {
-      // App-কে জানাও যে silent refresh fail হয়েছে, তারপর tab বন্ধ করো
+      // সঙ্গে সঙ্গে body hide করো — কোনো UI দেখাবে না
+      document.body.style.display = 'none';
+      // App-কে জানাও এবং tab বন্ধ করো
       var silentFailLink = 'com.protik.sbm:/oauth2redirect#error=' + encodeURIComponent(error)
         + '&state=' + encodeURIComponent(state || '');
       try { window.location.href = silentFailLink; } catch(e) {}
-      setTimeout(function() { window.close(); }, 800);
-      // card একদম দেখাবে না — body hide করো
-      document.body.style.display = 'none';
+      // যদি deep link কাজ না করে তাহলেও tab বন্ধ হবে
+      setTimeout(function() { try { window.close(); } catch(e) {} }, 1000);
       return;
     }
     // অন্য error (access_denied ইত্যাদি) — user দেখুক
