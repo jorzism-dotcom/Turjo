@@ -4858,10 +4858,14 @@ const DASH_MODAL_RANGES = [
 
 function useDashModalRange() {
   const [range, setRange]       = React.useState("today");
-  const [customDate, setCD]     = React.useState(() => new Date().toISOString().slice(0, 10));
+  const [customDate, setCD]     = React.useState(() => todayEn());
 
-  const todayKey = new Date().toISOString().slice(0, 10);
-  const toKey    = (d) => d.toISOString().slice(0, 10);
+  const todayKey = todayEn();
+  // BD time (UTC+6) থেকে রাত ২টার boundary বজায় রেখে dateKey বের করা
+  const toKey    = (d) => {
+    const bd = new Date(d.getTime() - 2 * 60 * 60 * 1000 + 6 * 60 * 60 * 1000);
+    return bd.toISOString().split("T")[0];
+  };
 
   let startKey, endKey, label;
   const now = new Date();
@@ -5054,7 +5058,14 @@ const uid      = () => Date.now().toString(36) + Math.random().toString(36).slic
 const todayStr = () => new Date().toLocaleDateString("en-US");
 const nowStr   = () => new Date().toLocaleString("en-US");
 const fmt      = (n) => Number(n).toLocaleString("en-US");
-const todayEn  = () => new Date().toISOString().split("T")[0];
+// বাংলাদেশ সময় (UTC+6) অনুযায়ী dateKey — রাত ২টায় নতুন দিন শুরু হয়
+// রাত ২টার আগে (00:00–01:59 BD) আগের দিনের dateKey ব্যবহার হবে
+const todayEn = () => {
+  // BD time = UTC + 6h, কিন্তু দিন শুরু রাত ২টায়, তাই UTC+6 থেকে আরও 2h বাদ দিলে
+  // effective offset = UTC+4 (যখন BD রাত ২টা = UTC 20:00 আগের দিন)
+  const d = new Date(Date.now() - 2 * 60 * 60 * 1000 + 6 * 60 * 60 * 1000);
+  return d.toISOString().split("T")[0];
+};
 
 // ─── Shared Profit Utilities ──────────────────────────────────────────────────
 // সব জায়গায় একই formula: cost = it.costPrice ?? p.costPrice ?? 0 (invoice-time দাম আগে)
@@ -7576,7 +7587,7 @@ function SmartBusinessMgmt() {
         target.setHours(notifHour, notifMinute, 0, 0);
         if (now >= target) target.setDate(target.getDate() + 1);
 
-        const todayKey = new Date().toISOString().slice(0, 10);
+        const todayKey = todayEn();
         const todayInvList  = (invoices || []).filter(i => i.dateKey === todayKey && !i.isSelfUse && i.status !== "voided");
         const revenue       = todayInvList.reduce((s, i) => s + (i.total || 0), 0);
         const cashSale      = todayInvList.reduce((s, i) => {
@@ -7588,11 +7599,16 @@ function SmartBusinessMgmt() {
         const bakiToday     = (txns || []).filter(t => t.dateKey === todayKey && t.type === "baki" && !_voidedIds1.has(t.invoiceId)).reduce((s, t) => s + t.amount, 0);
         const jomaToday     = (txns || []).filter(t => t.dateKey === todayKey && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal").reduce((s, t) => s + t.amount, 0);
         const totalBakiNow  = (customers || []).reduce((s, c) => s + (c.balance || 0), 0);
-        // calcProfitByProduct দিয়ে সঠিক লাভ/লস — buildSummary()-এর সাথে মিল থাকবে
+        // invoice-level আলাদা করে লাভ/লস — buildSummary()-এর সাথে মিল থাকবে
         const _prodMap    = new Map((products || []).map(p => [p.id, p]));
-        const _prodRows   = calcProfitByProduct(todayInvList, _prodMap, products || []);
-        const profitToday = _prodRows.filter(r => r.profit > 0).reduce((s, r) => s + r.profit, 0);
-        const lossToday   = Math.abs(_prodRows.filter(r => r.profit <= 0).reduce((s, r) => s + r.profit, 0));
+        const profitToday = todayInvList.reduce((s, inv) => {
+          const p = calcInvoiceProfit(inv, _prodMap);
+          return s + (p > 0 ? p : 0);
+        }, 0);
+        const lossToday = todayInvList.reduce((s, inv) => {
+          const p = calcInvoiceProfit(inv, _prodMap);
+          return s + (p < 0 ? Math.abs(p) : 0);
+        }, 0);
         const f = (n) => Math.round(n || 0).toLocaleString("en-US");
 
         if (cancelled) return;
@@ -11322,7 +11338,7 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
   const stockOut      = products.filter(p => (p.stock||0) === 0);
 
   // আজকের ক্রয় — purchase entry থেকে (_type === "pe")
-  const todayKey = new Date().toISOString().slice(0, 10);
+  const todayKey = todayEn();
   const todayPurchases = purchaseOrders.filter(p => p._type === "pe" && (p.dateKey === todayKey || (p.createdAt && p.createdAt.startsWith(todayKey))));
   const todayPurchaseTotal = todayPurchases.reduce((s, p) => s + (p.totalCost || 0), 0);
 
@@ -11948,13 +11964,16 @@ function DashPurchaseEntryModal({ T, S, products, setProducts, setStockMovements
 function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, currentUser, onGoToPurchaseEntry, setProducts, setStockMovements, setPurchaseOrders, cashLogs, setCashLogs }) {
   const [viewInv,    setViewInv]    = useState(null);
   const [viewPayInv, setViewPayInv] = useState(null);
-  const [listDate,   setListDate]   = useState(() => new Date().toISOString().slice(0, 10)); // YYYY-MM-DD
+  const [listDate,   setListDate]   = useState(() => todayEn()); // YYYY-MM-DD
   // invModal is lifted to parent (SmartBusinessMgmt) for back-button support
   const [orderQtys,  setOrderQtys]  = useState({});
   const [voidConfirm, setVoidConfirm] = useState(null);
+  // product-profit-loss মডালের accordion state — Rules of Hooks: top-level এ রাখতে হবে
+  const [expandedKeys, setExpandedKeys] = useState({});
+  const toggleExpand = (key) => setExpandedKeys(prev => ({ ...prev, [key]: !prev[key] }));
   // ── 📅 "আজকের রিপোর্ট" সেকশনের জন্য তারিখ/রেঞ্জ সিলেক্টর ──────────────────────
   const [reportRange, setReportRange] = useState("today"); // today | yesterday | custom | 7d | 30d | 90d | 180d | 365d
-  const [reportCustomDate, setReportCustomDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [reportCustomDate, setReportCustomDate] = useState(() => todayEn());
 
   // ── 💰 ক্যাশ ড্রয়ার: ওপেনিং ক্যাশ ও মালিকের/স্টাফের উইথড্রয়াল (সবাই দেখতে ও ইনপুট দিতে পারবে) ──
   // cashModal/setCashModal lifted to parent (zustand store) for hardware-back-button & nav-home support
@@ -11962,8 +11981,8 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
   const [cashNote,    setCashNote]    = useState("");
   const [cashType,    setCashType]    = useState("owner"); // "owner" | "supplier" | "expense" | "other"
   const [cashParty,   setCashParty]   = useState(""); // কোম্পানি/পক্ষের নাম (supplier/other এর জন্য)
-  const [cashHistoryDate, setCashHistoryDate] = useState(() => new Date().toISOString().slice(0, 10)); // হিস্ট্রি পেজের সিলেক্টেড তারিখ
-  const [cashHistDateTo,  setCashHistDateTo]  = useState(() => new Date().toISOString().slice(0, 10)); // কাস্টম রেঞ্জ end date
+  const [cashHistoryDate, setCashHistoryDate] = useState(() => todayEn()); // হিস্ট্রি পেজের সিলেক্টেড তারিখ
+  const [cashHistDateTo,  setCashHistDateTo]  = useState(() => todayEn()); // কাস্টম রেঞ্জ end date
   const [cashHistRangeMode, setCashHistRangeMode] = useState(false); // true = date range mode
 
   // ── 📅 dashModal ডিটেইলস পেজের তারিখ রেঞ্জ state — Rules of Hooks অনুযায়ী top-level এ unconditional call ──
@@ -12168,7 +12187,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     const customDateFrom = customDateVal;
     const customDateToVal = cashHistDateTo < customDateFrom ? customDateFrom : cashHistDateTo;
 
-    const toKey = (d) => d.toISOString().slice(0, 10);
+    const toKey = (d) => { const bd = new Date(d.getTime() - 2 * 60 * 60 * 1000 + 6 * 60 * 60 * 1000); return bd.toISOString().split("T")[0]; };
     const now = new Date();
 
     // পিরিয়ড অনুযায়ী startKey–endKey নির্ধারণ
@@ -13132,10 +13151,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
       const waTextPL = `*${shopName}* — লাভ ও লস (${dmRange.label})\n🟢 লাভ: ৳${fmt(Number(totalProfit2.toFixed(2)))} | 🔴 লস: ৳${fmt(Math.abs(Number(totalLoss2.toFixed(2))))}\n\n` +
         [...profitProducts.map(r=>`✅ ${r.name}: +৳${fmt(Number(r.totalProfit.toFixed(2)))}`), ...lossProducts.map(r=>`❌ ${r.name}: -৳${fmt(Math.abs(Number(r.totalLoss.toFixed(2))))}`)].join("\n");
 
-      // Accordion state — কোন পণ্য expand করা আছে (profit section এবং loss section আলাদা key)
-      // key format: "profit__{productName}" বা "loss__{productName}"
-      const [expandedKeys, setExpandedKeys] = React.useState({});
-      const toggleExpand = (key) => setExpandedKeys(prev => ({ ...prev, [key]: !prev[key] }));
+      // Accordion state — top-level এ defined (expandedKeys, toggleExpand)
 
       // একটি পণ্যের accordion row
       const ProductAccordionRow = ({ prodRow, type }) => {
@@ -13617,7 +13633,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
   let repStart, repEnd, repLabel;
   const isToday = reportRange === "today";
   {
-    const toKey = (d) => d.toISOString().slice(0, 10);
+    const toKey = (d) => { const bd = new Date(d.getTime() - 2 * 60 * 60 * 1000 + 6 * 60 * 60 * 1000); return bd.toISOString().split("T")[0]; };
     const now = new Date();
     if (reportRange === "today") {
       repStart = repEnd = todayKeyStr; repLabel = "আজকের";
@@ -16377,7 +16393,7 @@ function DailyNotifCard({ S, T = {}, shopName, showToast, customers = [], invoic
 
   // 📊 আজকের সারসংক্ষেপ হিসাব — বিক্রয়, লাভ/লস, বাকি, ক্যাশ ড্রয়ার ইত্যাদি
   const buildSummary = () => {
-    const todayKey = new Date().toISOString().slice(0, 10);
+    const todayKey = todayEn();
     const todayInvList  = (invoices || []).filter(i => i.dateKey === todayKey);
     const revenue       = todayInvList.reduce((s, i) => s + (i.total || 0), 0);
     const cashSale      = todayInvList.reduce((s, i) => {
@@ -20110,9 +20126,6 @@ const GDrive = {
           if (hashIdx !== -1) paramStr = deepLink.slice(hashIdx + 1);
           else if (qIdx !== -1) paramStr = deepLink.slice(qIdx + 1);
           const params = new URLSearchParams(paramStr);
-          // oauth.html থেকে error deep link এলে (interaction_required ইত্যাদি) — reject করো
-          const oauthError = params.get("error");
-          if (oauthError) { reject(new Error(oauthError)); return; }
           const token = params.get("access_token");
           if (!token) { reject(new Error("Token পাওয়া যায়নি")); return; }
           GDrive.saveToken(token);
