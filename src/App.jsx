@@ -7363,10 +7363,10 @@ function SmartBusinessMgmt() {
   }, [users, loaded]);
 
 
-  useEffect(() => { if (loaded) debouncedSave(SK.customers, customers, 1500); }, [customers, loaded]);
-  useEffect(() => { if (loaded) debouncedSave(SK.products,  products,  1500); }, [products, loaded]);
-  useEffect(() => { if (loaded) debouncedSave(SK.invoices,  invoices,  1500); }, [invoices, loaded]);
-  useEffect(() => { if (loaded) debouncedSave(SK.txns,      txns,      2000); }, [txns, loaded]);
+  useEffect(() => { if (loaded) { debouncedSave(SK.customers, customers, 1500); setBackupNeeded(true); } }, [customers, loaded]);
+  useEffect(() => { if (loaded) { debouncedSave(SK.products,  products,  1500); setBackupNeeded(true); } }, [products, loaded]);
+  useEffect(() => { if (loaded) { debouncedSave(SK.invoices,  invoices,  1500); setBackupNeeded(true); } }, [invoices, loaded]);
+  useEffect(() => { if (loaded) { debouncedSave(SK.txns,      txns,      2000); setBackupNeeded(true); } }, [txns, loaded]);
   useEffect(() => { if (loaded) debouncedSave(SK.smsLog, smsLog, 2000); }, [smsLog, loaded]);
   useEffect(() => { if (loaded) save(SK.users,     users);     }, [users, loaded]);
   useEffect(() => { if (loaded) save(SK.shopName,  shopName);  }, [shopName, loaded]);
@@ -7686,21 +7686,31 @@ function SmartBusinessMgmt() {
       try {
         let token = null;
         if (!isStaffDevice) {
+          // Admin: silent token refresh করে Firestore-এ push (staff ফোনও পাবে)
           token = await GDrive.ensureTokenSilent(GOOGLE_WEB_CLIENT_ID);
-          if (token) setGoogleDriveToken({ token, savedAt: Date.now() });
+          if (token) {
+            const tokenData = { token, savedAt: Date.now() };
+            setGoogleDriveToken(tokenData);
+            // Firestore-এ push — staff ফোন এটা দিয়েই Drive-এ backup দেবে
+            try { FSS.setSettings({ googleDriveToken: tokenData }); } catch {}
+          }
         } else {
+          // Staff: Firestore থেকে পাওয়া Admin token ব্যবহার করো
+          // expiry window ৫৮ মিনিট — Admin প্রতি ৪৫ মিনিটে refresh করে তাই overlap থাকে
           const tk = googleDriveToken;
-          const fresh = tk?.token && tk?.savedAt && (Date.now() - tk.savedAt) < 55 * 60 * 1000;
+          const fresh = tk?.token && tk?.savedAt && (Date.now() - tk.savedAt) < 58 * 60 * 1000;
           token = fresh ? tk.token : null;
         }
-        if (!token) return; // silent refresh ব্যর্থ/token নেই — এই cycle skip, পরে আবার চেষ্টা
+        if (!token) return; // token নেই/expired — এই cycle skip, পরের cycle-এ আবার চেষ্টা
         const data = buildBackupData();
         await GDrive.uploadBackup(token, { ...data, _autoBackup: true, _savedAt: new Date().toISOString() });
       } catch {}
     };
 
     const cycle = () => { runLocalBackup(); runDriveBackup(); };
-    const timer = setInterval(cycle, 5 * 60 * 1000);
+    // Admin token ৬০ মিনিটে expire — প্রতি ৪৫ মিনিটে refresh করলে staff সবসময় fresh token পাবে
+    const tokenRefreshInterval = !isStaffDevice ? 45 * 60 * 1000 : 5 * 60 * 1000;
+    const timer = setInterval(cycle, tokenRefreshInterval);
     const firstRun = setTimeout(cycle, 30000); // অ্যাপ ওপেন হওয়ার ৩০ সেকেন্ড পর প্রথমবার
 
     return () => { clearInterval(timer); clearTimeout(firstRun); };
