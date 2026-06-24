@@ -17745,16 +17745,19 @@ function Settings_({ T, S, shopName,
           <input style={{ ...S.input, fontFamily:"monospace", fontSize:12 }}
             placeholder="https://your-app.firebaseio.com"
             value={fbForm.databaseURL}
-            onChange={e => setFbForm(f => ({ ...f, databaseURL: e.target.value.trim() }))} />
+            autoCapitalize="none" autoCorrect="off" spellCheck={false} autoComplete="off"
+            onChange={e => setFbForm(f => ({ ...f, databaseURL: e.target.value.trim().replace(/^Https/i, "https") }))} />
           <label style={S.label}>API Key (Web API Key)</label>
           <input style={{ ...S.input, fontFamily:"monospace", fontSize:12 }}
             placeholder="AIzaSy..."
+            autoCapitalize="none" autoCorrect="off" spellCheck={false} autoComplete="off"
             value={fbForm.apiKey || ""}
             onChange={e => setFbForm(f => ({ ...f, apiKey: e.target.value.trim() }))} />
           <label style={S.label}>Project ID</label>
           <input style={{ ...S.input, fontFamily:"monospace", fontSize:12 }}
             placeholder="your-project-id"
             value={fbForm.projectId || ""}
+            autoCapitalize="none" autoCorrect="off" spellCheck={false} autoComplete="off"
             onChange={e => setFbForm(f => ({ ...f, projectId: e.target.value.trim() }))} />
 
           {fbTestMsg && (
