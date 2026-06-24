@@ -2649,22 +2649,34 @@ function SubscriptionGate({ children }) {
 
       // 🔥 ফিক্স: শুধু config+users সেভ করলেই হয় না — customers/products/invoices ইত্যাদি
       // actual business data রিলোডের পরের রিয়েল-টাইম listener-এর জন্য অপেক্ষা না করে
-      // এখনই Firestore থেকে একবার টেনে আনি, যাতে staff device প্রথম ওপেনেই সব data দেখতে পায়।
+      // এখনই Firestore থেকে একবার টেনে আনার চেষ্টা করি, যাতে staff device প্রথম ওপেনেই
+      // সব data দেখতে পায়। কিন্তু নেট স্লো/Firestore connect দেরি হলে এই চেষ্টা আটকে
+      // থাকতে পারে — তাই হার্ড timeout (৭ সেকেন্ড), timeout হলে নিঃশব্দে skip করি;
+      // রিলোডের পর রিয়েল-টাইম listener এমনিতেই ডেটা নিয়ে আসবে।
       if (data.shopFirebaseConfig) {
         try {
           FB.init(data.shopFirebaseConfig);
           FSS.init(data.shopFirebaseConfig);
+          const withTimeout = (p, ms, fallback) =>
+            Promise.race([p, new Promise(res => setTimeout(() => res(fallback), ms))]);
+          const T = 7000;
           const [
             customersD, productsD, invoicesD, txnsD, smsLogD,
             paymentInvoicesD, purchaseOrdersD, stockMovementsD,
             cashLogsD, suppliersD, usersD, settingsD,
           ] = await Promise.all([
-            FSS.getCollectionOnce("customers"), FSS.getCollectionOnce("products"),
-            FSS.getCollectionOnce("invoices"),  FSS.getCollectionOnce("txns"),
-            FSS.getCollectionOnce("smsLog"),    FSS.getCollectionOnce("paymentInvoices"),
-            FSS.getCollectionOnce("purchaseOrders"), FSS.getCollectionOnce("stockMovements"),
-            FSS.getCollectionOnce("cashLogs"),  FSS.getCollectionOnce("suppliers"),
-            FSS.getCollectionOnce("users"),     FSS.getSettingsOnce(),
+            withTimeout(FSS.getCollectionOnce("customers"), T, []),
+            withTimeout(FSS.getCollectionOnce("products"), T, []),
+            withTimeout(FSS.getCollectionOnce("invoices"), T, []),
+            withTimeout(FSS.getCollectionOnce("txns"), T, []),
+            withTimeout(FSS.getCollectionOnce("smsLog"), T, []),
+            withTimeout(FSS.getCollectionOnce("paymentInvoices"), T, []),
+            withTimeout(FSS.getCollectionOnce("purchaseOrders"), T, []),
+            withTimeout(FSS.getCollectionOnce("stockMovements"), T, []),
+            withTimeout(FSS.getCollectionOnce("cashLogs"), T, []),
+            withTimeout(FSS.getCollectionOnce("suppliers"), T, []),
+            withTimeout(FSS.getCollectionOnce("users"), T, []),
+            withTimeout(FSS.getSettingsOnce(), T, null),
           ]);
           if (customersD.length)       await save(SK.customers, customersD);
           if (productsD.length)        await save(SK.products, productsD);
