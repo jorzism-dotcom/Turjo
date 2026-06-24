@@ -90,13 +90,14 @@ const useAppStore = create((set) => ({
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false, error: null, info: null };
   }
   static getDerivedStateFromError(error) {
     return { hasError: true, error };
   }
   componentDidCatch(error, info) {
     console.error("[ErrorBoundary] Tab crash caught:", error, info?.componentStack || "");
+    this.setState({ info });
   }
   render() {
     if (this.state.hasError) {
@@ -110,12 +111,22 @@ class ErrorBoundary extends React.Component {
           <div style={{ fontWeight: 800, fontSize: 17, marginBottom: 8 }}>
             এই পেজে একটি সমস্যা হয়েছে
           </div>
-          <div style={{ fontSize: 12, color: sub, marginBottom: 20, wordBreak: "break-word", maxWidth: 320, margin: "0 auto 20px" }}>
+          <div style={{ fontSize: 12, color: sub, marginBottom: 12, wordBreak: "break-word", maxWidth: 320, margin: "0 auto 12px" }}>
             {this.state.error?.message || "অজানা ত্রুটি"}
           </div>
+          {this.state.error?.stack && (
+            <div style={{
+              fontSize: 10, color: sub, opacity: 0.8, textAlign: "left", maxWidth: 360,
+              margin: "0 auto 12px", maxHeight: 160, overflow: "auto", background: "#00000033",
+              borderRadius: 8, padding: 8, fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-all"
+            }}>
+              {this.state.error.stack}
+              {this.state.info?.componentStack ? "\n---component stack---\n" + this.state.info.componentStack : ""}
+            </div>
+          )}
           <button
             style={{ background: "#0ea5e9", color: "#fff", border: "none", borderRadius: 10, padding: "11px 24px", fontWeight: 700, fontSize: 14, cursor: "pointer" }}
-            onClick={() => this.setState({ hasError: false, error: null })}
+            onClick={() => this.setState({ hasError: false, error: null, info: null })}
           >
             🔄 পুনরায় চেষ্টা করুন
           </button>
@@ -21099,7 +21110,9 @@ export default function App() {
         />
       )}
       <SubscriptionGate>
-        <SmartBusinessMgmt />
+        <ErrorBoundary>
+          <SmartBusinessMgmt />
+        </ErrorBoundary>
       </SubscriptionGate>
     </>
   );
