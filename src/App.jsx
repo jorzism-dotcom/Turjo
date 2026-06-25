@@ -8780,54 +8780,7 @@ function SmartBusinessMgmt() {
 
       {/* Stock notifications moved to individual home cards */}
 
-      {/* ☁️ Google Drive Disconnect Banner — token expired, auto reconnect চলছে */}
-      {gdriveBanner && !gdriveReconnecting && (
-        <div
-          onClick={async () => {
-            setGdriveReconnecting(true);
-            showToast("🔄 Google Drive পুনরায় সংযোগ হচ্ছে...", "#4285F4");
-            try {
-              const fresh = await GDrive.requestNewToken(GOOGLE_WEB_CLIENT_ID);
-              if (fresh) {
-                const tokenData = { token: fresh, savedAt: Date.now() };
-                setGoogleDriveToken(tokenData);
-                try { FSS.setSettings({ googleDriveToken: tokenData }); } catch {}
-                setGdriveBanner(false);
-                showToast("✅ Google Drive পুনরায় সংযুক্ত হয়েছে!", "#22c55e");
-              }
-            } catch { showToast("❌ সংযোগ ব্যর্থ — আবার ট্যাপ করুন", "#ef4444"); }
-            finally { setGdriveReconnecting(false); }
-          }}
-          style={{
-            position: "fixed", bottom: 72, left: 12, right: 12, zIndex: 280,
-            background: "linear-gradient(135deg,#1a0a00,#2d1500)",
-            border: "1.5px solid #f59e0b88",
-            borderRadius: 14, padding: "10px 14px",
-            display: "flex", alignItems: "center", gap: 10,
-            boxShadow: "0 4px 24px rgba(245,158,11,0.35)",
-            animation: "slideDown 0.3s ease",
-            cursor: "pointer",
-          }}>
-          <div style={{ width: 32, height: 32, borderRadius: 10, background: "#f59e0b22", border: "1px solid #f59e0b44", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-            <svg width="16" height="16" viewBox="0 0 87.3 78" fill="none">
-              <path d="M6.6 66.85l3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3L28.6 53H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
-              <path d="M43.65 25L29.05 1c-1.35.8-2.5 1.9-3.3 3.3L1.2 48.5c-.8 1.4-1.2 2.95-1.2 4.5h28.6z" fill="#4285f4"/>
-              <path d="M73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75L86.1 57.5c.8-1.4 1.2-2.95 1.2-4.5H58.7l6.1 11.4z" fill="#00ac47"/>
-              <path d="M43.65 25L58.25 1c-1.35-.8-2.85-1-4.4-1H33.5c-1.55 0-3.05.2-4.4 1z" fill="#00832d"/>
-              <path d="M58.7 53H28.6L13.8 76.8c1.35.8 2.85 1 4.4 1h50.5c1.55 0 3.05-.2 4.4-1z" fill="#2684fc"/>
-              <path d="M73.4 26.5l-13.3-23c-.8-1.4-1.95-2.5-3.3-3.3L43.65 25l15.05 28H87.3c0-1.55-.4-3.1-1.2-4.5z" fill="#00ac47"/>
-            </svg>
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ color: "#f59e0b", fontWeight: 800, fontSize: 12 }}>Google Drive সংযোগ বিচ্ছিন্ন</div>
-            <div style={{ color: "#94a3b8", fontSize: 10, marginTop: 1 }}>ট্যাপ করুন — স্বয়ংক্রিয়ভাবে পুনরায় সংযুক্ত হবে</div>
-          </div>
-          <div style={{
-            background: "#4285F4", color: "#fff", fontSize: 10, fontWeight: 800,
-            borderRadius: 8, padding: "5px 10px", flexShrink: 0,
-          }}>🔄 সংযোগ</div>
-        </div>
-      )}
+      {/* ☁️ Google Drive Disconnect Banner — সরানো হয়েছে, auto-reconnect refresh_token দিয়ে হয় */}
 
       {toast && (() => {
         const isSuccess = toast.color === "#22c55e";
