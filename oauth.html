@@ -41,7 +41,7 @@
   var SILENT_ERRORS = ["interaction_required", "login_required", "consent_required", "access_denied"];
   if (error) {
     if (SILENT_ERRORS.indexOf(error) !== -1) {
-      var silentLink = "com.protik.sbm:/oauth2redirect#error="
+      var silentLink = "com.protik.sbm://oauth2redirect#error="
         + encodeURIComponent(error) + "&state=" + encodeURIComponent(state || "");
       try { window.location.replace(silentLink); } catch(e) {}
       var closeAttempts = [
@@ -87,7 +87,7 @@
       }
 
       // refresh_token থাকলে deep link-এ পাঠাও (App সংরক্ষণ করবে)
-      var deepLink = "com.protik.sbm:/oauth2redirect#access_token="
+      var deepLink = "com.protik.sbm://oauth2redirect#access_token="
         + encodeURIComponent(data.access_token)
         + "&state=" + encodeURIComponent(state || "")
         + (data.refresh_token ? "&refresh_token=" + encodeURIComponent(data.refresh_token) : "")
@@ -121,7 +121,7 @@
   // ── Implicit flow fallback (পুরনো token) ────────────────────────────────
   if (token) {
     document.body.style.display = "flex";
-    var deepLink2 = "com.protik.sbm:/oauth2redirect#access_token="
+    var deepLink2 = "com.protik.sbm://oauth2redirect#access_token="
       + encodeURIComponent(token) + "&state=" + encodeURIComponent(state || "");
     window.location.replace(deepLink2);
     setTimeout(function() {
