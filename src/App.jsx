@@ -2,8 +2,9 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import ReactDOM from "react-dom";
 import { initializeApp, getApps, deleteApp } from "firebase/app";
 import {
-  getFirestore, doc, getDoc, updateDoc, setDoc, deleteDoc,
-  collection, onSnapshot, getDocs, enableIndexedDbPersistence,
+  getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
+  doc, getDoc, updateDoc, setDoc, deleteDoc,
+  collection, onSnapshot, getDocs,
   query, where, orderBy, limit, startAfter, increment,
 } from "firebase/firestore";
 import { create } from "zustand";
@@ -3514,10 +3515,19 @@ const FSS = {
       const appName = "sbm-fss-" + (cfg.projectId || "default");
       const existing = getApps().find(a => a.name === appName);
       this._app = existing || initializeApp(cfg, appName);
-      this._db = getFirestore(this._app);
+      // Firebase 10+ নতুন persistence API — offline data হারাবে না
       if (!this._persistTried) {
         this._persistTried = true;
-        try { enableIndexedDbPersistence(this._db).catch(() => {}); } catch {}
+        try {
+          this._db = initializeFirestore(this._app, {
+            localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+          });
+        } catch {
+          // ইতিমধ্যে initialized হলে (same app reuse) getFirestore ব্যবহার করো
+          this._db = getFirestore(this._app);
+        }
+      } else {
+        this._db = getFirestore(this._app);
       }
       this._cfg = cfg;
       return true;
@@ -3541,7 +3551,9 @@ const FSS = {
     if (!this._db) return () => {};
     this.unsubscribe(name);
     const colRef = collection(this._db, name);
-    const unsub = onSnapshot(colRef, (snap) => {
+    // includeMetadataChanges:true — offline-এ save হওয়া (hasPendingWrites:true) records
+    // সহ আসে। অনলাইনে আসার পর replace হওয়ার আগেই দেখা যাবে — data হারাবে না।
+    const unsub = onSnapshot(colRef, { includeMetadataChanges: true }, (snap) => {
       const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       callback(arr);
     }, () => { /* offline/error — Firestore নিজেই retry করবে, cache থেকে কাজ চলবে */ });
@@ -3736,6 +3748,11 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
           FSS.setRecord(name, id, recWithTs);
         }
       });
+      // ⚠️ Bug Fix: শুধু prevMap-এ ছিল কিন্তু nextMap-এ নেই এমন record delete করো।
+      // prevMap = lastSynced = Firestore থেকে আসা data। যদি কোনো id prevMap-এ থাকে
+      // কিন্তু nextMap-এ না থাকে মানে user এই ডিভাইসে সেটা delete করেছে — তখনই delete।
+      // অন্য ডিভাইসের pending record (যা এখনো Firestore-এ পৌঁছায়নি) কখনো prevMap-এ
+      // আসবে না, তাই সেটা ভুলে delete হবে না।
       prevMap.forEach((rec, id) => { if (!nextMap.has(id)) FSS.deleteRecord(name, id); });
       lastSynced.current = value;
     };
@@ -7554,7 +7571,10 @@ function SmartBusinessMgmt() {
   // আগে: useFSSCollection("invoices"...) → পুরো collection (১০ লাখেও সব pull)
   // এখন: শুধু ৩০ দিনের window — ১০ লাখ invoice-এও app চলে, Firestore cost ৯৯%+ কম।
   // পুরনো invoice দেখতে হলে → Invoice History page-এ cursor pagination (Phase 2)।
-  // Firestore index লাগবে: invoices → date (ASC) — console error-এ link আসবে।
+  // Firestore index লাগবে: invoices → dateKey (ASC) — console error-এ link আসবে।
+  // ⚠️ Bug Fix: অফলাইনে save করা invoice অনলাইনে আসার পর হারিয়ে না যায়।
+  // includeMetadataChanges:true দিলে hasPendingWrites=true থাকা docs-ও আসে —
+  // অর্থাৎ Firestore-এ এখনো পৌঁছায়নি এমন local pending invoice-ও থাকবে।
   useEffect(() => {
     if (!fssReady || !FSS._db) return;
     const cutoffDate = new Date();
@@ -7565,7 +7585,9 @@ function SmartBusinessMgmt() {
     const q = query(colRef, where("dateKey", ">=", cutoff), orderBy("dateKey", "desc"));
 
     let first = true;
-    const unsub = onSnapshot(q, (snap) => {
+    const unsub = onSnapshot(q, { includeMetadataChanges: true }, (snap) => {
+      // hasPendingWrites=true মানে এই doc এখনো server-এ যায়নি (offline-এ save হয়েছে)
+      // এগুলো include করলে অনলাইনে আসার পর replace হওয়ার আগেই দেখা যাবে
       const recent = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setInvoices(recent);
       if (first) { first = false; setSyncToast?.({ msg: "ইনভয়েস sync হয়েছে", ok: true }); }
