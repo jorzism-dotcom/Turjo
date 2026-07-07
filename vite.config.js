@@ -7,6 +7,10 @@ export default defineConfig({
   build: {
     outDir: "dist",
     sourcemap: false,
+    // Terser-level minification — smaller APK
+    minify: "esbuild",
+    // Chunk size warning threshold
+    chunkSizeWarningLimit: 1000,
     rollupOptions: {
       external: [
         "@capacitor/browser",
@@ -18,6 +22,19 @@ export default defineConfig({
         "@capacitor/local-notifications",
         "@capacitor/push-notifications",
       ],
+      output: {
+        // Manual chunks — Firebase আলাদা, vendor আলাদা (better caching)
+        manualChunks(id) {
+          if (id.includes("firebase")) return "firebase";
+          if (id.includes("zustand")) return "vendor";
+          if (id.includes("react-virtuoso")) return "vendor";
+          if (id.includes("node_modules")) return "vendor";
+        },
+      },
     },
+  },
+  // Worker optimization
+  worker: {
+    format: "es",
   },
 });

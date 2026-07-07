@@ -22,9 +22,12 @@
     "@capacitor/local-notifications": "^6.0.0",
     "@capacitor/push-notifications": "^6.0.0",
     "zustand": "^5.0.0",
+    "react-virtuoso": "^4.10.4",
+    "recharts": "^2.15.3",
     "@e-is/capacitor-bluetooth-serial": "^6.0.3",
     "@capacitor/browser": "^6.0.0",
-    "@codetrix-studio/capacitor-google-auth": "3.3.6"
+    "@codetrix-studio/capacitor-google-auth": "3.3.6",
+    "@capacitor-mlkit/barcode-scanning": "^6.3.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
