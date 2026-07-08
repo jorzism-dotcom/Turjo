@@ -12,16 +12,6 @@ export default defineConfig({
     // Chunk size warning threshold
     chunkSizeWarningLimit: 1000,
     rollupOptions: {
-      external: [
-        "@capacitor/browser",
-        "@capacitor/filesystem",
-        "@capacitor/share",
-        "@capacitor/core",
-        "@capacitor/app",
-        "@capacitor/preferences",
-        "@capacitor/local-notifications",
-        "@capacitor/push-notifications",
-      ],
       output: {
         // Manual chunks — Firebase আলাদা, vendor আলাদা (better caching)
         manualChunks(id) {
