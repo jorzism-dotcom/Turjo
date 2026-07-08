@@ -16750,6 +16750,30 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   const [search,       setSearch]       = useState("");
   // React 18 useDeferredValue — type করলে UI block হবে না
   const deferredSearch = useDeferredValue(search);
+
+  // ── serial নম্বর সহ পণ্য তালিকা + সার্চ ফিল্টার (এই useMemo আগে ভুলবশত মুছে গিয়েছিল) ──
+  const productsWithSerialAll = useMemo(() =>
+    products.map((p, i) => ({ ...p, serial: i + 1, serialStr: String(i + 1) })),
+    [products]
+  );
+
+  const filteredAll = useMemo(() => {
+    const q = (deferredSearch || "").trim();
+    if (!q || q.startsWith("__")) return productsWithSerialAll;
+    return productsWithSerialAll
+      .map(p => ({
+        ...p,
+        _score: Math.max(
+          smartMatch(p.name, q),
+          smartMatch(p.serialStr, q),
+          smartMatch(p.company || "", q),
+          smartMatch(p.barcode || "", q)
+        )
+      }))
+      .filter(p => p._score > 0)
+      .sort((a, b) => b._score - a._score);
+  }, [productsWithSerialAll, deferredSearch]);
+
   const [activeTab,    setActiveTab]    = useState(initialTab || "retail"); // "retail" | "purchase"
   const [quickStockId, setQuickStockId]= useState(null); // product being quick-edited
   const [quickStockVal,setQuickStockVal]= useState("");
