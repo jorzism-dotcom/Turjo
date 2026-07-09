@@ -80,6 +80,8 @@ const useAppStore = create(subscribeWithSelector((set) => ({
   lastAutoBackup:    null,
   driveStatus:       null,
   backupNeeded:      false,
+  backupFailStreak:  0,     // #১০ পরপর কয়বার ব্যাকআপ ব্যর্থ হয়েছে
+  lastBackupError:   null,  // #১০ শেষ ব্যর্থতার কারণ (friendly message)
   autoBackupEnabled: false,
   lastMasterSync:    null,
   autoMasterSyncEnabled: false,
@@ -3577,6 +3579,108 @@ function applyBackupFields(d, setters) {
       setters[setterName]?.(d[f]);
     }
   });
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// PHASE 2 — নির্ভরযোগ্যতা (Reliability)
+// ══════════════════════════════════════════════════════════════════════════
+
+// ── #১৩ স্টোরেজ কোটা হ্যান্ডলিং ──────────────────────────────────────────────
+// localStorage/IndexedDB পূর্ণ হয়ে গেলে ব্রাউজার/ওয়েবভিউ যে এরর দেয় তা চেনার
+// জন্য এই হেল্পার — চেনা গেলে retry করে লাভ নেই (জায়গা নিজে থেকে ফাঁকা হবে না),
+// তাই withRetry এই কেসে সাথে সাথে থেমে যায় এবং ইউজারকে সরাসরি কার্যকর
+// পরামর্শ দেওয়া হয় ("পুরনো ব্যাকআপ মুছুন")।
+function isQuotaError(e) {
+  if (!e) return false;
+  const name = e.name || "";
+  const msg  = (e.message || "").toLowerCase();
+  return name === "QuotaExceededError"
+      || name === "NS_ERROR_DOM_QUOTA_REACHED"
+      || msg.includes("quota")
+      || msg.includes("no space") // Capacitor Filesystem-এর ডিভাইস-স্টোরেজ-পূর্ণ এরর
+      || msg.includes("disk full");
+}
+
+const StorageQuota = {
+  // navigator.storage.estimate() — সব ব্রাউজার/ওয়েবভিউতে নেই, তাই best-effort
+  async check() {
+    try {
+      if (typeof navigator !== "undefined" && navigator.storage?.estimate) {
+        const { usage = 0, quota = 0 } = await navigator.storage.estimate();
+        const pct = quota ? (usage / quota) * 100 : 0;
+        return { ok: true, usage, quota, pct, low: quota > 0 && pct > 90 };
+      }
+    } catch {}
+    return { ok: false, usage: 0, quota: 0, pct: 0, low: false };
+  },
+  // ব্যর্থতার কারণ কোটা-জনিত কিনা বুঝে ইউজার-বান্ধব বার্তা বানায়
+  friendlyMessage(e) {
+    if (isQuotaError(e)) {
+      return "ডিভাইসের স্টোরেজ প্রায় পূর্ণ — সেটিংস থেকে পুরনো ব্যাকআপ/স্ন্যাপশট মুছে জায়গা খালি করুন।";
+    }
+    return e?.message || "অজানা এরর";
+  },
+};
+
+// ── #৫ রিট্রাই + এক্সপোনেনশিয়াল ব্যাকঅফ ────────────────────────────────────
+// স্লো/অস্থির নেটওয়ার্কে একবার ব্যর্থ হলেই পুরো ব্যাকআপ আটকে না গিয়ে কয়েকবার
+// (ডিফল্ট ৩ বার) আবার চেষ্টা করে, প্রতিবার আগেরটার দ্বিগুণ অপেক্ষা করে (jitter
+// সহ, যাতে একসাথে অনেক রিট্রাই আবার একসাথেই আছড়ে না পড়ে)। কোটা-জনিত এরর হলে
+// (#১৩) সাথে সাথে থেমে যায় — retry করে লাভ নেই।
+async function withRetry(fn, { retries = 3, baseDelay = 800, onRetry } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn(attempt);
+    } catch (e) {
+      lastErr = e;
+      if (isQuotaError(e) || attempt === retries) break;
+      onRetry?.(attempt + 1, e);
+      const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 250;
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+  throw lastErr;
+}
+
+// ── #১১ রিস্টোর প্রিভিউ (dry-run) — কেন্দ্রীয় BACKUP_FIELDS রেজিস্ট্রি (#১)
+// ব্যবহার করে বর্তমান ডেটা vs ব্যাকআপ ফাইলের ডেটা তুলনা করে, id মিলিয়ে কয়টা
+// নতুন যোগ হবে/কয়টা মুছে যাবে/কয়টা বদলাবে — বাস্তবে রিস্টোর প্রয়োগ করার আগেই
+// ইউজারকে দেখায়, যাতে ভুল ফাইল/পুরনো ব্যাকআপ দিয়ে ভুলবশত ওভাররাইট না হয়।
+const BACKUP_FIELD_LABELS_BN = {
+  customers: "কাস্টমার", products: "পণ্য", invoices: "ইনভয়েস", txns: "লেনদেন",
+  smsLog: "SMS লগ", suppliers: "সাপ্লায়ার", purchaseOrders: "ক্রয় অর্ডার",
+  stockMovements: "স্টক মুভমেন্ট", cashLogs: "ক্যাশ লগ", paymentInvoices: "পেমেন্ট ইনভয়েস",
+  expenses: "খরচ", returns: "রিটার্ন", auditLogs: "অডিট লগ", quotations: "কোটেশন",
+  supplierPayments: "সাপ্লায়ার পেমেন্ট", deletedProducts: "মোছা পণ্য",
+  deletedCustomers: "মোছা কাস্টমার", users: "ইউজার",
+};
+function diffBackupFields(currentData, incomingData) {
+  if (!incomingData) return { rows: [], totalAdded: 0, totalRemoved: 0, totalChanged: 0 };
+  const rows = [];
+  let totalAdded = 0, totalRemoved = 0, totalChanged = 0;
+  BACKUP_FIELDS.forEach(f => {
+    if (incomingData[f] === undefined) return;
+    const curArr = Array.isArray(currentData?.[f]) ? currentData[f] : [];
+    const newArr = Array.isArray(incomingData[f]) ? incomingData[f] : [];
+    const curMap = {}; curArr.forEach(r => { if (r?.id != null) curMap[r.id] = r; });
+    const newIds = new Set();
+    let added = 0, changed = 0;
+    newArr.forEach(r => {
+      if (r?.id == null) return;
+      newIds.add(r.id);
+      const prev = curMap[r.id];
+      if (!prev) { added++; return; }
+      try { if (JSON.stringify(prev) !== JSON.stringify(r)) changed++; } catch {}
+    });
+    let removed = 0;
+    curArr.forEach(r => { if (r?.id != null && !newIds.has(r.id)) removed++; });
+    if (curArr.length || newArr.length) {
+      rows.push({ field: f, label: BACKUP_FIELD_LABELS_BN[f] || f, curCount: curArr.length, newCount: newArr.length, added, removed, changed });
+      totalAdded += added; totalRemoved += removed; totalChanged += changed;
+    }
+  });
+  return { rows, totalAdded, totalRemoved, totalChanged };
 }
 
 // ── #২ প্রতি-রেকর্ড content-hash — শুধু "কয়টা রেকর্ড আছে" (count) না, "কনটেন্ট
@@ -7736,6 +7840,8 @@ function SmartBusinessMgmt() {
   const lastAutoBackup   = useAppStore(s => s.lastAutoBackup);
   const driveStatus      = useAppStore(s => s.driveStatus);
   const backupNeeded     = useAppStore(s => s.backupNeeded);
+  const backupFailStreak = useAppStore(s => s.backupFailStreak);
+  const lastBackupError  = useAppStore(s => s.lastBackupError);
   const autoBackupEnabled= useAppStore(s => s.autoBackupEnabled);
   const firebaseConfig   = useAppStore(s => s.firebaseConfig);
   const firebaseEnabled  = useAppStore(s => s.firebaseEnabled);
@@ -7786,6 +7892,8 @@ function SmartBusinessMgmt() {
   const setLastAutoBackup   = useCallback((v) => _set("lastAutoBackup",   v), [_set]);
   const setDriveStatus      = useCallback((v) => _set("driveStatus",      v), [_set]);
   const setBackupNeeded     = useCallback((v) => _set("backupNeeded",     v), [_set]);
+  const setBackupFailStreak = useCallback((v) => _set("backupFailStreak", v), [_set]);
+  const setLastBackupError  = useCallback((v) => _set("lastBackupError",  v), [_set]);
   const setAnthropicKey     = useCallback((v) => _set("anthropicKey",     v), [_set]);
   const setSmsTemplates     = useCallback((v) => _set("smsTemplates",     v), [_set]);
   const setAutoBackupEnabled= useCallback((v) => _set("autoBackupEnabled",v), [_set]);
@@ -8633,12 +8741,16 @@ function SmartBusinessMgmt() {
     const data = await buildBackupData();
     try {
       // 1️⃣ Save file locally (Downloads on APK, browser download on web)
-      await FS.saveBackup(data, filename);
+      // #৫ রিট্রাই + ব্যাকঅফ — স্লো/অস্থির নেটওয়ার্কে একবার ব্যর্থ হলেই পুরো
+      // ব্যাকআপ বাদ না দিয়ে সর্বোচ্চ ৩ বার আবার চেষ্টা করে।
+      await withRetry(() => FS.saveBackup(data, filename), {
+        retries: 3, onRetry: () => showToast("↻ নেটওয়ার্ক ধীর — আবার চেষ্টা করা হচ্ছে...", "#f59e0b"),
+      });
       const ts = now.toISOString();
       setLastAutoBackup(ts);
       await save(SK.lastAutoBackup, ts);
       // 2️⃣ Save snapshot for local multi-device (use IndexedDB SnapshotDB, not raw save)
-      await SnapshotDB.save({ ...data, _savedAt: ts });
+      await withRetry(() => SnapshotDB.save({ ...data, _savedAt: ts }), { retries: 2 });
       // ব্যবসায়িক ডেটা ইতিমধ্যে Firestore-এ রিয়েল-টাইম record-level sync হয়ে
       // যাচ্ছে (useFSSCollection হুকগুলো দিয়ে) — এখানে আলাদা করে push করার
       // দরকার নেই। Google Drive ও Local File auto-backup আলাদা টাইমারে চলে।
@@ -8646,13 +8758,21 @@ function SmartBusinessMgmt() {
 
       setBackupNeeded(false);
       setDriveStatus("success");
+      // #১০ সফল হলে failure-streak রিসেট
+      setBackupFailStreak(0);
+      setLastBackupError(null);
       safeTimeout(() => setDriveStatus(null), 4000);
     } catch (e) {
       setDriveStatus("error");
-      showToast("ব্যাকআপ ব্যর্থ হয়েছে", "#ef4444");
+      // #১০ ব্যাকআপ-ব্যর্থ নোটিফিকেশন — পরপর ব্যর্থতার সংখ্যা ও কারণ persist
+      // করা হয়, যাতে Settings-এর Health card-এ ইউজার/এডমিন স্পষ্ট দেখতে পান।
+      const friendly = StorageQuota.friendlyMessage(e);
+      setBackupFailStreak((prev) => (typeof prev === "number" ? prev + 1 : 1));
+      setLastBackupError(friendly);
+      showToast(isQuotaError(e) ? "⚠️ " + friendly : "ব্যাকআপ ব্যর্থ হয়েছে (৩ বার চেষ্টার পরও)", "#ef4444");
       safeTimeout(() => setDriveStatus(null), 4000);
     }
-  }, [buildBackupData, showToast]);
+  }, [buildBackupData, showToast, setBackupFailStreak, setLastBackupError]);
 
   // ── Master Sync Engine: Firestore + Drive backup merge (_updatedAt দেখে নতুনটা জেতে) ──
   // Option B: merge করে, তারপর Drive-এও updated backup রাখে
@@ -8758,13 +8878,22 @@ function SmartBusinessMgmt() {
       };
       const now = new Date();
       try {
-        await FS.saveBackup(freshPayload, `dukan-backup-${now.toISOString().split("T")[0]}.json`);
+        // #৫ রিট্রাই + ব্যাকঅফ — Master Sync-এর শেষ ধাপেও একই সুরক্ষা
+        await withRetry(() => FS.saveBackup(freshPayload, `dukan-backup-${now.toISOString().split("T")[0]}.json`), { retries: 3 });
         const ts = now.toISOString();
         setLastAutoBackup(ts);
         await save(SK.lastAutoBackup, ts);
-        await SnapshotDB.save({ ...freshPayload, _savedAt: ts });
+        await withRetry(() => SnapshotDB.save({ ...freshPayload, _savedAt: ts }), { retries: 2 });
         setBackupNeeded(false);
-      } catch {}
+        setBackupFailStreak(0);
+        setLastBackupError(null);
+      } catch (e) {
+        // #১০ Master Sync-এর ব্যাকআপ ধাপ ব্যর্থ হলেও নীরবে হারিয়ে না গিয়ে
+        // পরপর ব্যর্থতার হিসাব রাখা হয় (মূল merge সফল হলেও এটা জানা দরকার)
+        const friendly = StorageQuota.friendlyMessage(e);
+        setBackupFailStreak((prev) => (typeof prev === "number" ? prev + 1 : 1));
+        setLastBackupError(friendly);
+      }
 
       const doneTs = new Date().toISOString();
       setLastMasterSync(doneTs);
@@ -8783,7 +8912,7 @@ function SmartBusinessMgmt() {
       setCustomers, setProducts, setInvoices, setTxns, setSmsLog,
       setPaymentInvoices, setPurchaseOrders, setStockMovements, setCashLogs, setSuppliers,
       setExpenses, setReturns, setAuditLogs, setQuotations, setSupplierPayments,
-      setLastMasterSync]);
+      setLastMasterSync, setBackupFailStreak, setLastBackupError]);
 
   // ── Hourly Auto Master Sync (Admin ফোনে, toggle on থাকলে) ──
   const _autoMasterSyncRunning = useRef(false);
@@ -8819,7 +8948,7 @@ function SmartBusinessMgmt() {
       try {
         const data = await buildBackupData();
         const dateStr = new Date().toISOString().split("T")[0];
-        await FS.saveBackup(data, `sbm-auto-${dateStr}.json`);
+        await withRetry(() => FS.saveBackup(data, `sbm-auto-${dateStr}.json`), { retries: 2 }); // #৫
         const ts = new Date().toISOString();
         setLastLocalBackup(ts);
         await save(SK.lastLocalBackup, ts);
@@ -8848,7 +8977,7 @@ function SmartBusinessMgmt() {
         }
         if (!token) return; // token নেই/expired — এই cycle skip, পরের cycle-এ আবার চেষ্টা
         const data = await buildBackupData();
-        await GDrive.uploadBackup(token, { ...data, _autoBackup: true, _savedAt: new Date().toISOString() });
+        await withRetry(() => GDrive.uploadBackup(token, { ...data, _autoBackup: true, _savedAt: new Date().toISOString() }), { retries: 2 }); // #৫
       } catch {}
     };
 
@@ -9763,7 +9892,9 @@ function SmartBusinessMgmt() {
               lastAutoBackup={lastAutoBackup} lastLocalBackup={lastLocalBackup}
               driveStatus={driveStatus} performDriveBackup={performDriveBackup}
               backupNeeded={backupNeeded}
+              backupFailStreak={backupFailStreak} lastBackupError={lastBackupError}
               buildBackupData={buildBackupData} setBackupNeeded={setBackupNeeded}
+              buildManualBackupData={buildManualBackupData} manualBackupSetters={manualBackupSetters}
               performMasterSync={performMasterSync} masterSyncStatus={masterSyncStatus} masterSyncDetail={masterSyncDetail}
               lastMasterSync={lastMasterSync} autoMasterSyncEnabled={autoMasterSyncEnabled} setAutoMasterSyncEnabled={setAutoMasterSyncEnabled}
               googleDriveToken={googleDriveToken}
@@ -20884,7 +21015,7 @@ function StaffCustomTimePicker({ T, staffName, onGrant }) {
 }
 
 function Settings_({ T, S, shopName,
- setShopName, users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, driveStatus, backupNeeded, performDriveBackup, buildBackupData, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, sessionTimeoutMin, setSessionTimeoutMin, auditLogs = [], setAuditLogs, hasPerm, fssReady = false }) {
+ setShopName, users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, driveStatus, backupNeeded, backupFailStreak, lastBackupError, performDriveBackup, buildBackupData, buildManualBackupData, manualBackupSetters, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, sessionTimeoutMin, setSessionTimeoutMin, auditLogs = [], setAuditLogs, hasPerm, fssReady = false }) {
   const [editName,    setEditName]    = useState(false);
   const [nameInput,   setNameInput]   = useState(shopName);
   const [showNewUser, setShowNewUser] = useState(false);
@@ -20924,6 +21055,10 @@ function Settings_({ T, S, shopName,
   const [showAllLogs, setShowAllLogs] = useState(false);
   // 🔥 Firebase state
   const [showFbSetup, setShowFbSetup] = useState(false);
+  // #১৩ স্টোরেজ কোটা হ্যান্ডলিং — মাউন্ট হওয়ার সময় একবার চেক করে, কম থাকলে
+  // ব্যাকআপ কার্ডে সতর্কতা দেখায় (ব্যর্থ হওয়ার আগেই)
+  const [quotaInfo, setQuotaInfo] = useState(null);
+  useEffect(() => { StorageQuota.check().then(setQuotaInfo); }, []);
   const [fbForm,      setFbForm]      = useState(firebaseConfig || { databaseURL: "", apiKey: "", projectId: "" });
   const [fbTesting,   setFbTesting]   = useState(false);
   const [fbTestMsg,   setFbTestMsg]   = useState(null);
@@ -21643,6 +21778,50 @@ function Settings_({ T, S, shopName,
                   </div>
                 </div>
               </div>
+
+              {/* ── #১৩ স্টোরেজ কোটা হ্যান্ডলিং — ব্যর্থ হওয়ার আগেই সতর্ক করে ── */}
+              {quotaInfo?.low && (
+                <div style={{
+                  marginBottom:10, borderRadius:10, border:"1px solid #f59e0b44",
+                  background:"#f59e0b14", padding:"8px 11px",
+                  display:"flex", alignItems:"center", gap:8,
+                }}>
+                  <span style={{ fontSize:14 }}>📦</span>
+                  <div style={{ color:"#f59e0b", fontSize:10, fontWeight:700 }}>
+                    ডিভাইসের স্টোরেজ প্রায় পূর্ণ ({Math.round(quotaInfo.pct)}% ব্যবহৃত) — পুরনো ব্যাকআপ মুছে জায়গা খালি করুন
+                  </div>
+                </div>
+              )}
+
+              {/* ── #১০ ব্যাকআপ-ব্যর্থ নোটিফিকেশন — টোস্ট চলে গেলেও এই ব্যানার
+                  থেকে যায় যতক্ষণ না পরের ব্যাকআপ সফল হয় (streak রিসেট হয়) ── */}
+              {backupFailStreak > 0 && (
+                <div style={{
+                  marginBottom:10, borderRadius:10, border:"1px solid #ef444444",
+                  background:"#ef444414", padding:"9px 11px",
+                  display:"flex", alignItems:"flex-start", gap:8,
+                }}>
+                  <span style={{ fontSize:15, lineHeight:1 }}>⚠️</span>
+                  <div style={{ flex:1 }}>
+                    <div style={{ color:"#ef4444", fontWeight:800, fontSize:10.5 }}>
+                      ব্যাকআপ ব্যর্থ হয়েছে {backupFailStreak > 1 ? `(পরপর ${backupFailStreak} বার)` : ""}
+                    </div>
+                    {lastBackupError && (
+                      <div style={{ color:"#94a3b8", fontSize:9.5, marginTop:2 }}>{lastBackupError}</div>
+                    )}
+                  </div>
+                  <button
+                    onClick={performDriveBackup}
+                    style={{
+                      background:"#ef444422", border:"1px solid #ef444455", borderRadius:7,
+                      padding:"4px 9px", color:"#ef4444", fontSize:9.5, fontWeight:800,
+                      cursor:"pointer", fontFamily:"inherit", whiteSpace:"nowrap",
+                    }}
+                  >
+                    ↻ আবার চেষ্টা
+                  </button>
+                </div>
+              )}
 
               {/* ── #৩ Backup Health — Drive/Local/Master Sync তিনটার "কতক্ষণ আগে"
                   একসাথে, স্ট্যালনেস অনুযায়ী রঙ বদলায় (২৪ ঘণ্টার কম=সবুজ,
@@ -23315,6 +23494,11 @@ function GoogleDriveSection({ data, setters, showToast, T, S }) {
   const [autoEnabled, setAutoEnabled] = useState(() => localStorage.getItem("sbm_gd_auto") === "1");
   const [autoInterval, setAutoInterval] = useState(() => parseInt(localStorage.getItem("hg_gd_interval") || "30"));
   const [confirmRestore, setConfirmRestore] = useState(false);
+  // #১১ রিস্টোর প্রিভিউ (dry-run) — কনফার্ম করার আগে ফাইল ডাউনলোড করে
+  // current vs incoming ডেটার diff দেখানো হয়
+  const [restorePreview, setRestorePreview] = useState(null); // { rows, totalAdded, totalRemoved, totalChanged }
+  const [previewData, setPreviewData] = useState(null); // ফেচ করা raw backup — কনফার্মে পুনরায় ডাউনলোড এড়াতে
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [status, setStatus] = useState("idle"); // idle | success | error
   const [statusMsg, setStatusMsg] = useState("");
   const [needAuth, setNeedAuth] = useState(false);
@@ -23351,9 +23535,10 @@ function GoogleDriveSection({ data, setters, showToast, T, S }) {
         try { token = await getFirebaseGoogleToken(); }
         catch { return; } // silent fail
       }
-      await GDrive.uploadBackup(token, {
+      // #৫ রিট্রাই + ব্যাকঅফ — নিঃশব্দ auto-backup-এও প্রযোজ্য
+      await withRetry(() => GDrive.uploadBackup(token, {
         ...data, _autoBackup: true, _savedAt: new Date().toISOString(),
-      });
+      }), { retries: 2 });
       const now = new Date().toISOString();
       localStorage.setItem("sbm_gd_last_sync", now);
       setLastSync(now);
@@ -23411,15 +23596,39 @@ function GoogleDriveSection({ data, setters, showToast, T, S }) {
   };
 
   const handleRestore = async () => {
-    if (!confirmRestore) { setConfirmRestore(true); return; }
+    // ── ধাপ ১: এখনো কনফার্ম করা হয়নি — ফাইল ডাউনলোড করে dry-run প্রিভিউ দেখাও (#১১) ──
+    if (!confirmRestore) {
+      setPreviewLoading(true); setStatus("idle"); setStatusMsg("");
+      try {
+        let token = localStorage.getItem("sbm_gd_token");
+        if (!token || GDrive.isTokenExpired()) {
+          try { token = await getFirebaseGoogleToken(); }
+          catch { setNeedAuth(true); setStatus("error"); setStatusMsg("পুনরায় Google লগইন করুন"); setPreviewLoading(false); return; }
+        }
+        // #৫ রিট্রাই + ব্যাকঅফ
+        const d = await withRetry(() => GDrive.downloadBackup(token), { retries: 2 });
+        const valid = validateBackup(d);
+        if (!valid.ok) {
+          setStatus("error"); setStatusMsg(`ব্যাকআপ যাচাই ব্যর্থ: ${valid.msg}`);
+          setPreviewLoading(false); return;
+        }
+        setPreviewData(d);
+        setRestorePreview(diffBackupFields(data, d));
+        setConfirmRestore(true);
+      } catch (e) {
+        setStatus("error"); setStatusMsg(`প্রিভিউ আনতে ব্যর্থ: ${StorageQuota.friendlyMessage(e)}`);
+      }
+      setPreviewLoading(false);
+      return;
+    }
+    // ── ধাপ ২: কনফার্মড — আগে ফেচ করা ডেটাই প্রয়োগ করো (আবার ডাউনলোড না করে) ──
     setRestoring(true); setConfirmRestore(false);
     try {
-      let token = localStorage.getItem("sbm_gd_token");
-      if (!token || GDrive.isTokenExpired()) {
-        try { token = await getFirebaseGoogleToken(); }
-        catch { setNeedAuth(true); setStatus("error"); setStatusMsg("পুনরায় Google লগইন করুন"); setRestoring(false); return; }
-      }
-      const d = await GDrive.downloadBackup(token);
+      const d = previewData || await (async () => {
+        let token = localStorage.getItem("sbm_gd_token");
+        if (!token || GDrive.isTokenExpired()) token = await getFirebaseGoogleToken();
+        return withRetry(() => GDrive.downloadBackup(token), { retries: 2 });
+      })();
       const valid = validateBackup(d);
       if (!valid.ok) {
         setStatus("error"); setStatusMsg(`ব্যাকআপ যাচাই ব্যর্থ: ${valid.msg}`);
@@ -23429,8 +23638,9 @@ function GoogleDriveSection({ data, setters, showToast, T, S }) {
       setStatus("success"); setStatusMsg(`ডেটা পুনরুদ্ধার সম্পন্ন ✓ (${valid.counts.customers} কাস্টমার, ${valid.counts.invoices} ইনভয়েস)${contentIssueSuffix(valid)}`);
       showToast("♻️ Google Drive থেকে রিস্টোর সম্পন্ন!");
     } catch (e) {
-      setStatus("error"); setStatusMsg(`রিস্টোর ব্যর্থ: ${e.message}`);
+      setStatus("error"); setStatusMsg(`রিস্টোর ব্যর্থ: ${StorageQuota.friendlyMessage(e)}`);
     }
+    setPreviewData(null); setRestorePreview(null);
     setRestoring(false);
   };
 
@@ -23446,7 +23656,7 @@ function GoogleDriveSection({ data, setters, showToast, T, S }) {
   };
 
   const GD_BLUE = "#4285F4";
-  const isWorking = syncing || restoring;
+  const isWorking = syncing || restoring || previewLoading;
 
   return (
     <div className="sbm-backup-card" style={{
@@ -23709,17 +23919,52 @@ function GoogleDriveSection({ data, setters, showToast, T, S }) {
                     opacity: restoring ? 0.8 : 1,
                   }}
                 >
-                  {restoring ? (
+                  {(restoring || previewLoading) ? (
                     <span style={{ animation: "hg-spin 1s linear infinite", display: "inline-block", fontSize: 20 }}>◌</span>
                   ) : (
                     <span style={{ fontSize: 22 }}>{confirmRestore ? "⚠️" : "♻️"}</span>
                   )}
-                  <span>{restoring ? "রিস্টোর হচ্ছে..." : confirmRestore ? "নিশ্চিত করুন?" : "রিস্টোর করুন"}</span>
+                  <span>{restoring ? "রিস্টোর হচ্ছে..." : previewLoading ? "প্রিভিউ আনা হচ্ছে..." : confirmRestore ? "নিশ্চিত করুন?" : "রিস্টোর করুন"}</span>
                 </button>
               </div>
+
+              {/* ── #১১ রিস্টোর প্রিভিউ (dry-run) — কনফার্ম করার আগে কী বদলাবে দেখায় ── */}
+              {confirmRestore && restorePreview && (
+                <div style={{
+                  background: "#ef444410", border: "1px solid #ef444433", borderRadius: 12,
+                  padding: "10px 12px", marginBottom: 4, display: "flex", flexDirection: "column", gap: 6,
+                }}>
+                  <div style={{ color: "#ef4444", fontWeight: 800, fontSize: 11 }}>
+                    ⚠️ রিস্টোর করলে যা বদলাবে (প্রিভিউ):
+                  </div>
+                  <div style={{ display: "flex", gap: 8, fontSize: 10, fontWeight: 700 }}>
+                    <span style={{ color: "#22c55e" }}>+{restorePreview.totalAdded} নতুন</span>
+                    <span style={{ color: "#f59e0b" }}>~{restorePreview.totalChanged} পরিবর্তিত</span>
+                    <span style={{ color: "#ef4444" }}>-{restorePreview.totalRemoved} মুছে যাবে</span>
+                  </div>
+                  {restorePreview.rows.filter(r => r.added || r.removed || r.changed).length > 0 ? (
+                    <div style={{ maxHeight: 130, overflowY: "auto", display: "flex", flexDirection: "column", gap: 3 }}>
+                      {restorePreview.rows.filter(r => r.added || r.removed || r.changed).map(r => (
+                        <div key={r.field} style={{ display: "flex", justifyContent: "space-between", fontSize: 9.5 }}>
+                          <span style={{ color: "#cbd5e1" }}>{r.label}</span>
+                          <span style={{ color: "#94a3b8" }}>
+                            {r.curCount}→{r.newCount}
+                            {r.added ? <span style={{ color: "#22c55e" }}> +{r.added}</span> : null}
+                            {r.changed ? <span style={{ color: "#f59e0b" }}> ~{r.changed}</span> : null}
+                            {r.removed ? <span style={{ color: "#ef4444" }}> -{r.removed}</span> : null}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ color: "#64748b", fontSize: 9.5 }}>বর্তমান ডেটার সাথে কোনো পার্থক্য নেই।</div>
+                  )}
+                </div>
+              )}
+
               {confirmRestore && (
                 <button
-                  onClick={() => setConfirmRestore(false)}
+                  onClick={() => { setConfirmRestore(false); setRestorePreview(null); setPreviewData(null); }}
                   style={{
                     background: "none", border: "1px solid #334155",
                     borderRadius: 10, padding: "8px", color: "#64748b",
@@ -23838,6 +24083,11 @@ function LocalStorageSection({ data, setters, showToast, T, S }) {
   const [restoreSource, setRestoreSource] = useState("snapshot"); // snapshot | file
   const fileRef = useRef(null);
   const autoTimer = useRef(null);
+  // #১১ রিস্টোর প্রিভিউ (dry-run) — স্ন্যাপশট ও ফাইল দুই পাথের জন্যই
+  const [snapPreview, setSnapPreview] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [pendingFile, setPendingFile] = useState(null); // { data, valid } — ফাইল রিস্টোর কনফার্মের অপেক্ষায়
+  const [filePreview, setFilePreview] = useState(null);
 
   // ── 🔐 E2E Encryption state ──────────────────────────────────────────────
   const [encryptEnabled, setEncryptEnabled] = useState(() => {
@@ -23976,14 +24226,29 @@ function LocalStorageSection({ data, setters, showToast, T, S }) {
   };
 
   const handleRestoreSnapshot = async () => {
-    if (!confirmRestore) { setConfirmRestore(true); return; }
-    const snap = await LocalBackup.load();
-    if (!snap) { setStatus("error"); setStatusMsg("কোনো স্ন্যাপশট পাওয়া যায়নি"); setConfirmRestore(false); return; }
-    const valid = validateBackup(snap);
-    if (!valid.ok) { setStatus("error"); setStatusMsg("স্ন্যাপশট যাচাই ব্যর্থ: " + valid.msg); setConfirmRestore(false); return; }
+    // ── ধাপ ১: প্রথম ক্লিকে dry-run প্রিভিউ দেখাও, এখনো প্রয়োগ করো না (#১১) ──
+    if (!confirmRestore) {
+      setPreviewLoading(true);
+      try {
+        const snap = await withRetry(() => LocalBackup.load(), { retries: 2 }); // #৫
+        if (!snap) { setStatus("error"); setStatusMsg("কোনো স্ন্যাপশট পাওয়া যায়নি"); setPreviewLoading(false); return; }
+        const valid = validateBackup(snap);
+        if (!valid.ok) { setStatus("error"); setStatusMsg("স্ন্যাপশট যাচাই ব্যর্থ: " + valid.msg); setPreviewLoading(false); return; }
+        setSnapPreview({ snap, valid, diff: diffBackupFields(data, snap) });
+        setConfirmRestore(true);
+      } catch (e) {
+        setStatus("error"); setStatusMsg("প্রিভিউ ব্যর্থ: " + StorageQuota.friendlyMessage(e));
+      }
+      setPreviewLoading(false);
+      return;
+    }
+    // ── ধাপ ২: কনফার্মড — প্রিভিউ করা স্ন্যাপশটই প্রয়োগ করো ──
+    const { snap, valid } = snapPreview || {};
+    if (!snap) { setConfirmRestore(false); return; }
     applyBackupFields(snap, setters);
     setStatus("success"); setStatusMsg(`স্ন্যাপশট রিস্টোর সম্পন্ন ✓ (${valid.counts.customers} কাস্টমার)${contentIssueSuffix(valid)}`);
     setConfirmRestore(false);
+    setSnapPreview(null);
     showToast("♻️ লোকাল স্ন্যাপশট রিস্টোর সম্পন্ন!");
     // Refresh snapshot info display after restore
     try {
@@ -24014,14 +24279,24 @@ function LocalStorageSection({ data, setters, showToast, T, S }) {
       // Validation
       const valid = validateBackup(d);
       if (!valid.ok) throw new Error(valid.msg);
-      applyRestoredData(d, valid);
-      showToast("📁 ফাইল থেকে রিস্টোর সম্পন্ন!");
+      // #১১ সরাসরি প্রয়োগ না করে আগে dry-run প্রিভিউ দেখাও — ভুল/পুরনো ফাইল
+      // বেছে নিলে ইউজার প্রয়োগের আগেই বুঝতে পারবেন
+      setPendingFile({ d, valid });
+      setFilePreview(diffBackupFields(data, d));
     } catch (err) {
       setStatus("error"); setStatusMsg("ত্রুটি: " + err.message);
     }
     setRestoring(false);
     e.target.value = "";
   };
+
+  const confirmFileRestore = () => {
+    if (!pendingFile) return;
+    applyRestoredData(pendingFile.d, pendingFile.valid);
+    showToast("📁 ফাইল থেকে রিস্টোর সম্পন্ন!");
+    setPendingFile(null); setFilePreview(null);
+  };
+  const cancelFileRestore = () => { setPendingFile(null); setFilePreview(null); };
 
   // রিস্টোর করা data সব setter-এ বসানো — plain ও decrypted দুটোতেই reuse হয়
   const applyRestoredData = (d, valid) => {
@@ -24303,18 +24578,51 @@ function LocalStorageSection({ data, setters, showToast, T, S }) {
                     </div>
                     <button
                       onClick={handleRestoreSnapshot}
+                      disabled={previewLoading}
                       style={{
                         width: "100%", padding: "12px", borderRadius: 12,
                         border: confirmRestore ? "2px solid #ef4444" : `1px solid ${GREEN}44`,
                         background: confirmRestore ? "#ef444422" : `${GREEN}15`,
                         color: confirmRestore ? "#ef4444" : GREEN,
-                        fontWeight: 800, fontSize: 13, cursor: "pointer", fontFamily: "inherit",
+                        fontWeight: 800, fontSize: 13, cursor: previewLoading ? "not-allowed" : "pointer", fontFamily: "inherit",
+                        opacity: previewLoading ? 0.7 : 1,
                       }}
                     >
-                      {confirmRestore ? "✓ হ্যাঁ, রিস্টোর করুন" : "স্ন্যাপশট থেকে রিস্টোর"}
+                      {previewLoading ? "প্রিভিউ আনা হচ্ছে..." : confirmRestore ? "✓ হ্যাঁ, রিস্টোর করুন" : "স্ন্যাপশট থেকে রিস্টোর"}
                     </button>
+                    {/* #১১ dry-run প্রিভিউ */}
+                    {confirmRestore && snapPreview?.diff && (
+                      <div style={{
+                        background: "#ef444410", border: "1px solid #ef444433", borderRadius: 10,
+                        padding: "9px 11px", marginTop: 8, display: "flex", flexDirection: "column", gap: 6,
+                      }}>
+                        <div style={{ color: "#ef4444", fontWeight: 800, fontSize: 11 }}>⚠️ যা বদলাবে (প্রিভিউ):</div>
+                        <div style={{ display: "flex", gap: 8, fontSize: 10, fontWeight: 700 }}>
+                          <span style={{ color: "#22c55e" }}>+{snapPreview.diff.totalAdded} নতুন</span>
+                          <span style={{ color: "#f59e0b" }}>~{snapPreview.diff.totalChanged} পরিবর্তিত</span>
+                          <span style={{ color: "#ef4444" }}>-{snapPreview.diff.totalRemoved} মুছে যাবে</span>
+                        </div>
+                        {snapPreview.diff.rows.filter(r => r.added || r.removed || r.changed).length > 0 ? (
+                          <div style={{ maxHeight: 120, overflowY: "auto", display: "flex", flexDirection: "column", gap: 3 }}>
+                            {snapPreview.diff.rows.filter(r => r.added || r.removed || r.changed).map(r => (
+                              <div key={r.field} style={{ display: "flex", justifyContent: "space-between", fontSize: 9.5 }}>
+                                <span style={{ color: "#cbd5e1" }}>{r.label}</span>
+                                <span style={{ color: "#94a3b8" }}>
+                                  {r.curCount}→{r.newCount}
+                                  {r.added ? <span style={{ color: "#22c55e" }}> +{r.added}</span> : null}
+                                  {r.changed ? <span style={{ color: "#f59e0b" }}> ~{r.changed}</span> : null}
+                                  {r.removed ? <span style={{ color: "#ef4444" }}> -{r.removed}</span> : null}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div style={{ color: "#64748b", fontSize: 9.5 }}>বর্তমান ডেটার সাথে কোনো পার্থক্য নেই।</div>
+                        )}
+                      </div>
+                    )}
                     {confirmRestore && (
-                      <button onClick={() => setConfirmRestore(false)} style={{
+                      <button onClick={() => { setConfirmRestore(false); setSnapPreview(null); }} style={{
                         width: "100%", marginTop: 6, padding: "10px",
                         borderRadius: 10, border: "1px solid #334155",
                         background: "none", color: "#64748b",
@@ -24356,6 +24664,51 @@ function LocalStorageSection({ data, setters, showToast, T, S }) {
                     <>📂 ফাইল নির্বাচন করুন</>
                   )}
                 </button>
+
+                {/* #১১ ফাইল রিস্টোর dry-run প্রিভিউ — ফাইল বেছে নেওয়ার পর সরাসরি প্রয়োগ না
+                    করে আগে diff দেখানো হয়, তারপর ইউজার কনফার্ম করলে প্রয়োগ হয় */}
+                {pendingFile && filePreview && (
+                  <div style={{
+                    background: "#ef444410", border: "1px solid #ef444433", borderRadius: 10,
+                    padding: "9px 11px", marginTop: 10, display: "flex", flexDirection: "column", gap: 6,
+                  }}>
+                    <div style={{ color: "#ef4444", fontWeight: 800, fontSize: 11 }}>⚠️ এই ফাইল থেকে রিস্টোর করলে যা বদলাবে:</div>
+                    <div style={{ display: "flex", gap: 8, fontSize: 10, fontWeight: 700 }}>
+                      <span style={{ color: "#22c55e" }}>+{filePreview.totalAdded} নতুন</span>
+                      <span style={{ color: "#f59e0b" }}>~{filePreview.totalChanged} পরিবর্তিত</span>
+                      <span style={{ color: "#ef4444" }}>-{filePreview.totalRemoved} মুছে যাবে</span>
+                    </div>
+                    {filePreview.rows.filter(r => r.added || r.removed || r.changed).length > 0 ? (
+                      <div style={{ maxHeight: 120, overflowY: "auto", display: "flex", flexDirection: "column", gap: 3 }}>
+                        {filePreview.rows.filter(r => r.added || r.removed || r.changed).map(r => (
+                          <div key={r.field} style={{ display: "flex", justifyContent: "space-between", fontSize: 9.5 }}>
+                            <span style={{ color: "#cbd5e1" }}>{r.label}</span>
+                            <span style={{ color: "#94a3b8" }}>
+                              {r.curCount}→{r.newCount}
+                              {r.added ? <span style={{ color: "#22c55e" }}> +{r.added}</span> : null}
+                              {r.changed ? <span style={{ color: "#f59e0b" }}> ~{r.changed}</span> : null}
+                              {r.removed ? <span style={{ color: "#ef4444" }}> -{r.removed}</span> : null}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div style={{ color: "#64748b", fontSize: 9.5 }}>বর্তমান ডেটার সাথে কোনো পার্থক্য নেই।</div>
+                    )}
+                    <div style={{ display: "flex", gap: 8, marginTop: 2 }}>
+                      <button onClick={confirmFileRestore} style={{
+                        flex: 1, padding: "9px", borderRadius: 9, border: "2px solid #ef4444",
+                        background: "#ef444422", color: "#ef4444", fontWeight: 800, fontSize: 12,
+                        cursor: "pointer", fontFamily: "inherit",
+                      }}>✓ হ্যাঁ, প্রয়োগ করুন</button>
+                      <button onClick={cancelFileRestore} style={{
+                        flex: 1, padding: "9px", borderRadius: 9, border: "1px solid #334155",
+                        background: "none", color: "#64748b", fontWeight: 700, fontSize: 12,
+                        cursor: "pointer", fontFamily: "inherit",
+                      }}>বাতিল</button>
+                    </div>
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -25095,7 +25448,9 @@ const SnapshotDB = {
         localStorage.setItem("sbm_snap_last", new Date().toISOString());
         return { ok: true, slot: 1, fallback: true };
       } catch (e2) {
-        return { ok: false, error: e2.message };
+        // #১৩ স্টোরেজ কোটা হ্যান্ডলিং — IndexedDB এবং localStorage দুটোই ব্যর্থ
+        // হলে (প্রায়ই কোটা-জনিত), ইউজারকে কার্যকর পরামর্শসহ friendly বার্তা
+        return { ok: false, error: e2.message, quota: isQuotaError(e2) || isQuotaError(e), friendlyError: StorageQuota.friendlyMessage(isQuotaError(e2) ? e2 : e) };
       }
     }
   },
