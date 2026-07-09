@@ -3803,17 +3803,13 @@ const FSS = {
   },
 
   // 🗑️ Firestore-এর সব ব্যবসায়িক ডেটা (সব collection + settings) মুছে শূন্য থেকে শুরু
-  async clearAllData(onProgress) {
-    if (!this._db) return { ok: false, msg: "Firestore সংযুক্ত নেই" };
-    const total = FSS_COLLECTIONS.length;
-    let done = 0;
-    const errors = [];
-    // 🔴 ফিক্স: আগে কালেকশনগুলো একটার পর একটা (sequential for-loop) মোছা হতো —
-    // স্লো নেটওয়ার্কে অনেক সময় লাগত (১৭টা কালেকশন × রাউন্ড-ট্রিপ)। এখন সবগুলো
-    // একসাথে (parallel, Promise.all) প্রসেস হয়, আর প্রতি কালেকশনে individual
-    // deleteDoc()-এর বদলে writeBatch (৫০০/ব্যাচ) ব্যবহার হয় — নেটওয়ার্ক রাউন্ড-ট্রিপ
-    // অনেক কমে যায়, এবং কোনো কালেকশন ব্যর্থ হলে বাকিগুলো তবুও চলতে থাকে।
-    await Promise.all(FSS_COLLECTIONS.map(async (coll) => {
+  // 🔴 ফিক্স: একটা কালেকশন সম্পূর্ণ খালি না হওয়া পর্যন্ত (delete + verify), সর্বোচ্চ
+  // ৩ বার চেষ্টা করে, প্রতি চেষ্টার মাঝে ছোট backoff দিয়ে — স্লো/অস্থির নেটওয়ার্কে
+  // একটা চেষ্টা মাঝপথে ব্যর্থ (partial batch commit) হলেও এখন এটা নিজে থেকে সামলে
+  // নেয়, caller-কে "আবার Master Reset চালান" বলার আগে অ্যাপ নিজেই retry করে।
+  async _clearCollectionWithRetry(coll, maxAttempts = 3) {
+    let lastLeft = -1;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const snap = await getDocs(collection(this._db, coll));
         const docs = snap.docs;
@@ -3823,52 +3819,39 @@ const FSS = {
           chunk.forEach(d => batch.delete(d.ref));
           await batch.commit();
         }
+        // ✅ ডিলিট শেষে সত্যিই খালি হয়েছে কিনা যাচাই — এখানেই আগে ধরা পড়ত না
+        const verify = await getDocs(collection(this._db, coll));
+        lastLeft = verify.size;
+        if (lastLeft === 0) return { ok: true };
       } catch (e) {
-        errors.push(`${coll}: ${e?.message || "ব্যর্থ"}`);
-      } finally {
-        done++;
-        try { onProgress?.(done, total); } catch {}
+        lastLeft = -1; // ব্যর্থ — পরের attempt-এ আবার চেষ্টা
       }
+      if (attempt < maxAttempts) await new Promise(r => setTimeout(r, 800 * attempt));
+    }
+    return { ok: false, left: lastLeft };
+  },
+
+  async clearAllData(onProgress) {
+    if (!this._db) return { ok: false, msg: "Firestore সংযুক্ত নেই" };
+    const total = FSS_COLLECTIONS.length + 1; // +1 = "stats"
+    let done = 0;
+    const errors = [];
+    // 🔴 ফিক্স: আগে কালেকশনগুলো একটার পর একটা (sequential for-loop) মোছা হতো —
+    // স্লো নেটওয়ার্কে অনেক সময় লাগত (১৭টা কালেকশন × রাউন্ড-ট্রিপ)। এখন সবগুলো
+    // একসাথে (parallel, Promise.all) প্রসেস হয়, প্রতিটা কালেকশন retry+verify সহ
+    // (_clearCollectionWithRetry) — কোনো একটা কালেকশন প্রথম চেষ্টায় ব্যর্থ/আংশিক
+    // হলে বাকিগুলোর জন্য অপেক্ষা না করেই নিজে থেকে আবার চেষ্টা করে।
+    await Promise.all([...FSS_COLLECTIONS, "stats"].map(async (coll) => {
+      const res = await this._clearCollectionWithRetry(coll);
+      if (!res.ok) errors.push(`${coll}: ${res.left >= 0 ? res.left + "টি রেকর্ড এখনো আছে (৩ বার চেষ্টার পরও)" : "ব্যর্থ"}`);
+      done++;
+      try { onProgress?.(done, total); } catch {}
     }));
     try { await deleteDoc(doc(this._db, "settings", "main")); } catch {}
 
-    // 🔴 ফিক্স: "stats" (dateKey/monthKey-ভিত্তিক Dashboard aggregation ডকুমেন্ট,
-    // updateStats()-এ লেখা হয়) FSS_COLLECTIONS-এ নেই — এটা id-ভিত্তিক ব্যবসায়িক
-    // রেকর্ড না, Master Sync merge/backup রেজিস্ট্রিতে থাকা ঠিক হতো না, তাই
-    // আলাদাভাবে এখানে সরাসরি মোছা হচ্ছে। এটা এখনো Dashboard UI-তে সরাসরি
-    // ব্যবহৃত হয় না (আপাতত শুধু connection warm রাখতে subscribe করা), কিন্তু
-    // "ফুল রিসেট" দাবি করলে সব Firestore কালেকশনই খালি হওয়া উচিত, বাদ না।
-    try {
-      const statsSnap = await getDocs(collection(this._db, "stats"));
-      const statsDocs = statsSnap.docs;
-      for (let i = 0; i < statsDocs.length; i += 500) {
-        const chunk = statsDocs.slice(i, i + 500);
-        const batch = writeBatch(this._db);
-        chunk.forEach(d => batch.delete(d.ref));
-        await batch.commit();
-      }
-    } catch (e) {
-      errors.push(`stats: ${e?.message || "ব্যর্থ"}`);
-    }
-
-    // 🔴 ফিক্স: আগে এখানে কোনো ভেরিফিকেশন ছিল না — মুছার চেষ্টা ব্যর্থ/আংশিক হলেও
-    // caller-কে সবসময় "সফল" ধরে নিতে হতো। এখন সত্যিই সব collection খালি হয়েছে
-    // কিনা নিশ্চিত করে তবেই ok:true রিটার্ন করা হয়।
-    try {
-      const checks = await Promise.all(FSS_COLLECTIONS.map(async (coll) => {
-        const snap = await getDocs(collection(this._db, coll));
-        return { coll, left: snap.size };
-      }));
-      const statsCheck = await getDocs(collection(this._db, "stats"));
-      checks.push({ coll: "stats", left: statsCheck.size });
-      const leftover = checks.filter(c => c.left > 0);
-      if (leftover.length) {
-        errors.push(...leftover.map(c => `${c.coll}: ${c.left}টি রেকর্ড এখনো আছে`));
-      }
-    } catch (e) {
-      errors.push("যাচাই ব্যর্থ: " + (e?.message || ""));
-    }
-
+    // ✅ ভেরিফিকেশন এখন _clearCollectionWithRetry-এর ভেতরেই হয়ে গেছে (প্রতিটা
+    // কালেকশন সত্যিই খালি না হওয়া পর্যন্ত retry করে) — তাই এখানে আলাদা করে আবার
+    // পুরো DB re-scan করার দরকার নেই, errors অ্যারে থেকেই চূড়ান্ত ফলাফল বোঝা যায়।
     if (errors.length) return { ok: false, msg: errors.join("; ") };
     return { ok: true };
   },
