@@ -86,6 +86,18 @@ const useAppStore = create(subscribeWithSelector((set) => ({
   lastMasterSync:    null,
   autoMasterSyncEnabled: false,
 
+  // ── #১৯ Automated Restore Self-Test ──────────────────────────────────────
+  restoreTestAt:     null,   // ISO — শেষবার self-test কবে চলেছে
+  restoreTestOk:     null,   // null=এখনো চলেনি, true=পাস, false=ফেইল
+  restoreTestDetail: null,   // ফেইল হলে সংক্ষিপ্ত কারণ (কোন ফিল্ডে mismatch)
+  restoreTestFailStreak: 0,  // পরপর কয়বার self-test ফেইল করেছে
+
+  // ── #৭ স্কিমা মাইগ্রেশন সিস্টেম ───────────────────────────────────────────
+  schemaMigrationStats: null, // { lastRunAt, totalMigrated, perCollection:{name:count} }
+
+  // ── #৬ কনফ্লিক্ট রেজোলিউশন ────────────────────────────────────────────────
+  pendingConflicts:  [],     // [{ id, collection, recordId, local, remote, fields, detectedAt }]
+
   // ── Firebase ─────────────────────────────────────────────────────────────
   firebaseConfig:    null,
   firebaseEnabled:   false,
@@ -2478,6 +2490,19 @@ const BKASH_NUMBER = "01611062402";   // আপনার bKash নম্বর
 const MONTHLY_PRICE = 599;            // মাসিক মূল্য (টাকা)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── ডেভেলপার/সাপোর্ট প্যানেল ভিজিবিলিটি (admin.html-controlled) ──────────────
+// আগে শপ-নেম/ভার্সনে ৫-৭ বার ট্যাপ করলে হিডেন ডেভেলপার প্যানেল খুলত। এখন সেটার
+// বদলে admin.html থেকে প্রতি দোকানের subscriptions/{phone} ডকুমেন্টে
+// devPanelVisible ফ্ল্যাগ টগল করলেই সেই দোকানের Settings-এ checksum/hash/
+// retention/Firestore-internals ইত্যাদি টেকনিক্যাল অংশ দেখা/লুকানো যায় —
+// দোকানদারের হাতে self-service না রেখে সাপোর্ট-নিয়ন্ত্রিত রাখা হয়েছে।
+// checkSubscription()-এ (নিচে) subscriptions ডক পড়ার সময়ই এটা সেট হয়, তাই এই
+// পুরো অ্যাপে Settings/BackupSection যেখানেই লাগবে সরাসরি DevPanelFlag.visible
+// পড়লেই চলে — আলাদা prop থ্রেড করার দরকার নেই। রিয়েল-টাইম না, অ্যাপ চালু/
+// রিস্টার্টে এফেক্ট হয় (checkSubscription-ই একবার চলে, subscription-check ঠিক
+// যেভাবে কাজ করে সেভাবেই — লাইভ লিসেনার ইচ্ছাকৃতভাবে বাদ, সরলতার জন্য)।
+const DevPanelFlag = { visible: false };
+
 function SubscriptionGate({ children }) {
   const [status, setStatus] = useState("loading");
   const [phoneInput, setPhoneInput] = useState("");
@@ -2575,6 +2600,7 @@ function SubscriptionGate({ children }) {
       if (!snap.exists()) { setStatus("unregistered"); if (typeof window.__hideSplash === "function") window.__hideSplash(); return; }
       const d = snap.data();
       if (!isMounted()) return;
+      DevPanelFlag.visible = !!d.devPanelVisible; // admin.html থেকে টগল করা ফ্ল্যাগ
       if (d.status === "blocked") { setStatus("expired"); if (typeof window.__hideSplash === "function") window.__hideSplash(); return; }
       const now = new Date();
       const expiry = new Date(d.expiryDate);
@@ -3500,6 +3526,7 @@ const SK = {
   recoveryPinHash: "sbm-recovery-pin-hash",  // 🔐 Recovery PIN hash
   lastMasterSync:  "sbm-last-master-sync",   // 🔄 Master Sync শেষ কখন হয়েছিল
   autoMasterSyncEnabled: "sbm-auto-master-sync-on", // ⏰ Hourly auto Master Sync toggle
+  lastBackupFieldHashes: "sbm-last-backup-hashes", // #৪ ডেল্টা সিঙ্ক — destination-ভিত্তিক checkpoint hash
 };
 // ─── Device ID Layer (Multi-Device Support) ───────────────────────────────────
 // প্রতিটি ডিভাইসের আলাদা ID, যাতে ৫টি ডিভাইস একসাথে সিঙ্ক করতে পারে
@@ -3568,11 +3595,29 @@ function pickBackupFields(data) {
   BACKUP_FIELDS.forEach(f => { if (data && data[f] !== undefined) out[f] = data[f]; });
   return out;
 }
+// ── রিস্টোর গার্ড (বাগ ফিক্স) ────────────────────────────────────────────────
+// সমস্যা: ম্যানুয়াল রিস্টোর (Google Drive/লোকাল ফাইল/স্ন্যাপশট) local state
+// ছোট করে দিলে, useFSSCollection-এর push effect ব্যাকআপে-না-থাকা রেকর্ডকে
+// "ইউজার মুছে দিয়েছে" ধরে নিয়ে Firestore থেকেও ডিলিট করে দিত — যা রিয়েল-টাইমে
+// বাকি সব ডিভাইসেও ছড়িয়ে পড়ত। এই গার্ড চালু থাকা অবস্থায় push effect শুধু
+// নতুন/বদলানো রেকর্ড পুশ করে, কোনো ডিলিট চালায় না (merge-only) — Master
+// Sync-এর record-by-record merge লজিকের মতোই আচরণ। ট্রেড-অফ: এটা "ব্যাকআপে
+// না-থাকা রেকর্ড বাদ দেওয়া"-কে আর গ্যারান্টি দেয় না, শুধু ভুল/পুরনো ব্যাকআপ
+// রিস্টোর করলে মাস-ডিলিট হওয়া ঠেকায় — যা ইচ্ছাকৃত সিদ্ধান্ত (সেফটি > সম্পূর্ণতা)।
+const RestoreGuard = { active: false, _timer: null };
+function beginRestoreGuard(ms = 5000) {
+  RestoreGuard.active = true;
+  clearTimeout(RestoreGuard._timer);
+  RestoreGuard._timer = setTimeout(() => { RestoreGuard.active = false; }, ms);
+}
 // রিস্টোরের সময় d[f] পাওয়া গেলে সংশ্লিষ্ট setF() setter কল করে — GoogleDriveSection/
 // LocalStorageSection-এর সব restore পাথ (handleRestore, handleRestoreSnapshot,
 // applyRestoredData) এটাই ব্যবহার করে, প্রতিটাতে আলাদা করে ১৮ লাইন if-চেইন নেই।
+// এটাই সব restore পাথের একক চোকপয়েন্ট, তাই beginRestoreGuard() এখানেই বসানো —
+// আলাদা করে প্রতিটা restore ফাংশনে বসাতে হয়নি।
 function applyBackupFields(d, setters) {
   if (!d || !setters) return;
+  beginRestoreGuard();
   BACKUP_FIELDS.forEach(f => {
     if (d[f]) {
       const setterName = "set" + f[0].toUpperCase() + f.slice(1);
@@ -3721,6 +3766,582 @@ function buildContentHashes(payload) {
   BACKUP_FIELDS.forEach(f => { out[f] = hashCollection(payload[f]); });
   return out;
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// PHASE 3 — পারফরম্যান্স + স্কেল (Performance + Scale)
+// ══════════════════════════════════════════════════════════════════════════
+
+// ── #৪ ইনক্রিমেন্টাল/ডেল্টা সিঙ্ক (নির্ভর করে #১ রেজিস্ট্রি + #২ content-hash) ──
+// Firestore-এর রেকর্ড-লেভেল sync এমনিতেই delta (শুধু বদলানো রেকর্ড পাঠায়)।
+// কিন্তু Drive/Local ফুল-JSON ব্যাকআপ এতদিন প্রতিবার (প্রতি ৫-৪৫ মিনিটে টাইমার
+// চললে) পুরো dataset আবার লিখত/আপলোড করত — বদলেছে কিনা না দেখেই। এই লেয়ার
+// প্রতিটা destination-এর (local file / IndexedDB snapshot / Google Drive)
+// জন্য আলাদা checkpoint hash রাখে (buildContentHashes থেকে পাওয়া); নতুন
+// cycle-এ hash আগেরটার সাথে মিলে গেলে বোঝে কিছুই বদলায়নি — পুরো write/upload
+// অপারেশনটাই স্কিপ করে দেয়। এক destination-এর checkpoint আরেক destination-কে
+// প্রভাবিত করে না (যেমন: local file লেখা হলেও Drive checkpoint আলাদাই থাকে)।
+// ⚠️ শুধু নিঃশব্দ/অটো ব্যাকআপে প্রযোজ্য — ইউজার সরাসরি বাটনে চাপলে (ম্যানুয়াল)
+// সবসময় আসল লেখা/আপলোড হয়, "বাটনে চাপলাম কিছুই হলো না" এমন বিভ্রান্তি এড়াতে।
+function diffChangedFields(newHashes, prevHashes) {
+  if (!prevHashes || typeof prevHashes !== "object") return { changed: true, fields: [...BACKUP_FIELDS] };
+  const fields = BACKUP_FIELDS.filter(f => (newHashes[f] || 0) !== (prevHashes[f] || 0));
+  return { changed: fields.length > 0, fields };
+}
+const DeltaSync = {
+  // destKey: "autoLocalFile" | "drive" | "snapshot" | "masterSync" — প্রতিটা
+  // ব্যাকআপ-গন্তব্যের নিজস্ব checkpoint, একসাথে একই localStorage key-তে { destKey: hashes } আকারে রাখা
+  async shouldSkip(destKey, newHashes) {
+    try {
+      const all = (await load(SK.lastBackupFieldHashes)) || {};
+      const { changed } = diffChangedFields(newHashes, all[destKey]);
+      return !changed;
+    } catch { return false; } // অনিশ্চয়তায় সবসময় লেখাই নিরাপদ — ভুলে স্কিপ করা যাবে না
+  },
+  async markSynced(destKey, newHashes) {
+    try {
+      const all = (await load(SK.lastBackupFieldHashes)) || {};
+      all[destKey] = newHashes;
+      await save(SK.lastBackupFieldHashes, all);
+    } catch {}
+  },
+};
+
+// ── #৯ ভার্সনড রিটেনশন পলিসি + #১৬ Immutable/WORM আর্কাইভ ──────────────────
+// আলাদা IndexedDB ডাটাবেস (hg_snapshots থেকে সম্পূর্ণ স্বতন্ত্র) — যাতে Master
+// Full Reset / clearAllData / LocalBackup.deleteAll কোনোটাই ভুলবশত এখানে হাত
+// না দেয়। এই ফাইলে কোথাও এই ডাটাবেসের কোনো delete/clear কল নেই — ইচ্ছাকৃতভাবে।
+// দুটো object store:
+//   • dated_snapshots — GFS-ধাঁচের ভার্সনড রিটেনশন (#৯): শেষ ১৪ দিন প্রতিদিন,
+//     ১৫-৯০ দিন সাপ্তাহিক (প্রতি সপ্তাহে ১টা), ৯০+ দিন মাসিক (প্রতি মাসে ১টা)।
+//     pruneRetention() পুরনো তারিখ থেকে বাদ পড়া entry মুছে ফেলে — স্টোরেজ
+//     সীমাবদ্ধ রাখতে (StorageQuota-র সাথে সাংঘর্ষিক না হতে)।
+//   • worm_archive — মাসে ১বার, চিরস্থায়ী (#১৬)। একবার লেখা হলে আর কখনো
+//     ওভাররাইট/মোছা হয় না — কোনো prune/delete ফাংশনই নেই এই store-এর জন্য।
+//     Ransomware/ভুল mass-delete/করাপ্টেড sync পুরো Drive+Local ব্যাকআপে
+//     ছড়িয়ে পড়লেও, এই আর্কাইভ থেকে মাস-ভিত্তিক পুরনো অবস্থা ফিরিয়ে আনা যাবে।
+const ArchiveDB = {
+  DB_NAME: "hg_archive",
+  // v1→v2: নতুন "field_change_log" store যোগ হলো (#১৫)। existing dated_snapshots/
+  // worm_archive স্টোরে হাত দেওয়া হয়নি — onupgradeneeded শুধু নতুনটা যোগ করে,
+  // পুরনো ডিভাইসে থাকা v1 ডাটাবেসও নিরাপদে v2-তে আপগ্রেড হবে, ডেটা হারাবে না।
+  VERSION: 2,
+  _db: null,
+  async open() {
+    if (this._db) return this._db;
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(this.DB_NAME, this.VERSION);
+      req.onupgradeneeded = e => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains("dated_snapshots")) {
+          db.createObjectStore("dated_snapshots", { keyPath: "dateKey" });
+        }
+        if (!db.objectStoreNames.contains("worm_archive")) {
+          db.createObjectStore("worm_archive", { keyPath: "monthKey" });
+        }
+        // #১৫ ফিল্ড-লেভেল চেঞ্জ লগ — প্রতিটা এন্ট্রি একটা রেকর্ডের একটা ফিল্ডের
+        // এক-একটা বদল (old→new), collection+recordId দিয়ে ইনডেক্স করা যাতে
+        // "এই ইনভয়েসটার হিস্টোরি" জাতীয় কোয়েরি দ্রুত হয়, আর ts দিয়ে prune করা যায়।
+        if (!db.objectStoreNames.contains("field_change_log")) {
+          const store = db.createObjectStore("field_change_log", { keyPath: "id" });
+          store.createIndex("byRecord", ["collection", "recordId"], { unique: false });
+          store.createIndex("byTs", "ts", { unique: false });
+        }
+      };
+      req.onsuccess = e => { this._db = e.target.result; resolve(this._db); };
+      req.onerror   = () => reject(req.error);
+    });
+  },
+  async _get(store, key) {
+    try {
+      const db = await this.open();
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(store, "readonly");
+        const req = tx.objectStore(store).get(key);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror   = () => reject(req.error);
+      });
+    } catch { return null; }
+  },
+  async _getAll(store) {
+    try {
+      const db = await this.open();
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(store, "readonly");
+        const req = tx.objectStore(store).getAll();
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror   = () => reject(req.error);
+      });
+    } catch { return []; }
+  },
+  async _put(store, val) {
+    try {
+      const db = await this.open();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(store, "readwrite");
+        tx.objectStore(store).put(val);
+        tx.oncomplete = resolve;
+        tx.onerror    = () => reject(tx.error);
+      });
+      return true;
+    } catch { return false; }
+  },
+  async _delete(store, key) {
+    try {
+      const db = await this.open();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(store, "readwrite");
+        tx.objectStore(store).delete(key);
+        tx.oncomplete = resolve;
+        tx.onerror    = () => reject(tx.error);
+      });
+    } catch {}
+  },
+};
+
+function _dateKeyOf(d) { return d.toISOString().split("T")[0]; } // YYYY-MM-DD
+function _monthKeyOf(d) { return _dateKeyOf(d).slice(0, 7); }     // YYYY-MM
+function _isoWeekKeyOf(d) {
+  // ISO week key — একই সপ্তাহের সব দিন একই key পায় (weekly thinning-এর জন্য)
+  const dt = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const dayNum = (dt.getUTCDay() + 6) % 7; // সোমবার=0
+  dt.setUTCDate(dt.getUTCDate() - dayNum + 3);
+  const firstThursday = new Date(Date.UTC(dt.getUTCFullYear(), 0, 4));
+  const week = 1 + Math.round(((dt - firstThursday) / 86400000 - 3 + ((firstThursday.getUTCDay() + 6) % 7)) / 7);
+  return `${dt.getUTCFullYear()}-W${week}`;
+}
+
+const RetentionDB = {
+  async hasToday() {
+    const key = _dateKeyOf(new Date());
+    return !!(await ArchiveDB._get("dated_snapshots", key));
+  },
+  // আজকের তারিখের জন্য এখনো কোনো entry না থাকলেই একটা সংরক্ষণ করে — দিনে একবারই
+  async saveIfNewDay(payload) {
+    const dateKey = _dateKeyOf(new Date());
+    const existing = await ArchiveDB._get("dated_snapshots", dateKey);
+    if (existing) return { saved: false };
+    const ok = await ArchiveDB._put("dated_snapshots", {
+      dateKey,
+      ...pickBackupFields(payload),
+      _savedAt: new Date().toISOString(),
+    });
+    if (ok) await this.pruneRetention();
+    return { saved: ok };
+  },
+  // GFS thinning: ১৪ দিন পর্যন্ত সব রাখো, ১৫-৯০ দিন সাপ্তাহিক ১টা, ৯০+ মাসিক ১টা
+  async pruneRetention() {
+    try {
+      const all = await ArchiveDB._getAll("dated_snapshots");
+      const now = Date.now();
+      const DAY = 86400000;
+      const weeklyKept = new Set(); // weekKey -> কোন dateKey টা রাখা হয়েছে (প্রথমটা)
+      const monthlyKept = new Set();
+      const sorted = [...all].sort((a, b) => a.dateKey.localeCompare(b.dateKey)); // পুরনো → নতুন
+      for (const snap of sorted) {
+        const ageDays = (now - new Date(snap.dateKey).getTime()) / DAY;
+        if (ageDays <= 14) continue; // সব দিন রাখা হবে
+        if (ageDays <= 90) {
+          const wk = _isoWeekKeyOf(new Date(snap.dateKey));
+          if (!weeklyKept.has(wk)) { weeklyKept.add(wk); continue; } // ওই সপ্তাহের প্রথমটা রাখো
+          await ArchiveDB._delete("dated_snapshots", snap.dateKey);
+        } else {
+          const mk = _monthKeyOf(new Date(snap.dateKey));
+          if (!monthlyKept.has(mk)) { monthlyKept.add(mk); continue; } // ওই মাসের প্রথমটা রাখো
+          await ArchiveDB._delete("dated_snapshots", snap.dateKey);
+        }
+      }
+    } catch {}
+  },
+  async loadAll() {
+    const all = await ArchiveDB._getAll("dated_snapshots");
+    return all.sort((a, b) => b.dateKey.localeCompare(a.dateKey));
+  },
+  async loadByDate(dateKey) { return ArchiveDB._get("dated_snapshots", dateKey); },
+  async stats() {
+    const all = await this.loadAll();
+    const now = Date.now(), DAY = 86400000;
+    let daily = 0, weekly = 0, monthly = 0;
+    all.forEach(s => {
+      const ageDays = (now - new Date(s.dateKey).getTime()) / DAY;
+      if (ageDays <= 14) daily++; else if (ageDays <= 90) weekly++; else monthly++;
+    });
+    return { total: all.length, daily, weekly, monthly };
+  },
+};
+
+// ⚠️ ইচ্ছাকৃতভাবে এই অবজেক্টে কোনো delete/prune/clear মেথড নেই — WORM (Write-
+// Once-Read-Many)। একবার লেখা হলে অ্যাপের কোনো কোড-পাথ থেকেই এই মাসের entry
+// আর বদলানো/মোছা যাবে না (archiveIfNewMonth নিজেও existing থাকলে overwrite করে না)।
+const WormArchive = {
+  async hasThisMonth() {
+    const key = _monthKeyOf(new Date());
+    return !!(await ArchiveDB._get("worm_archive", key));
+  },
+  async archiveIfNewMonth(payload) {
+    const monthKey = _monthKeyOf(new Date());
+    const existing = await ArchiveDB._get("worm_archive", monthKey);
+    if (existing) return { archived: false }; // ইতিমধ্যে এই মাসের immutable entry আছে
+    const ok = await ArchiveDB._put("worm_archive", {
+      monthKey,
+      ...pickBackupFields(payload),
+      _archivedAt: new Date().toISOString(),
+      _immutable: true,
+    });
+    return { archived: ok };
+  },
+  async loadAll() {
+    const all = await ArchiveDB._getAll("worm_archive");
+    return all.sort((a, b) => b.monthKey.localeCompare(a.monthKey));
+  },
+  async loadByMonth(monthKey) { return ArchiveDB._get("worm_archive", monthKey); },
+};
+
+// ══════════════════════════════════════════════════════════════════════════
+// PHASE 4 — নির্বাচিত এন্টারপ্রাইজ (#১৫ Field-level Change Log — হালকা PITR)
+// ══════════════════════════════════════════════════════════════════════════
+// পূর্ণ event-sourcing (#১৭) ইচ্ছাকৃতভাবে বাদ দেওয়া হয়েছে (over-engineering,
+// core architecture rewrite লাগত)। এটা তার বদলে হালকা সংস্করণ: প্রতিটা
+// রেকর্ড আপডেটে (নতুন তৈরি না — শুধু বিদ্যমান রেকর্ড বদলালে) কোন কোন ফিল্ড
+// বদলেছে, আগের/পরের মান কী, কে/কোন ডিভাইস থেকে বদলেছে — এই একটা ছোট এন্ট্রি
+// লোকাল IndexedDB-এ (hg_archive DB, field_change_log store) রাখা হয়। কেন্দ্রীয়
+// Firestore-এ পাঠানো হয় না ইচ্ছাকৃতভাবে — প্রতিটা ফিল্ড-বদলে বাড়তি Firestore
+// write মানে প্রতিটা দোকানের billing-এ প্রভাব (যেখানে আমার access নেই), তাই
+// এটা প্রতিটা ডিভাইসে স্থানীয়ভাবেই থাকে, ঠিক WORM আর্কাইভের মতোই স্বতন্ত্র।
+//
+// দুটো ব্যবহার:
+//  ১) audit trail সম্প্রসারণ — এডমিন দেখতে পারবেন কোন ইনভয়েস/কাস্টমার/পণ্যে
+//     কবে কী বদলেছে (existing auditLog()-এর মতো শুধু action-level ইভেন্ট না,
+//     field-level actual before/after)।
+//  ২) #৬ কনফ্লিক্ট রেজোলিউশন UI-এর ভিত্তি — useFSSCollection-এর pending-write
+//     সংঘর্ষ হলে (local pending vs remote echo) এই লগ থেকেই "এই ডিভাইসে কী
+//     বদলানো হয়েছিল" মানুষ-পাঠযোগ্য আকারে বের করা যাবে, raw JSON তুলনার বদলে।
+const FIELD_CHANGE_LOG_COLLECTIONS = [
+  // ব্যবসায়িক/আর্থিকভাবে গুরুত্বপূর্ণ কালেকশনগুলোই — smsLog/stockMovements/
+  // auditLogs নিজেরাই append-only লগ (এগুলোর "change" মানে নেই), users বাদ
+  // নিরাপত্তার কারণে (PIN hash-সহ ফিল্ড লগে যাওয়া উচিত না), deletedProducts/
+  // deletedCustomers নিছক আর্কাইভ লিস্ট — এগুলোতে field-diff মূল্যহীন।
+  "customers", "products", "invoices", "txns", "purchaseOrders",
+  "cashLogs", "suppliers", "expenses", "returns", "quotations",
+  "supplierPayments", "paymentInvoices",
+];
+const FIELD_CHANGE_LOG_IGNORED_KEYS = new Set(["id", "_updatedAt", "_savedAt", "_slot", "slot"]);
+const FIELD_CHANGE_LOG_MAX_ENTRIES = 5000; // prune-এর সীমা — স্টোরেজ সীমিত রাখতে (#১৩-এর সাথে সাংঘর্ষিক না হতে)
+
+function fclTruncate(v) {
+  if (v === undefined) return "—";
+  try {
+    const s = JSON.stringify(v);
+    return s.length > 120 ? s.slice(0, 120) + "…" : s;
+  } catch { return String(v).slice(0, 120); }
+}
+// পুরনো vs নতুন রেকর্ড তুলনা করে শুধু বদলানো টপ-লেভেল ফিল্ডগুলো বের করে
+function diffRecordFields(oldRec, newRec) {
+  if (!oldRec || !newRec) return [];
+  const keys = new Set([...Object.keys(oldRec), ...Object.keys(newRec)]);
+  const changes = [];
+  keys.forEach(k => {
+    if (FIELD_CHANGE_LOG_IGNORED_KEYS.has(k)) return;
+    const ov = oldRec[k], nv = newRec[k];
+    let same;
+    try { same = JSON.stringify(ov) === JSON.stringify(nv); } catch { same = ov === nv; }
+    if (!same) changes.push({ field: k, oldValue: fclTruncate(ov), newValue: fclTruncate(nv) });
+  });
+  return changes;
+}
+const FieldChangeLog = {
+  async record(collectionName, recordId, changes, meta = {}) {
+    if (!changes?.length) return;
+    try {
+      await ArchiveDB._put("field_change_log", {
+        id: uid(),
+        collection: collectionName,
+        recordId: String(recordId),
+        changes,
+        ts: Date.now(),
+        userId:   meta.userId   ?? null,
+        userName: meta.userName ?? "অজানা",
+        deviceId: meta.deviceId ?? (localStorage.getItem("hg_device_id") || "unknown"),
+      });
+    } catch {} // চেঞ্জ-লগ ব্যর্থ হলেও মূল ডেটা write আটকাবে না — শুধু best-effort audit
+  },
+  // useFSSCollection-এর diff থেকে সরাসরি কল হয় — currentUser React hook context
+  // ছাড়াই zustand store থেকে সরাসরি পড়া হয় (getState — কোনো re-render/subscribe লাগে না)
+  async diffAndRecord(collectionName, recordId, oldRec, newRec) {
+    if (!FIELD_CHANGE_LOG_COLLECTIONS.includes(collectionName)) return;
+    const changes = diffRecordFields(oldRec, newRec);
+    if (!changes.length) return;
+    let currentUser = null;
+    try { currentUser = useAppStore.getState().currentUser; } catch {}
+    await this.record(collectionName, recordId, changes, {
+      userId: currentUser?.id, userName: currentUser?.name,
+    });
+  },
+  async list({ collection: collectionName = null, recordId = null, limit = 200 } = {}) {
+    const all = await ArchiveDB._getAll("field_change_log");
+    let filtered = all;
+    if (collectionName) filtered = filtered.filter(e => e.collection === collectionName);
+    if (recordId != null) filtered = filtered.filter(e => e.recordId === String(recordId));
+    return filtered.sort((a, b) => b.ts - a.ts).slice(0, limit);
+  },
+  // মাঝেমধ্যে (auto-backup সাইকেলের মতোই র‍্যান্ডম স্যাম্পলিং-এ) পুরনো এন্ট্রি
+  // ছেঁটে সর্বোচ্চ সীমার মধ্যে রাখে — প্রতিবার পুরো লগ getAll করা এড়াতে
+  // deleteOldBackups-এর মতোই নিচু ফ্রিকোয়েন্সিতে চলে
+  async prune(maxEntries = FIELD_CHANGE_LOG_MAX_ENTRIES) {
+    try {
+      const all = await ArchiveDB._getAll("field_change_log");
+      if (all.length <= maxEntries) return { pruned: 0 };
+      const sorted = all.sort((a, b) => a.ts - b.ts); // পুরনো আগে
+      const toDelete = sorted.slice(0, all.length - maxEntries);
+      for (const e of toDelete) await ArchiveDB._delete("field_change_log", e.id);
+      return { pruned: toDelete.length };
+    } catch { return { pruned: 0 }; }
+  },
+};
+
+// ══════════════════════════════════════════════════════════════════════════
+// PHASE 4 — নির্বাচিত এন্টারপ্রাইজ (#৭ স্কিমা মাইগ্রেশন সিস্টেম)
+// ══════════════════════════════════════════════════════════════════════════
+// এত দিন নতুন ফিল্ড/শেপ বদল লাগলে (যেমন products.batches[] যোগ করা) load()-এর
+// ভেতর সরাসরি এক-বারের ad-hoc কোড লেখা হতো (নিচে দেখুন migratedProds — আগে এই
+// একই লজিক সরাসরি hardcoded ছিল)। এই মডিউল সেটাকে একটা কেন্দ্রীয়,
+// পুনর্ব্যবহারযোগ্য রেজিস্ট্রিতে নিয়ে আসে — নতুন ফিল্ড/শেপ বদল লাগলে শুধু
+// SCHEMA_MIGRATIONS-এ একটা নতুন এন্ট্রি যোগ করলেই হবে, load()/useFSSCollection-এ
+// আলাদা কিছু বদলাতে হবে না। প্রতিটা রেকর্ডে `_schemaV` (সংখ্যা) ট্যাগ থাকে —
+// না থাকলে 1 ধরা হয় (মানে "প্রথম migration-এরও আগের, সবচেয়ে পুরনো শেপ")।
+// migrate() ফাংশনগুলো idempotent হওয়া বাধ্যতামূলক (একবার প্রয়োগ হয়ে গেলে
+// দ্বিতীয়বার প্রয়োগে কিছু বদলায় না) — তাই প্রতিটা load()-এই নিরাপদে আবার
+// চালানো যায় (বেশিরভাগ রেকর্ড early-return করে, তাই cheap)।
+const SCHEMA_MIGRATIONS = {
+  products: [
+    {
+      version: 2,
+      label: "batches[] যোগ — পুরনো flat stock থেকে প্রথম ব্যাচ তৈরি",
+      migrate(p) {
+        if (p.batches && p.batches.length > 0) return p; // ইতিমধ্যে নতুন শেপে আছে
+        if (!p.stock || p.stock <= 0) return { ...p, batches: [] };
+        return {
+          ...p,
+          batches: [{
+            batchNo: "ব্যাচ-1",
+            qty: p.stock,
+            costPrice: p.costPrice || 0,
+            sellPrice: p.price || 0,
+            expiryDate: p.expiryDate || "",
+            supplier: p.company || "",
+            note: "",
+            at: p.lastUpdated || new Date().toISOString(),
+          }],
+        };
+      },
+    },
+    // ভবিষ্যতে নতুন ফিল্ড/শেপ বদল লাগলে এখানে { version: 3, label:"...", migrate(p){...} }
+    // যোগ করুন — বাকি সিস্টেম (load, FSS sync, Settings-এর মনিটরিং কার্ড) স্বয়ংক্রিয়ভাবেই
+    // এটা ব্যবহার করবে, অন্য কোথাও কিছু বদলাতে হবে না।
+  ],
+  // অন্যান্য collection-এ এখনো কোনো migration লাগেনি — খালি/অনুপস্থিত entry মানে
+  // no-op; migrateCollection() যেকোনো collection-এর জন্য নিরাপদে কল করা যায়।
+};
+
+const SchemaMigration = {
+  currentVersion(collectionName) {
+    const list = SCHEMA_MIGRATIONS[collectionName];
+    if (!list || !list.length) return 1;
+    return Math.max(...list.map(m => m.version));
+  },
+  migrateRecord(collectionName, rec) {
+    const list = SCHEMA_MIGRATIONS[collectionName];
+    if (!rec || !list || !list.length) return rec;
+    let out = rec, v = rec._schemaV || 1;
+    for (const m of list) {
+      if (m.version > v) { out = m.migrate(out); v = m.version; }
+    }
+    if (v !== (rec._schemaV || 1)) out = { ...out, _schemaV: v };
+    return out;
+  },
+  // একটা পুরো collection array-কে migrate করে; কতগুলো রেকর্ড আসলে বদলেছে
+  // (মনিটরিং স্ট্যাটের জন্য) সহ ফেরত দেয়
+  migrateCollection(collectionName, records) {
+    const list = SCHEMA_MIGRATIONS[collectionName];
+    if (!Array.isArray(records) || !list || !list.length) return { records: records || [], migrated: 0 };
+    let migrated = 0;
+    const out = records.map(r => {
+      const after = this.migrateRecord(collectionName, r);
+      if (after !== r) migrated++;
+      return after;
+    });
+    return { records: out, migrated };
+  },
+  // load()-এর পর একবারে সব registered collection চালানোর হেল্পার
+  // dataMap: { products: rawProds, customers: rawCustomers, ... } থেকে শুধু
+  // যেগুলোর জন্য migration registered আছে সেগুলোই touch করে, বাকিগুলো অপরিবর্তিত থাকে
+  runAll(dataMap) {
+    const perCollection = {};
+    let total = 0;
+    const out = { ...dataMap };
+    Object.keys(SCHEMA_MIGRATIONS).forEach(name => {
+      if (!(name in dataMap)) return;
+      const { records, migrated } = this.migrateCollection(name, dataMap[name]);
+      out[name] = records;
+      if (migrated > 0) { perCollection[name] = migrated; total += migrated; }
+    });
+    return { data: out, stats: { lastRunAt: new Date().toISOString(), totalMigrated: total, perCollection } };
+  },
+};
+
+// ══════════════════════════════════════════════════════════════════════════
+// PHASE 4 — নির্বাচিত এন্টারপ্রাইজ (#৬ কনফ্লিক্ট রেজোলিউশন UI)
+// ══════════════════════════════════════════════════════════════════════════
+// useFSSCollection ইতিমধ্যেই record-level LWW (Last-Write-Wins)-এর কারণে
+// বেশিরভাগ কনফ্লিক্ট এড়ায় — দুই ডিভাইস আলাদা রেকর্ড বদলালে কোনো সমস্যা নেই,
+// এমনকি একই রেকর্ডের আলাদা ফিল্ডও (Firestore পুরো ডকুমেন্ট merge করে না,
+// setRecord partial write করে)। আসল কনফ্লিক্ট তখনই হয় যখন দুই ডিভাইস একই
+// রেকর্ডের ঠিক একই ফিল্ড প্রায় একই সময়ে (৫ সেকেন্ডের pending-echo window-এর
+// ভেতর) বদলায়। আগে এই মুহূর্তে কোড নিঃশব্দে সার্ভারের ভার্সন জিতিয়ে দিত
+// (কোনো লগ/সতর্কতা ছাড়াই timeout-এর পর) — যা multi-device স্টাফ ব্যবহার
+// বাড়লে অগোচরে ডেটা হারানোর ঝুঁকি তৈরি করত। এখন সেই মুহূর্তটা useFSSCollection-এ
+// ধরা হয় (#১৫-এর diffRecordFields() পুনর্ব্যবহার করে ঠিক কোন ফিল্ড সংঘর্ষ
+// করেছে বের করে) — ডেটা-সেফটির জন্য সার্ভারের ভার্সনই সাথে সাথে প্রয়োগ হয়
+// (fail-safe ডিফল্ট, কোনো ডেটা silently হারায় না), কিন্তু ইউজারকে Settings →
+// Health-এ জানানো হয় এবং চাইলে এই ডিভাইসের ভার্সন সংঘর্ষিত ফিল্ডগুলোতে
+// ফিরিয়ে আনার অপশন দেওয়া হয়।
+const ConflictQueue = {
+  // conflict: { id, collection, recordId, local, remote, fields, detectedAt }
+  // local/remote পুরো raw রেকর্ড (revert করতে হলে সরাসরি মান পড়া যায়),
+  // fields = diffRecordFields()-এর আউটপুট (শুধু human-readable truncated প্রদর্শনের জন্য)
+  push(conflict) {
+    try {
+      const state = useAppStore.getState();
+      const list = (state.pendingConflicts || [])
+        .filter(c => !(c.collection === conflict.collection && c.recordId === conflict.recordId)); // ডুপ্লিকেট না রেখে সবশেষটাই রাখি
+      useAppStore.setState({ pendingConflicts: [...list, conflict] });
+      try {
+        const auditEntry = {
+          id: uid(), type: "sync-conflict", action: "sync-conflict",
+          at: new Date().toISOString(),
+          detail: `${BACKUP_FIELD_LABELS_BN[conflict.collection] || conflict.collection}: ${conflict.fields.map(f => f.field).join(", ")}`,
+        };
+        useAppStore.setState({ auditLogs: [...(state.auditLogs || []), auditEntry] });
+      } catch {}
+    } catch {}
+  },
+  dismiss(collection, recordId) {
+    const state = useAppStore.getState();
+    useAppStore.setState({
+      pendingConflicts: (state.pendingConflicts || []).filter(c => !(c.collection === collection && c.recordId === recordId)),
+    });
+  },
+};
+
+// ══════════════════════════════════════════════════════════════════════════
+// PHASE 4 — নির্বাচিত এন্টারপ্রাইজ (#১৯ Automated Restore Self-Test)
+// ══════════════════════════════════════════════════════════════════════════
+// আপনার কোনো CI/টেস্ট এনভায়রনমেন্ট নেই (তাই formal automated test suite —
+// প্ল্যানের #৮ — বাদ দেওয়া হয়েছিল)। এখানে "automated" মানে in-app self-check:
+// প্রতিটা লোকাল ব্যাকআপ সাইকেলের পর SnapshotDB.save() সফল হলে সেই স্ন্যাপশটই
+// আবার loadLatest() দিয়ে পড়া হয়, তারপর validateBackup() দিয়ে checksum +
+// #২ per-record content-hash যাচাই করা হয় — অর্থাৎ "যা লিখলাম তা অবিকৃতভাবে
+// ফেরত পড়া যায় কিনা, বাস্তবে রিস্টোরযোগ্য কিনা" এটাই পরীক্ষা করে, শুধু
+// "ফাইল লেখা সফল হয়েছে" এই দাবির চেয়ে অনেক শক্তিশালী প্রমাণ — নতুন কোনো
+// ডুপ্লিকেট ভ্যালিডেশন লজিক লাগেনি, existing validateBackup-ই পুনর্ব্যবহার হয়।
+// ব্যর্থ হলে logErrorToCentral-এ যায় ও Settings Health card-এ লাল ব্যাজ দেখায়
+// (#১০-এর ব্যাকআপ-ব্যর্থ ব্যানারের মতোই প্যাটার্ন, কিন্তু আলাদা streak)।
+const RESTORE_TEST_MIN_INTERVAL_MS = 6 * 60 * 60 * 1000; // silent cycle-এ সর্বোচ্চ প্রতি ৬ ঘণ্টায় একবার — অকারণে বারবার IndexedDB read এড়াতে
+const RestoreSelfTest = {
+  _running: false,
+  shouldRunNow(lastRunIso) {
+    if (!lastRunIso) return true;
+    return (Date.now() - new Date(lastRunIso).getTime()) >= RESTORE_TEST_MIN_INTERVAL_MS;
+  },
+  // snapshot: SnapshotDB.loadLatest() থেকে পাওয়া অবজেক্ট, বা ম্যানুয়াল টেস্টে সরাসরি payload
+  evaluate(snapshot) {
+    if (!snapshot) return { ok: false, detail: "কোনো স্ন্যাপশট পাওয়া যায়নি — এখনো কোনো লোকাল ব্যাকআপ হয়নি" };
+    const valid = validateBackup(snapshot);
+    if (valid.ok === false && !valid.isEncrypted) {
+      return { ok: false, detail: valid.msg || "ভ্যালিডেশন ব্যর্থ" };
+    }
+    if (valid.contentIssues?.length) {
+      return { ok: false, detail: `কনটেন্ট-মিসম্যাচ সন্দেহ: ${valid.contentIssues.map(f => BACKUP_FIELD_LABELS_BN[f] || f).join(", ")}` };
+    }
+    // খালি স্ন্যাপশট (সব collection শূন্য) সন্দেহজনক — সাইলেন্ট করাপশনের একটা চিহ্ন হতে পারে
+    const totalRecords = BACKUP_FIELDS.reduce((s, f) => s + (Array.isArray(snapshot[f]) ? snapshot[f].length : 0), 0);
+    if (totalRecords === 0) {
+      return { ok: false, detail: "স্ন্যাপশটে কোনো রেকর্ড নেই (খালি ব্যাকআপ)" };
+    }
+    return { ok: true, detail: null };
+  },
+  // নিঃশব্দ background cycle থেকে কল হয় — শুধু IndexedDB পড়ে, নেটওয়ার্ক লাগে না
+  async runSilent({ setRestoreTestAt, setRestoreTestOk, setRestoreTestDetail, setRestoreTestFailStreak }) {
+    if (this._running) return null;
+    this._running = true;
+    try {
+      const snapshot = await SnapshotDB.loadLatest();
+      const result = this.evaluate(snapshot);
+      setRestoreTestAt(new Date().toISOString());
+      setRestoreTestOk(result.ok);
+      setRestoreTestDetail(result.detail);
+      if (result.ok) {
+        setRestoreTestFailStreak(0);
+      } else {
+        setRestoreTestFailStreak((prev) => (typeof prev === "number" ? prev + 1 : 1));
+        logErrorToCentral("selfTest:restore", new Error(result.detail || "restore self-test failed"), { savedAt: snapshot?._savedAt || null });
+      }
+      return result;
+    } finally {
+      this._running = false;
+    }
+  },
+};
+
+// ══════════════════════════════════════════════════════════════════════════
+// PHASE 4 — নির্বাচিত এন্টারপ্রাইজ (#২২ মনিটরিং/এলার্টিং)
+// ══════════════════════════════════════════════════════════════════════════
+// এখন পর্যন্ত #৩ (ব্যাকআপ হেলথ), #১০ (ব্যাকআপ-ব্যর্থ ব্যানার), #১৯ (রিস্টোর
+// সেলফ-টেস্ট), #১৩ (স্টোরেজ কোটা) — প্রতিটা নিজে নিজে আলাদা সিগন্যাল দেখাতো,
+// ইউজারকে একসাথে সব কটা মনে রেখে আলাদা আলাদা চেক করতে হতো। এই মডিউল সব কটা
+// সিগন্যালকে (ব্যাকআপ, রিস্টোর-টেস্ট, সিঙ্ক কানেকশন, স্টোরেজ, #৬-এর pending
+// conflict, লো-স্টক) একটাই overall health স্তরে (ok/warning/critical) একত্র
+// করে, যাতে এক নজরেই বোঝা যায় নজর দেওয়ার দরকার আছে কিনা। বিশুদ্ধ derive —
+// কোনো নতুন persistence লাগে না, তাই stale হওয়ার ঝুঁকি নেই। মাল্টি-শপ ভবিষ্যতে
+// প্রতিটা শপের জন্য এই একই evaluate() পুনর্ব্যবহার করে per-shop card-এর লিস্ট
+// বানানো যাবে (প্ল্যানের "মাল্টি-শপ visibility")।
+const HealthMonitor = {
+  evaluate({
+    backupFailStreak = 0, lastBackupError = null,
+    restoreTestOk = null, restoreTestFailStreak = 0,
+    fsConnected = false, firebaseEnabled = false,
+    storageQuotaLow = false, storageQuotaPct = null,
+    pendingConflictsCount = 0, lowStockCount = 0,
+  } = {}) {
+    const alerts = [];
+    if (backupFailStreak >= 3) {
+      alerts.push({ level: "critical", key: "backup", msg: `পরপর ${backupFailStreak} বার ব্যাকআপ ব্যর্থ হয়েছে${lastBackupError ? " — " + lastBackupError : ""}` });
+    } else if (backupFailStreak > 0) {
+      alerts.push({ level: "warning", key: "backup", msg: `সর্বশেষ ব্যাকআপ ব্যর্থ হয়েছিল (${backupFailStreak}বার)` });
+    }
+    if (restoreTestOk === false) {
+      alerts.push({
+        level: restoreTestFailStreak >= 2 ? "critical" : "warning",
+        key: "restore", msg: `রিস্টোর সেলফ-টেস্ট ব্যর্থ${restoreTestFailStreak > 1 ? ` (পরপর ${restoreTestFailStreak} বার)` : ""}`,
+      });
+    }
+    if (firebaseEnabled && !fsConnected) {
+      alerts.push({ level: "warning", key: "sync", msg: "Firestore সংযোগ বিচ্ছিন্ন — ডেটা শুধু লোকালি সেভ হচ্ছে" });
+    }
+    if (storageQuotaLow) {
+      alerts.push({ level: "warning", key: "storage", msg: `ডিভাইস স্টোরেজ প্রায় পূর্ণ${storageQuotaPct != null ? ` (${Math.round(storageQuotaPct)}%)` : ""} — পুরনো ব্যাকআপ মুছুন` });
+    }
+    if (pendingConflictsCount > 0) {
+      alerts.push({ level: "warning", key: "conflict", msg: `${pendingConflictsCount}টি সিঙ্ক কনফ্লিক্ট পর্যালোচনার অপেক্ষায়` });
+    }
+    if (lowStockCount > 0) {
+      alerts.push({ level: "info", key: "stock", msg: `${lowStockCount}টি পণ্যে স্টক কম` });
+    }
+    const level = alerts.some(a => a.level === "critical") ? "critical"
+                : alerts.some(a => a.level === "warning")  ? "warning"
+                : "ok";
+    return { level, alerts };
+  },
+};
 
 const FSS = {
   _app: null,
@@ -4047,7 +4668,7 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
   const lastSynced  = useRef(null);
   const firstRemote = useRef(false);
   const valueRef    = useRef(value);
-  const pending     = useRef(new Map()); // id(string) -> { rec, ts } — push হয়েছে, echo বাকি
+  const pending     = useRef(new Map()); // id(string) -> { rec, old, ts } — push হয়েছে, echo বাকি
   useEffect(() => { valueRef.current = value; }, [value]);
 
   // remote → local
@@ -4082,8 +4703,29 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
           const key = String(rec.id);
           const p = pending.current.get(key);
           if (!p) return rec;
-          if (now - p.ts > 5000) { pending.current.delete(key); return rec; } // safety timeout
           if (JSON.stringify(p.rec) === JSON.stringify(rec)) { pending.current.delete(key); return rec; } // echo confirmed
+          // #৬ কনফ্লিক্ট চেক — সার্ভারের রেকর্ড কি ঠিক সেই ফিল্ডগুলোতেও ভিন্ন মান
+          // রাখে যেগুলো আমরা নিজেরাই এইমাত্র বদলেছিলাম? হলে এটা সত্যিকারের
+          // concurrent-edit conflict (অন্য ডিভাইস একই মুহূর্তে একই ফিল্ড বদলেছে),
+          // শুধু "echo এখনো আসেনি" (latency) না — সেক্ষেত্রে অন্য ফিল্ড ভিন্ন হতেই পারে।
+          if (FIELD_CHANGE_LOG_COLLECTIONS.includes(name) && p.old) {
+            const myChanges = diffRecordFields(p.old, p.rec);
+            const clashed = myChanges.filter(c => {
+              let same;
+              try { same = JSON.stringify(rec[c.field]) === JSON.stringify(p.rec[c.field]); } catch { same = rec[c.field] === p.rec[c.field]; }
+              return !same;
+            });
+            if (clashed.length) {
+              pending.current.delete(key);
+              ConflictQueue.push({
+                id: uid(), collection: name, recordId: key,
+                local: p.rec, remote: rec, fields: clashed,
+                detectedAt: new Date().toISOString(),
+              });
+              return rec; // ডেটা-সেফটি: সার্ভারের ভার্সনই ডিফল্টভাবে প্রয়োগ হয়, ইউজার চাইলে Settings থেকে revert করতে পারবেন
+            }
+          }
+          if (now - p.ts > 5000) { pending.current.delete(key); return rec; } // safety timeout
           return p.rec; // এখনো echo আসেনি — local pending ভার্সন রাখো
         });
         const seenIds = new Set(merged.map(r => String(r.id)));
@@ -4111,11 +4753,24 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
         if (!old || old !== rec) {
           // _updatedAt inject করো (নতুন বা পরিবর্তিত record-এ) — Master Sync merge-এর জন্য
           const recWithTs = rec._updatedAt ? rec : withTs(rec);
-          pending.current.set(id, { rec: recWithTs, ts: Date.now() });
+          pending.current.set(id, { rec: recWithTs, old: old || null, ts: Date.now() });
           FSS.setRecord(name, id, recWithTs);
+          // #১৫ ফিল্ড-লেভেল চেঞ্জ লগ — শুধু বিদ্যমান রেকর্ড বদলালে (old থাকলে),
+          // নতুন রেকর্ড তৈরি হলে না (তাহলে প্রতিটা ইনভয়েস তৈরিতেই তার সবগুলো
+          // ফিল্ড "changed" হিসেবে লগ হতো, যা "creation" না "change" — শব্দার্থে ভুল
+          // এবং অকারণে লগ ভারী হতো)। এই কল fire-and-forget, মূল write-কে ব্লক করে না।
+          if (old) FieldChangeLog.diffAndRecord(name, id, old, recWithTs);
         }
       });
-      prevMap.forEach((rec, id) => { if (!nextMap.has(id)) { pending.current.delete(id); FSS.deleteRecord(name, id); } });
+      prevMap.forEach((rec, id) => {
+        if (nextMap.has(id)) return;
+        // 🔴 ফিক্স: রিস্টোর চলাকালে (RestoreGuard active) ডিলিট স্কিপ — ব্যাকআপে
+        // না-থাকা রেকর্ডকে ভুলবশত "ইউজার মুছেছে" ধরে Firestore/অন্য ডিভাইস থেকে
+        // মুছে ফেলা ঠেকাতে (merge-only restore, দেখুন applyBackupFields-এর কমেন্ট)।
+        if (RestoreGuard.active) return;
+        pending.current.delete(id);
+        FSS.deleteRecord(name, id);
+      });
       lastSynced.current = value;
     };
     if (instant) { run(); return; }
@@ -7842,6 +8497,12 @@ function SmartBusinessMgmt() {
   const backupNeeded     = useAppStore(s => s.backupNeeded);
   const backupFailStreak = useAppStore(s => s.backupFailStreak);
   const lastBackupError  = useAppStore(s => s.lastBackupError);
+  const restoreTestAt       = useAppStore(s => s.restoreTestAt);       // #১৯
+  const restoreTestOk       = useAppStore(s => s.restoreTestOk);       // #১৯
+  const restoreTestDetail   = useAppStore(s => s.restoreTestDetail);   // #১৯
+  const restoreTestFailStreak = useAppStore(s => s.restoreTestFailStreak); // #১৯
+  const pendingConflicts    = useAppStore(s => s.pendingConflicts);     // #৬
+  const schemaMigrationStats = useAppStore(s => s.schemaMigrationStats); // #৭
   const autoBackupEnabled= useAppStore(s => s.autoBackupEnabled);
   const firebaseConfig   = useAppStore(s => s.firebaseConfig);
   const firebaseEnabled  = useAppStore(s => s.firebaseEnabled);
@@ -7894,6 +8555,12 @@ function SmartBusinessMgmt() {
   const setBackupNeeded     = useCallback((v) => _set("backupNeeded",     v), [_set]);
   const setBackupFailStreak = useCallback((v) => _set("backupFailStreak", v), [_set]);
   const setLastBackupError  = useCallback((v) => _set("lastBackupError",  v), [_set]);
+  // #১৯ Automated Restore Self-Test সেটার
+  const setRestoreTestAt        = useCallback((v) => _set("restoreTestAt",        v), [_set]);
+  const setRestoreTestOk        = useCallback((v) => _set("restoreTestOk",        v), [_set]);
+  const setRestoreTestDetail    = useCallback((v) => _set("restoreTestDetail",    v), [_set]);
+  const setRestoreTestFailStreak = useCallback((v) => _set("restoreTestFailStreak", v), [_set]);
+  const setPendingConflicts = useCallback((v) => _set("pendingConflicts", v), [_set]); // #৬
   const setAnthropicKey     = useCallback((v) => _set("anthropicKey",     v), [_set]);
   const setSmsTemplates     = useCallback((v) => _set("smsTemplates",     v), [_set]);
   const setAutoBackupEnabled= useCallback((v) => _set("autoBackupEnabled",v), [_set]);
@@ -8145,24 +8812,15 @@ function SmartBusinessMgmt() {
         load(SK.quotations),        load(SK.supplierPayments),
       ]);
 
-      // ── Batch-1 Migration: পুরনো products এ batches[] নেই → Batch-1 তৈরি করো ─
-      const migratedProds = (rawProds || SEED_PRODUCTS).map(p => {
-        if (p.batches && p.batches.length > 0) return p; // ইতিমধ্যে আছে
-        if (!p.stock || p.stock <= 0) return { ...p, batches: [] };
-        return {
-          ...p,
-          batches: [{
-            batchNo: "ব্যাচ-1",
-            qty: p.stock,
-            costPrice: p.costPrice || 0,
-            sellPrice: p.price || 0,
-            expiryDate: p.expiryDate || "",
-            supplier: p.company || "",
-            note: "",
-            at: p.lastUpdated || new Date().toISOString(),
-          }],
-        };
+      // ── #৭ স্কিমা মাইগ্রেশন — কেন্দ্রীয় SCHEMA_MIGRATIONS রেজিস্ট্রি থেকে ─────
+      // আগে এখানে শুধু products-এর batches[] মাইগ্রেশন হার্ডকোড ছিল (Batch-1
+      // Migration)। এখন সেটা SchemaMigration মডিউলে সাধারণীকরণ করা হয়েছে —
+      // ভবিষ্যতে অন্য যেকোনো collection-এ নতুন migration লাগলে এই কোড বদলাতে
+      // হবে না, শুধু SCHEMA_MIGRATIONS রেজিস্ট্রিতে এন্ট্রি যোগ করলেই চলবে।
+      const { data: migratedData, stats: schemaStats } = SchemaMigration.runAll({
+        products: rawProds || SEED_PRODUCTS,
       });
+      const migratedProds = migratedData.products;
 
       // ── Firebase init (data load করার আগে দরকার নেই, কিন্তু fssReady-র জন্য) ─
       const firebaseCfg = fbCfg || null;
@@ -8207,6 +8865,7 @@ function SmartBusinessMgmt() {
         supplierPayments:      rawSupplierPayments || [],
         authChecked:           true,
         loaded:                true,
+        schemaMigrationStats:  schemaStats.totalMigrated > 0 ? schemaStats : null, // #৭ — কিছু মাইগ্রেট হলেই শুধু দেখায়
       });
 
       // ── recovery state (local useState — store-এর বাইরে) ───────────────────
@@ -8761,6 +9420,13 @@ function SmartBusinessMgmt() {
       // #১০ সফল হলে failure-streak রিসেট
       setBackupFailStreak(0);
       setLastBackupError(null);
+      // #১৯ Automated Restore Self-Test — এইমাত্র লেখা স্ন্যাপশটটাই আবার পড়ে
+      // যাচাই করে, ছয় ঘণ্টায় সর্বোচ্চ একবার (silent — ইউজারকে টোস্ট দেখায় না,
+      // শুধু Health card-এ status আপডেট হয়)। ব্যর্থ হলে সাথে সাথেই ধরা পড়ে,
+      // বাস্তব বিপর্যয়ের সময় রিস্টোর করতে গিয়ে না।
+      if (RestoreSelfTest.shouldRunNow(restoreTestAt)) {
+        RestoreSelfTest.runSilent({ setRestoreTestAt, setRestoreTestOk, setRestoreTestDetail, setRestoreTestFailStreak });
+      }
       safeTimeout(() => setDriveStatus(null), 4000);
     } catch (e) {
       setDriveStatus("error");
@@ -8772,14 +9438,15 @@ function SmartBusinessMgmt() {
       showToast(isQuotaError(e) ? "⚠️ " + friendly : "ব্যাকআপ ব্যর্থ হয়েছে (৩ বার চেষ্টার পরও)", "#ef4444");
       safeTimeout(() => setDriveStatus(null), 4000);
     }
-  }, [buildBackupData, showToast, setBackupFailStreak, setLastBackupError]);
+  }, [buildBackupData, showToast, setBackupFailStreak, setLastBackupError, restoreTestAt, setRestoreTestAt, setRestoreTestOk, setRestoreTestDetail, setRestoreTestFailStreak]);
 
   // ── Master Sync Engine: Firestore + Drive backup merge (_updatedAt দেখে নতুনটা জেতে) ──
   // Option B: merge করে, তারপর Drive-এও updated backup রাখে
   const [masterSyncStatus, setMasterSyncStatus] = React.useState(null); // null | "running" | "done" | "error"
   const [masterSyncDetail, setMasterSyncDetail] = React.useState("");
 
-  const performMasterSync = useCallback(async () => {
+  const performMasterSync = useCallback(async (opts = {}) => {
+    const { auto = false } = opts;
     if (masterSyncStatus === "running") return;
     setMasterSyncStatus("running");
     setMasterSyncDetail("Firestore থেকে data নেওয়া হচ্ছে...");
@@ -8877,16 +9544,33 @@ function SmartBusinessMgmt() {
         counts: freshCounts,
       };
       const now = new Date();
-      try {
+      // #৪ ডেল্টা সিঙ্ক — শুধু hourly auto-trigger-এ প্রযোজ্য (auto===true);
+      // merge উপরে আগেই হয়ে গেছে (cross-device correctness অক্ষুণ্ণ), শুধু
+      // "একই payload আবার লেখা/আপলোড" ধাপটা স্কিপ হয় যদি কিছুই না বদলে থাকে।
+      // ম্যানুয়াল "Sync" বাটনে সবসময় লেখা হয় — ইউজার সরাসরি চাইলে ফলাফল দেখুক।
+      const masterHashes = freshPayload._meta.contentHash;
+      const skipWrite = auto && await DeltaSync.shouldSkip("masterSync", masterHashes);
+      if (skipWrite) {
+        setBackupNeeded(false);
+      } else try {
         // #৫ রিট্রাই + ব্যাকঅফ — Master Sync-এর শেষ ধাপেও একই সুরক্ষা
         await withRetry(() => FS.saveBackup(freshPayload, `dukan-backup-${now.toISOString().split("T")[0]}.json`), { retries: 3 });
         const ts = now.toISOString();
         setLastAutoBackup(ts);
         await save(SK.lastAutoBackup, ts);
         await withRetry(() => SnapshotDB.save({ ...freshPayload, _savedAt: ts }), { retries: 2 });
+        // #৯/#১৬ — এই ধাপে আসলে লেখা হলেই retention/WORM-এ প্রতিনিধিত্বমূলক entry রাখা হয়
+        try { await RetentionDB.saveIfNewDay(freshPayload); } catch {}
+        try { await WormArchive.archiveIfNewMonth(freshPayload); } catch {}
+        await DeltaSync.markSynced("masterSync", masterHashes);
         setBackupNeeded(false);
         setBackupFailStreak(0);
         setLastBackupError(null);
+        // #১৯ Master Sync-এর পরও একই self-test — এই পাথে merge হওয়া ডেটা লেখা
+        // হয়, তাই আলাদাভাবে যাচাই জরুরি (merge bug থাকলে এখানেই প্রথম ধরা পড়বে)
+        if (RestoreSelfTest.shouldRunNow(restoreTestAt)) {
+          RestoreSelfTest.runSilent({ setRestoreTestAt, setRestoreTestOk, setRestoreTestDetail, setRestoreTestFailStreak });
+        }
       } catch (e) {
         // #১০ Master Sync-এর ব্যাকআপ ধাপ ব্যর্থ হলেও নীরবে হারিয়ে না গিয়ে
         // পরপর ব্যর্থতার হিসাব রাখা হয় (মূল merge সফল হলেও এটা জানা দরকার)
@@ -8912,7 +9596,8 @@ function SmartBusinessMgmt() {
       setCustomers, setProducts, setInvoices, setTxns, setSmsLog,
       setPaymentInvoices, setPurchaseOrders, setStockMovements, setCashLogs, setSuppliers,
       setExpenses, setReturns, setAuditLogs, setQuotations, setSupplierPayments,
-      setLastMasterSync, setBackupFailStreak, setLastBackupError]);
+      setLastMasterSync, setBackupFailStreak, setLastBackupError,
+      restoreTestAt, setRestoreTestAt, setRestoreTestOk, setRestoreTestDetail, setRestoreTestFailStreak]);
 
   // ── Hourly Auto Master Sync (Admin ফোনে, toggle on থাকলে) ──
   const _autoMasterSyncRunning = useRef(false);
@@ -8926,7 +9611,7 @@ function SmartBusinessMgmt() {
       const last = lastMasterSync ? new Date(lastMasterSync).getTime() : 0;
       if (Date.now() - last < ONE_HOUR) return; // এখনও ১ ঘণ্টা হয়নি
       _autoMasterSyncRunning.current = true;
-      try { await performMasterSync(); }
+      try { await performMasterSync({ auto: true }); }
       finally { _autoMasterSyncRunning.current = false; }
     };
     run(); // প্রথমবার চেক
@@ -8947,12 +9632,26 @@ function SmartBusinessMgmt() {
     const runLocalBackup = async () => {
       try {
         const data = await buildBackupData();
+        // #৯/#১৬ — retention/WORM প্রতি cycle-এ চেক হয় (নিজেরাই দিনে/মাসে
+        // একবার idempotent সেভ করে) — delta-skip-এর সাথে সম্পর্কহীন, কারণ
+        // এগুলো নির্দিষ্ট ক্যালেন্ডার তারিখ/মাসের প্রতিনিধিত্বমূলক অবস্থা
+        // রাখতে চায়, "কিছু বদলেছে কিনা" তার ওপর নির্ভর করে না।
+        try { await RetentionDB.saveIfNewDay(data); } catch {}
+        try { await WormArchive.archiveIfNewMonth(data); } catch {}
+
+        // #৪ ডেল্টা সিঙ্ক — local file destination-এর checkpoint hash আগেরটার
+        // সাথে মিললে পুরো ফাইল আবার লেখার দরকার নেই।
+        const newHashes = data._meta?.contentHash || buildContentHashes(data);
+        if (await DeltaSync.shouldSkip("autoLocalFile", newHashes)) return;
+
         const dateStr = new Date().toISOString().split("T")[0];
         await withRetry(() => FS.saveBackup(data, `sbm-auto-${dateStr}.json`), { retries: 2 }); // #৫
         const ts = new Date().toISOString();
         setLastLocalBackup(ts);
         await save(SK.lastLocalBackup, ts);
+        await DeltaSync.markSynced("autoLocalFile", newHashes);
         if (Math.random() < 0.1) FS.deleteOldBackups(7); // মাঝেমধ্যে পুরনো (>৭দিন) ফাইল পরিষ্কার
+        if (Math.random() < 0.1) FieldChangeLog.prune(); // #১৫ — একই ফ্রিকোয়েন্সিতে চেঞ্জ-লগও সীমার মধ্যে রাখা
       } catch {}
     };
 
@@ -8977,7 +9676,13 @@ function SmartBusinessMgmt() {
         }
         if (!token) return; // token নেই/expired — এই cycle skip, পরের cycle-এ আবার চেষ্টা
         const data = await buildBackupData();
+        // #৪ ডেল্টা সিঙ্ক — "drive" checkpoint GoogleDriveSection-এর নিজস্ব
+        // silentBackup timer-এর সাথেও শেয়ার করা (একই Drive ফাইল, তাই দুটো
+        // আলাদা টাইমার একই অপরিবর্তিত ডেটা দুইবার আপলোড করবে না)।
+        const newHashes = data._meta?.contentHash || buildContentHashes(data);
+        if (await DeltaSync.shouldSkip("drive", newHashes)) return;
         await withRetry(() => GDrive.uploadBackup(token, { ...data, _autoBackup: true, _savedAt: new Date().toISOString() }), { retries: 2 }); // #৫
+        await DeltaSync.markSynced("drive", newHashes);
       } catch {}
     };
 
@@ -9893,6 +10598,20 @@ function SmartBusinessMgmt() {
               driveStatus={driveStatus} performDriveBackup={performDriveBackup}
               backupNeeded={backupNeeded}
               backupFailStreak={backupFailStreak} lastBackupError={lastBackupError}
+              restoreTestAt={restoreTestAt} restoreTestOk={restoreTestOk} restoreTestDetail={restoreTestDetail} restoreTestFailStreak={restoreTestFailStreak}
+              onRunRestoreTest={async () => {
+                const snapshot = await SnapshotDB.loadLatest();
+                const result = RestoreSelfTest.evaluate(snapshot);
+                setRestoreTestAt(new Date().toISOString());
+                setRestoreTestOk(result.ok);
+                setRestoreTestDetail(result.detail);
+                if (result.ok) { setRestoreTestFailStreak(0); showToast("✅ রিস্টোর সেলফ-টেস্ট পাস"); }
+                else {
+                  setRestoreTestFailStreak((prev) => (typeof prev === "number" ? prev + 1 : 1));
+                  logErrorToCentral("selfTest:restore:manual", new Error(result.detail || "manual restore self-test failed"), { savedAt: snapshot?._savedAt || null });
+                  showToast("❌ সেলফ-টেস্ট ব্যর্থ: " + (result.detail || ""), "#ef4444");
+                }
+              }}
               buildBackupData={buildBackupData} setBackupNeeded={setBackupNeeded}
               buildManualBackupData={buildManualBackupData} manualBackupSetters={manualBackupSetters}
               performMasterSync={performMasterSync} masterSyncStatus={masterSyncStatus} masterSyncDetail={masterSyncDetail}
@@ -9919,6 +10638,7 @@ function SmartBusinessMgmt() {
               sessionTimeoutMin={sessionTimeoutMin} setSessionTimeoutMin={setSessionTimeoutMin}
               auditLogs={auditLogs} setAuditLogs={setAuditLogs}
               hasPerm={hasPerm} fssReady={fssReady}
+              pendingConflicts={pendingConflicts}
             />
             </React.Suspense>
           </ErrorBoundary>
@@ -21015,7 +21735,7 @@ function StaffCustomTimePicker({ T, staffName, onGrant }) {
 }
 
 function Settings_({ T, S, shopName,
- setShopName, users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, driveStatus, backupNeeded, backupFailStreak, lastBackupError, performDriveBackup, buildBackupData, buildManualBackupData, manualBackupSetters, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, sessionTimeoutMin, setSessionTimeoutMin, auditLogs = [], setAuditLogs, hasPerm, fssReady = false }) {
+ setShopName, users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, driveStatus, backupNeeded, backupFailStreak, lastBackupError, restoreTestAt, restoreTestOk, restoreTestDetail, restoreTestFailStreak, onRunRestoreTest, performDriveBackup, buildBackupData, buildManualBackupData, manualBackupSetters, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, sessionTimeoutMin, setSessionTimeoutMin, auditLogs = [], setAuditLogs, hasPerm, fssReady = false, pendingConflicts = [] }) {
   const [editName,    setEditName]    = useState(false);
   const [nameInput,   setNameInput]   = useState(shopName);
   const [showNewUser, setShowNewUser] = useState(false);
@@ -21059,6 +21779,34 @@ function Settings_({ T, S, shopName,
   // ব্যাকআপ কার্ডে সতর্কতা দেখায় (ব্যর্থ হওয়ার আগেই)
   const [quotaInfo, setQuotaInfo] = useState(null);
   useEffect(() => { StorageQuota.check().then(setQuotaInfo); }, []);
+  // #৬ কনফ্লিক্ট রেজোলিউশন — "remote" মানে ইতিমধ্যে প্রয়োগ হয়ে গেছে, শুধু ব্যাজ
+  // সরিয়ে দিলেই হয়। "local" মানে সংঘর্ষিত ফিল্ডগুলোতে এই ডিভাইসের মান
+  // বর্তমান রেকর্ডের ওপর বসিয়ে আবার Firestore-এ পুশ করা হয় — বাকি রেকর্ড
+  // (যে ফিল্ড সংঘর্ষ করেনি) অক্ষত থাকে, পুরো রেকর্ড ওভাররাইট হয় না।
+  const conflictCollectionMap = {
+    customers, products, invoices, txns, purchaseOrders, cashLogs,
+    suppliers, expenses, returns, quotations, supplierPayments, paymentInvoices,
+  };
+  const resolveConflict = (conflict, choice) => {
+    if (choice === "remote") {
+      ConflictQueue.dismiss(conflict.collection, conflict.recordId);
+      showToast("✅ কনফ্লিক্ট সমাধান হয়েছে (সার্ভার ভার্সন বহাল)");
+      return;
+    }
+    const arr = conflictCollectionMap[conflict.collection] || [];
+    const current = arr.find(r => String(r.id) === conflict.recordId);
+    if (!current) {
+      showToast("রেকর্ড খুঁজে পাওয়া যায়নি — হয়তো মুছে ফেলা হয়েছে", "#ef4444");
+      ConflictQueue.dismiss(conflict.collection, conflict.recordId);
+      return;
+    }
+    const merged = { ...current };
+    conflict.fields.forEach(f => { merged[f.field] = conflict.local[f.field]; });
+    const finalRec = withTs(merged);
+    if (FSS.isReady()) FSS.setRecord(conflict.collection, conflict.recordId, finalRec);
+    ConflictQueue.dismiss(conflict.collection, conflict.recordId);
+    showToast("✅ এই ডিভাইসের ভার্সন প্রয়োগ হয়েছে");
+  };
   const [fbForm,      setFbForm]      = useState(firebaseConfig || { databaseURL: "", apiKey: "", projectId: "" });
   const [fbTesting,   setFbTesting]   = useState(false);
   const [fbTestMsg,   setFbTestMsg]   = useState(null);
@@ -21823,6 +22571,132 @@ function Settings_({ T, S, shopName,
                 </div>
               )}
 
+              {/* ── মালিক-ভিউ: একটাই সহজ স্ট্যাটাস লাইন — সবসময় দেখা যাবে ──────────
+                  checksum/hash/Firestore-internals এর মতো টেকনিক্যাল কিছু না,
+                  শুধু "ডেটা নিরাপদ" নাকি "সমস্যা আছে" আর একটা একশন-বাটন।
+                  বিস্তারিত টেকনিক্যাল ড্যাশবোর্ড (নিচে) শুধু DevPanelFlag.visible
+                  হলেই দেখা যায় — admin.html থেকে দোকান-ভিত্তিক টগল করা হয়। ── */}
+              {(() => {
+                const lowStockCount0 = (products || []).filter(p => (p.stock||0) > 0 && (p.stock||0) <= (p.minStockAlert||5)).length;
+                const { level: ownerLevel } = HealthMonitor.evaluate({
+                  backupFailStreak, lastBackupError,
+                  restoreTestOk, restoreTestFailStreak,
+                  fsConnected, firebaseEnabled,
+                  storageQuotaLow: !!quotaInfo?.low, storageQuotaPct: quotaInfo?.pct,
+                  pendingConflictsCount: (pendingConflicts || []).length,
+                  lowStockCount: lowStockCount0,
+                });
+                const localLastSync0 = [lastAutoBackup, lastLocalBackup].filter(Boolean).sort((a, b) => new Date(b) - new Date(a))[0] || null;
+                const mostRecent = [localLastSync0, lastMasterSync].filter(Boolean).sort((a, b) => new Date(b) - new Date(a))[0] || null;
+                const ok = ownerLevel !== "critical";
+                const color = ok ? "#22c55e" : "#ef4444";
+                return (
+                  <div style={{ marginBottom:10, borderRadius:10, border:`1px solid ${color}44`, background:`${color}0f`, padding:"10px 12px", display:"flex", alignItems:"center", gap:8 }}>
+                    <span style={{ width:9, height:9, borderRadius:"50%", background:color, flexShrink:0 }} />
+                    <span style={{ flex:1, fontSize:11.5, fontWeight:800, color }}>
+                      {ok
+                        ? `ডেটা নিরাপদ${mostRecent ? `, সর্বশেষ ব্যাকআপ ${getTimeAgo(mostRecent)}` : ""}`
+                        : "ব্যাকআপে সমস্যা — বাটনে চাপ দিন"}
+                    </span>
+                    {!ok && (
+                      <button onClick={() => window.open(`https://wa.me/88${BKASH_NUMBER}`, "_blank")}
+                        style={{ background:`${color}22`, border:`1px solid ${color}55`, borderRadius:6, padding:"5px 10px", color, fontSize:9.5, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
+                        সাপোর্টে যোগাযোগ করুন
+                      </button>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* ── মালিক-ভিউ: কনফ্লিক্ট রেজোলিউশন — সবসময় দেখা যাবে ────────────────
+                  DevPanelFlag বন্ধ থাকলেও এটা লুকানো যাবে না, কারণ কোন ভার্সন
+                  সঠিক তা দোকানদারই একমাত্র জানেন। তবে ফিল্ড-লেভেল টেকনিক্যাল
+                  ডিফ না দেখিয়ে সরল ভাষায় দেখানো হয়। (dev-view চালু থাকলে নিচে
+                  বিস্তারিত ভার্সনও দেখা যাবে — এখানে ডুপ্লিকেট করার দরকার নেই,
+                  dev-view বন্ধ থাকলে এই সরল ভার্সনটাই একমাত্র ভরসা।) ── */}
+              {!DevPanelFlag.visible && (pendingConflicts || []).length > 0 && (
+                <div style={{ marginBottom:10, display:"flex", flexDirection:"column", gap:6 }}>
+                  {pendingConflicts.map(c => (
+                    <div key={c.id} style={{ border:"1px solid #f59e0b33", borderRadius:10, padding:"9px 11px", background:"#f59e0b0a" }}>
+                      <div style={{ color:"#f59e0b", fontSize:10.5, fontWeight:800, marginBottom:6 }}>
+                        ⚠️ {BACKUP_FIELD_LABELS_BN[c.collection] || c.collection}-এর তথ্য দুই ফোনে একসাথে বদলেছিল
+                      </div>
+                      <div style={{ display:"flex", gap:6 }}>
+                        <button onClick={() => resolveConflict(c, "local")}
+                          style={{ flex:1, background:"#a855f722", border:"1px solid #a855f755", borderRadius:6, padding:"6px 0", color:"#a855f7", fontSize:9.5, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
+                          এই ফোনের তথ্য রাখুন
+                        </button>
+                        <button onClick={() => resolveConflict(c, "remote")}
+                          style={{ flex:1, background:"#22c55e22", border:"1px solid #22c55e55", borderRadius:6, padding:"6px 0", color:"#22c55e", fontSize:9.5, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
+                          অন্য ফোনের তথ্য রাখুন ✓
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* ── ডেভেলপার/সাপোর্ট-ভিউ — বিস্তারিত টেকনিক্যাল ড্যাশবোর্ড ──────────
+                  admin.html থেকে devPanelVisible ফ্ল্যাগ অন না করা পর্যন্ত এই পুরো
+                  ব্লকটাই (মনিটরিং কার্ড + Backup Health + status row + ফিল্ড-লেভেল
+                  কনফ্লিক্ট ডিফ) দোকানদারের সামনে আসবে না — শুধু ওপরের সরল
+                  স্ট্যাটাস লাইন আর কনফ্লিক্ট বাটন দেখবে। ── */}
+              {DevPanelFlag.visible && <>
+              {/* ── #২২ মনিটরিং/এলার্টিং — ব্যাকআপ/রিস্টোর-টেস্ট/সিঙ্ক/স্টোরেজ/
+                  কনফ্লিক্ট/লো-স্টক সব সিগন্যাল একটা একক ওভারভিউতে, যাতে আলাদা
+                  আলাদা কার্ড ঘুরে ঘুরে চেক করার বদলে এক নজরেই বোঝা যায়।
+                  #৬-এর pending conflict-গুলোও এখানেই resolve করা যায়। ── */}
+              {(() => {
+                const lowStockCount = (products || []).filter(p => (p.stock||0) > 0 && (p.stock||0) <= (p.minStockAlert||5)).length;
+                const { level, alerts } = HealthMonitor.evaluate({
+                  backupFailStreak, lastBackupError,
+                  restoreTestOk, restoreTestFailStreak,
+                  fsConnected, firebaseEnabled,
+                  storageQuotaLow: !!quotaInfo?.low, storageQuotaPct: quotaInfo?.pct,
+                  pendingConflictsCount: (pendingConflicts || []).length,
+                  lowStockCount,
+                });
+                if (level === "ok" && !(pendingConflicts || []).length) return null; // সব ঠিক থাকলে বাড়তি বাক্স দরকার নেই
+                const levelColor = level === "critical" ? "#ef4444" : level === "warning" ? "#f59e0b" : "#22c55e";
+                return (
+                  <div style={{ marginBottom:10, borderRadius:10, border:`1px solid ${levelColor}44`, background:`${levelColor}0f`, padding:"9px 11px" }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom: alerts.length ? 6 : 0 }}>
+                      <span style={{ fontSize:13 }}>{level === "critical" ? "🔴" : level === "warning" ? "🟡" : "🟢"}</span>
+                      <span style={{ color:levelColor, fontWeight:800, fontSize:10.5 }}>মনিটরিং</span>
+                    </div>
+                    {alerts.map(a => (
+                      <div key={a.key} style={{ color:"#cbd5e1", fontSize:9.5, marginBottom:3, paddingLeft:19 }}>• {a.msg}</div>
+                    ))}
+                    {(pendingConflicts || []).length > 0 && (
+                      <div style={{ marginTop:6, display:"flex", flexDirection:"column", gap:6 }}>
+                        {pendingConflicts.map(c => (
+                          <div key={c.id} style={{ border:"1px solid #f59e0b33", borderRadius:8, padding:"7px 9px", background:"#f59e0b0a" }}>
+                            <div style={{ color:"#f59e0b", fontSize:9.5, fontWeight:800, marginBottom:3 }}>
+                              ⚠️ কনফ্লিক্ট: {BACKUP_FIELD_LABELS_BN[c.collection] || c.collection}
+                            </div>
+                            {c.fields.map(f => (
+                              <div key={f.field} style={{ color:"#94a3b8", fontSize:8.5, marginBottom:2 }}>
+                                {f.field}: এই ডিভাইস={fclTruncate(c.local[f.field])} · অন্য ডিভাইস={fclTruncate(c.remote[f.field])}
+                              </div>
+                            ))}
+                            <div style={{ display:"flex", gap:6, marginTop:5 }}>
+                              <button onClick={() => resolveConflict(c, "local")}
+                                style={{ flex:1, background:"#a855f722", border:"1px solid #a855f755", borderRadius:6, padding:"4px 0", color:"#a855f7", fontSize:8.5, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
+                                এই ডিভাইসের ভার্সন রাখুন
+                              </button>
+                              <button onClick={() => resolveConflict(c, "remote")}
+                                style={{ flex:1, background:"#22c55e22", border:"1px solid #22c55e55", borderRadius:6, padding:"4px 0", color:"#22c55e", fontSize:8.5, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
+                                অন্য ডিভাইসের ভার্সন রাখুন ✓
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
               {/* ── #৩ Backup Health — Drive/Local/Master Sync তিনটার "কতক্ষণ আগে"
                   একসাথে, স্ট্যালনেস অনুযায়ী রঙ বদলায় (২৪ ঘণ্টার কম=সবুজ,
                   ২৪-৭২ ঘণ্টা=হলুদ, তার বেশি বা কখনো না=লাল) — অন্ধভাবে অনুমান
@@ -21843,11 +22717,14 @@ function Settings_({ T, S, shopName,
                   { label: "Google Drive", ts: driveLastSync },
                   { label: "Local ব্যাকআপ", ts: localLastSync },
                   { label: "Master Sync", ts: lastMasterSync },
+                  // #১৯ — pass/fail স্ট্যাটাসকে staleness-এর ওপরেও অগ্রাধিকার দেয়:
+                  // সাম্প্রতিক হলেও ফেইল করলে লাল, কখনো না চললে ধূসর।
+                  { label: "রিস্টোর সেলফ-টেস্ট", ts: restoreTestAt, ok: restoreTestOk },
                 ];
                 return (
                   <div style={{ marginBottom:10, borderRadius:9, border:`1px solid ${MS_COLOR}22`, background:`${MS_COLOR}08`, padding:"8px 10px", display:"flex", flexDirection:"column", gap:5 }}>
-                    {rows.map(({ label, ts }) => {
-                      const c = staleColor(ts);
+                    {rows.map(({ label, ts, ok }) => {
+                      const c = ok === false ? "#ef4444" : ok === true ? staleColor(ts) : (ts ? staleColor(ts) : "#94a3b8");
                       return (
                         <div key={label} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", fontSize:9 }}>
                           <span style={{ color:"#94a3b8", fontWeight:700 }}>{label}</span>
@@ -21858,9 +22735,27 @@ function Settings_({ T, S, shopName,
                         </div>
                       );
                     })}
+                    {restoreTestOk === false && (
+                      <div style={{ fontSize:8.5, color:"#ef4444", marginTop:2 }}>
+                        {restoreTestDetail}{restoreTestFailStreak > 1 ? ` (পরপর ${restoreTestFailStreak} বার)` : ""}
+                      </div>
+                    )}
+                    {onRunRestoreTest && (
+                      <button
+                        onClick={onRunRestoreTest}
+                        style={{
+                          marginTop:2, alignSelf:"flex-start", background:`${MS_COLOR}18`,
+                          border:`1px solid ${MS_COLOR}44`, borderRadius:6, padding:"3px 8px",
+                          color:MS_COLOR, fontSize:8.5, fontWeight:800, cursor:"pointer", fontFamily:"inherit",
+                        }}
+                      >
+                        🧪 এখনই সেলফ-টেস্ট করুন
+                      </button>
+                    )}
                   </div>
                 );
               })()}
+              </>}
 
               {/* Status row */}
               <div style={{ display:"flex", gap:6, marginBottom:10 }}>
@@ -23530,6 +24425,12 @@ function GoogleDriveSection({ data, setters, showToast, T, S }) {
 
   const silentBackup = useCallback(async () => {
     try {
+      // #৪ ডেল্টা সিঙ্ক — "drive" checkpoint মূল App-এর অটো Drive backup
+      // cycle-এর সাথে শেয়ার করা (একই account-এর একই ফাইল), তাই দুটো
+      // আলাদা টাইমার একই অপরিবর্তিত ডেটা দুইবার আপলোড করবে না।
+      const newHashes = buildContentHashes(data);
+      if (await DeltaSync.shouldSkip("drive", newHashes)) return;
+
       let token = localStorage.getItem("sbm_gd_token");
       if (!token || GDrive.isTokenExpired()) {
         try { token = await getFirebaseGoogleToken(); }
@@ -23542,6 +24443,7 @@ function GoogleDriveSection({ data, setters, showToast, T, S }) {
       const now = new Date().toISOString();
       localStorage.setItem("sbm_gd_last_sync", now);
       setLastSync(now);
+      await DeltaSync.markSynced("drive", newHashes);
     } catch {}
   }, [data, getFirebaseGoogleToken]);
 
@@ -24139,8 +25041,19 @@ function LocalStorageSection({ data, setters, showToast, T, S }) {
 
     const doSave = async () => {
       const d = _latestData.current; // always use latest data
-      const result = await LocalBackup.save(pickBackupFields(d));
-      if (result.ok) setLastSync(new Date().toISOString());
+      const picked = pickBackupFields(d);
+      // #৯/#১৬ — Firebase বন্ধ থাকা দোকানেও (main App-এর অটো cycle firebaseEnabled
+      // ছাড়া চলে না) এই টাইমারই একমাত্র নিয়মিত auto-backup, তাই retention/WORM
+      // এখানেও হুক করা হলো — নিজেরাই দিনে/মাসে একবার idempotent সেভ করে।
+      try { await RetentionDB.saveIfNewDay(picked); } catch {}
+      try { await WormArchive.archiveIfNewMonth(picked); } catch {}
+
+      // #৪ ডেল্টা সিঙ্ক — "snapshot" checkpoint, realtime (৬০ সেকেন্ড) শিডিউলে
+      // সবচেয়ে বেশি সাশ্রয় দেয় (দোকান নিষ্ক্রিয় থাকলে IndexedDB write স্কিপ)
+      const newHashes = buildContentHashes(picked);
+      if (await DeltaSync.shouldSkip("snapshot", newHashes)) return;
+      const result = await LocalBackup.save(picked);
+      if (result.ok) { setLastSync(new Date().toISOString()); await DeltaSync.markSynced("snapshot", newHashes); }
     };
 
     autoTimer.current = setInterval(doSave, ms);
@@ -24459,6 +25372,12 @@ function LocalStorageSection({ data, setters, showToast, T, S }) {
               )}
             </div>
           )}
+
+          {/* #৯/#১৬ — ভার্সনড রিটেনশন + WORM আর্কাইভ */}
+          <BackupArchivePanel data={data} setters={setters} showToast={showToast} GREEN={GREEN} />
+
+          {/* #১৫ — ফিল্ড-লেভেল চেঞ্জ লগ */}
+          <FieldChangeLogPanel showToast={showToast} GREEN={GREEN} />
 
           {/* Save actions */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -24871,6 +25790,238 @@ function LocalStorageSection({ data, setters, showToast, T, S }) {
               </button>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── #১৫ ফিল্ড-লেভেল চেঞ্জ লগ ভিউয়ার ──────────────────────────────────────────
+// BackupArchivePanel-এর মতোই collapsible কার্ড। শুধু পড়ার জন্য — এখান থেকে
+// কিছু রিস্টোর/আনডু করা যায় না (সেটা dry-run প্রিভিউ (#১১) বা আর্কাইভ (#৯/#১৬)
+// দিয়েই করতে হবে), এটা শুধু "কী বদলেছে, কে বদলেছে" এক নজরে দেখানোর জন্য।
+function FieldChangeLogPanel({ showToast, GREEN }) {
+  const [open, setOpen] = useState(false);
+  const [entries, setEntries] = useState([]);
+  const [filterCol, setFilterCol] = useState("");
+  const [expandedId, setExpandedId] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const refresh = async () => {
+    setLoading(true);
+    try {
+      const list = await FieldChangeLog.list({ collection: filterCol || null, limit: 100 });
+      setEntries(list);
+    } catch { showToast?.("চেঞ্জ লগ লোড ব্যর্থ", "#ef4444"); }
+    setLoading(false);
+  };
+  useEffect(() => { if (open) refresh(); /* eslint-disable-next-line */ }, [open, filterCol]);
+
+  return (
+    <div style={{
+      background: "#0a0f1f", borderRadius: 14,
+      border: `1px solid ${GREEN}22`, padding: "12px 14px", marginTop: 10,
+    }}>
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
+      >
+        <div style={{ color: GREEN, fontWeight: 800, fontSize: 12 }}>📝 ফিল্ড-লেভেল চেঞ্জ লগ</div>
+        <div style={{ color: "#475569", fontSize: 14 }}>{open ? "▲" : "▼"}</div>
+      </div>
+
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          <select
+            value={filterCol}
+            onChange={e => setFilterCol(e.target.value)}
+            style={{
+              width: "100%", background: "#111827", color: "#e5e7eb", border: "1px solid #33415555",
+              borderRadius: 8, padding: "6px 8px", fontSize: 11, marginBottom: 8, fontFamily: "inherit",
+            }}
+          >
+            <option value="">সব কালেকশন</option>
+            {FIELD_CHANGE_LOG_COLLECTIONS.map(f => (
+              <option key={f} value={f}>{BACKUP_FIELD_LABELS_BN[f] || f}</option>
+            ))}
+          </select>
+
+          {loading ? (
+            <div style={{ color: "#475569", fontSize: 11, textAlign: "center", padding: 10 }}>লোড হচ্ছে...</div>
+          ) : entries.length === 0 ? (
+            <div style={{ color: "#475569", fontSize: 11, textAlign: "center", padding: 10 }}>কোনো এন্ট্রি নেই</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 320, overflowY: "auto" }}>
+              {entries.map(e => {
+                const isExpanded = expandedId === e.id;
+                return (
+                  <div key={e.id} style={{ border: "1px solid #33415544", borderRadius: 8, padding: "7px 9px" }}>
+                    <div
+                      onClick={() => setExpandedId(isExpanded ? null : e.id)}
+                      style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
+                    >
+                      <div style={{ fontSize: 10.5, color: "#e5e7eb", fontWeight: 700 }}>
+                        {BACKUP_FIELD_LABELS_BN[e.collection] || e.collection} · #{String(e.recordId).slice(-6)}
+                        <span style={{ color: "#475569", fontWeight: 600 }}> — {e.changes.length} ফিল্ড</span>
+                      </div>
+                      <div style={{ fontSize: 9, color: "#64748b" }}>{getTimeAgo(new Date(e.ts).toISOString())}</div>
+                    </div>
+                    <div style={{ fontSize: 9, color: "#64748b", marginTop: 2 }}>👤 {e.userName || "অজানা"}</div>
+                    {isExpanded && (
+                      <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+                        {e.changes.map((c, i) => (
+                          <div key={i} style={{ fontSize: 9.5, color: "#94a3b8", background: "#0f172a", borderRadius: 6, padding: "5px 7px" }}>
+                            <span style={{ color: "#e5e7eb", fontWeight: 700 }}>{c.field}</span>
+                            {": "}
+                            <span style={{ color: "#ef4444" }}>{c.oldValue}</span>
+                            {" → "}
+                            <span style={{ color: "#22c55e" }}>{c.newValue}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// RetentionDB (দিনে ১টা, GFS thinning) আর WormArchive (মাসে ১টা, অপরিবর্তনীয়)
+// দুটো থেকে তারিখের তালিকা মার্জ করে দেখায় — কোনো একটা পুরনো তারিখ বেছে dry-run
+// প্রিভিউ (diffBackupFields, #১১-এর প্যাটার্ন পুনর্ব্যবহার) দেখিয়ে, কনফার্ম করলে
+// applyBackupFields দিয়ে প্রয়োগ করে। শুধু পড়া/রিস্টোর — কোনো ডিলিট বাটন নেই,
+// বিশেষত WORM এন্ট্রির জন্য কোনো ডিলিট পাথই এই স্ক্রিনে/অ্যাপে কোথাও নেই।
+function BackupArchivePanel({ data, setters, showToast, GREEN }) {
+  const [stats, setStats] = useState(null);
+  const [entries, setEntries] = useState([]); // মার্জড লিস্ট: { key, label, worm }
+  const [selectedKey, setSelectedKey] = useState("");
+  const [preview, setPreview] = useState(null); // { snap, diff }
+  const [confirmRestore, setConfirmRestore] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  const refresh = async () => {
+    try {
+      const [st, dated, worm] = await Promise.all([
+        RetentionDB.stats(), RetentionDB.loadAll(), WormArchive.loadAll(),
+      ]);
+      setStats(st);
+      const dList = dated.map(d => ({ key: `d:${d.dateKey}`, label: `📅 ${d.dateKey}`, worm: false }));
+      const wList = worm.map(w => ({ key: `w:${w.monthKey}`, label: `🔒 ${w.monthKey} (মাসিক আর্কাইভ)`, worm: true }));
+      setEntries([...dList, ...wList]);
+    } catch {}
+  };
+  useEffect(() => { refresh(); }, []);
+
+  const handlePreview = async () => {
+    if (!selectedKey) return;
+    setLoading(true);
+    try {
+      const isWorm = selectedKey.startsWith("w:");
+      const rawKey = selectedKey.slice(2);
+      const snap = isWorm ? await WormArchive.loadByMonth(rawKey) : await RetentionDB.loadByDate(rawKey);
+      if (!snap) { showToast("এই এন্ট্রি আর পাওয়া যায়নি", "#ef4444"); setLoading(false); return; }
+      setPreview({ snap, diff: diffBackupFields(data, snap) });
+      setConfirmRestore(true);
+    } catch (e) {
+      showToast("প্রিভিউ ব্যর্থ: " + (e?.message || "অজানা"), "#ef4444");
+    }
+    setLoading(false);
+  };
+
+  const handleConfirmRestore = () => {
+    if (!preview?.snap) return;
+    applyBackupFields(preview.snap, setters);
+    showToast("♻️ আর্কাইভ থেকে রিস্টোর সম্পন্ন হয়েছে!");
+    setConfirmRestore(false);
+    setPreview(null);
+    setSelectedKey("");
+  };
+
+  if (!stats) return null;
+
+  return (
+    <div style={{
+      background: "#0a0f1f", borderRadius: 14,
+      border: `1px solid ${GREEN}22`, padding: "12px 14px", marginTop: 10,
+    }}>
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
+      >
+        <div style={{ color: GREEN, fontWeight: 800, fontSize: 12 }}>
+          🗄️ ভার্সন হিস্ট্রি ও দীর্ঘমেয়াদী আর্কাইভ
+        </div>
+        <div style={{ color: "#475569", fontSize: 14 }}>{open ? "▲" : "▼"}</div>
+      </div>
+      <div style={{ marginTop: 6, color: "#94a3b8", fontSize: 11, display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <span>📅 দৈনিক: {stats.daily}</span>
+        <span>🗓️ সাপ্তাহিক: {stats.weekly}</span>
+        <span>📆 মাসিক: {stats.monthly}</span>
+      </div>
+
+      {open && (
+        <div style={{ marginTop: 12 }}>
+          {entries.length === 0 ? (
+            <div style={{ color: "#64748b", fontSize: 11 }}>
+              এখনো কোনো ভার্সনড আর্কাইভ তৈরি হয়নি — অটো-ব্যাকআপ চলার সাথে সাথেই তৈরি হতে শুরু করবে।
+            </div>
+          ) : (
+            <>
+              <select
+                value={selectedKey}
+                onChange={(e) => { setSelectedKey(e.target.value); setConfirmRestore(false); setPreview(null); }}
+                style={{
+                  width: "100%", padding: "10px 12px", borderRadius: 10,
+                  border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0",
+                  fontSize: 12, fontFamily: "inherit", marginBottom: 8,
+                }}
+              >
+                <option value="">— একটা তারিখ/মাস বেছে নিন —</option>
+                {entries.map(en => <option key={en.key} value={en.key}>{en.label}</option>)}
+              </select>
+
+              {!confirmRestore ? (
+                <button
+                  onClick={handlePreview}
+                  disabled={!selectedKey || loading}
+                  style={{
+                    width: "100%", padding: "10px", borderRadius: 10, border: `1px solid ${GREEN}44`,
+                    background: `${GREEN}15`, color: GREEN, fontWeight: 800, fontSize: 12,
+                    cursor: selectedKey ? "pointer" : "default", fontFamily: "inherit",
+                    opacity: selectedKey ? 1 : 0.5,
+                  }}
+                >{loading ? "লোড হচ্ছে..." : "প্রিভিউ দেখুন"}</button>
+              ) : (
+                <div>
+                  <div style={{ display: "flex", gap: 10, fontSize: 11, marginBottom: 8, flexWrap: "wrap" }}>
+                    <span style={{ color: "#22c55e" }}>+{preview.diff.totalAdded} নতুন</span>
+                    <span style={{ color: "#f59e0b" }}>~{preview.diff.totalChanged} পরিবর্তিত</span>
+                    <span style={{ color: "#ef4444" }}>-{preview.diff.totalRemoved} মুছে যাবে</span>
+                  </div>
+                  <div style={{ color: "#f59e0b", fontSize: 11, marginBottom: 8 }}>
+                    ⚠️ এই আর্কাইভ প্রয়োগ করলে বর্তমান ডেটা ওভাররাইট হবে — নিশ্চিত?
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button
+                      onClick={() => { setConfirmRestore(false); setPreview(null); }}
+                      style={{ flex: 1, padding: "10px", borderRadius: 10, border: "1px solid #334155", background: "none", color: "#94a3b8", fontWeight: 700, fontSize: 12, fontFamily: "inherit", cursor: "pointer" }}
+                    >বাতিল</button>
+                    <button
+                      onClick={handleConfirmRestore}
+                      style={{ flex: 2, padding: "10px", borderRadius: 10, border: "none", background: "#ef4444", color: "#fff", fontWeight: 800, fontSize: 12, fontFamily: "inherit", cursor: "pointer" }}
+                    >রিস্টোর করুন</button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
     </div>
