@@ -26,6 +26,15 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # ডিফল্ট packages ('tools platform-tools')-এর মধ্যে legacy 'tools'
+          # প্যাকেজ থাকে, যেটার ভেতর Android Emulator বান্ডল করা — APK বিল্ডে
+          # emulator লাগে না, আর এই ডাউনলোডই মাঝে মাঝে করাপ্ট/টাইমআউট হয়ে পুরো
+          # ধাপ fail করাচ্ছিল। শুধু platform-tools রাখলে emulator ডাউনলোড হয় না।
+          # platforms/build-tools এখানে আলাদা করে বসানোর দরকার নেই — Gradle
+          # বিল্ডের সময় AGP নিজেই android/app/build.gradle অনুযায়ী সঠিক
+          # ভার্সন sdkmanager দিয়ে auto-download করে নেয় (license আগেই accept করা)।
+          packages: 'platform-tools'
 
       - name: Install system dependencies for sharp
         run: sudo apt-get update && sudo apt-get install -y libvips-dev
