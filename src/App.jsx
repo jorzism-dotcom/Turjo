@@ -3812,6 +3812,7 @@ const FSS = {
   //     কালেকশনে পুরো re-fetch verify-ই স্লো নেটওয়ার্কে টাইমআউটের মূল কারণ ছিল।
   async _clearCollectionWithRetry(coll, maxAttempts = 4) {
     let lastLeft = -1;
+    let lastErr = "";
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const snap = await getDocs(collection(this._db, coll));
@@ -3825,7 +3826,8 @@ const FSS = {
               chunk.forEach(d => batch.delete(d.ref));
               await batch.commit();
               chunkOk = true;
-            } catch {
+            } catch (ce) {
+              lastErr = ce?.code || ce?.message || String(ce);
               if (cAttempt < 3) await new Promise(r => setTimeout(r, 500 * cAttempt));
             }
           }
@@ -3835,10 +3837,11 @@ const FSS = {
         lastLeft = -2; // কিছু রেকর্ড বাকি আছে, ঠিক সংখ্যা জানা নেই (হালকা চেক)
       } catch (e) {
         lastLeft = -1; // সম্পূর্ণ ব্যর্থ (exception) — পরের attempt-এ আবার চেষ্টা
+        lastErr = e?.code || e?.message || String(e);
       }
       if (attempt < maxAttempts) await new Promise(r => setTimeout(r, 1000 * attempt));
     }
-    return { ok: false, left: lastLeft };
+    return { ok: false, left: lastLeft, err: lastErr };
   },
 
   async clearAllData(onProgress) {
@@ -3853,7 +3856,10 @@ const FSS = {
     // হলে বাকিগুলোর জন্য অপেক্ষা না করেই নিজে থেকে আবার চেষ্টা করে।
     await Promise.all([...FSS_COLLECTIONS, "stats"].map(async (coll) => {
       const res = await this._clearCollectionWithRetry(coll);
-      if (!res.ok) errors.push(`${coll}: ${res.left === -2 ? "কিছু রেকর্ড এখনো আছে" : "ব্যর্থ"} (৪ বার চেষ্টার পরও)`);
+      if (!res.ok) {
+        const reason = res.left === -2 ? "কিছু রেকর্ড এখনো আছে" : "ব্যর্থ";
+        errors.push(`${coll}: ${reason}${res.err ? " [" + res.err + "]" : ""} (৪ বার চেষ্টার পরও)`);
+      }
       done++;
       try { onProgress?.(done, total); } catch {}
     }));
@@ -8506,7 +8512,10 @@ function SmartBusinessMgmt() {
   // তাই backup frequency কমেনি, শুধু duplicate logic সরানো হয়েছে।
 
   const showToast = useCallback((msg, color = "#22c55e") => {
-    setToast({ msg, color }); safeTimeout(() => setToast(null), 3200);
+    // 🔴 ফিক্স: warning/error (যেমন Master Reset-এর Firestore detail) বেশি লম্বা
+    // হয় আর গুরুত্বপূর্ণ — সবুজ "সেভ হয়েছে ✓"-এর মতো ৩.২s-এ পড়া যায় না।
+    const dur = (color === "#f59e0b" || color === "#ef4444") ? 8000 : 3200;
+    setToast({ msg, color }); safeTimeout(() => setToast(null), dur);
   }, [safeTimeout]);
 
   // ── 🔒 Session Timeout — নিষ্ক্রিয় থাকলে auto-logout ──────────────────────
@@ -9907,9 +9916,12 @@ function SmartBusinessMgmt() {
                   fontWeight: 800, fontSize: 13,
                   letterSpacing: 0.2, lineHeight: 1.4,
                   textShadow: "0 1px 4px rgba(0,0,0,0.5)",
-                  whiteSpace: "nowrap",
+                  // 🔴 ফিক্স: আগে whiteSpace:nowrap + ellipsis দিয়ে লম্বা মেসেজ
+                  // (যেমন Master Reset-এর Firestore error detail) এক লাইনে কেটে
+                  // যেত, ঠিক কোন কালেকশনে/কেন সমস্যা সেটা পড়া যেত না। এখন দরকার
+                  // হলে একাধিক লাইনে wrap করবে।
+                  whiteSpace: "normal",
                   maxWidth: "calc(100vw - 100px)",
-                  overflow: "hidden", textOverflow: "ellipsis",
                   flex: 1,
                 }}>{toast.msg}</span>
                 {/* Right accent dot */}
