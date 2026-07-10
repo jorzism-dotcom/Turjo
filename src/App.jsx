@@ -25911,6 +25911,22 @@ function FieldChangeLogPanel({ showToast, GREEN }) {
   const [expandedId, setExpandedId] = useState(null);
   const [loading, setLoading] = useState(false);
 
+  // 🔴 ফিক্স (ReferenceError: getTimeAgo is not defined) — এই ফাংশনটা আগে
+  // শুধু Settings_-এর ভেতরের একটা IIFE-তে লোকালি ডিফাইন ছিল (Master Sync &
+  // Backup কার্ডের জন্য), কিন্তু এই আলাদা কম্পোনেন্ট (FieldChangeLogPanel)
+  // থেকেও কল হতো — স্কোপের বাইরে থাকায় ক্র্যাশ করত। এখানেই আলাদাভাবে
+  // ডিফাইন করা হলো (একই লজিক)।
+  const getTimeAgo = (isoStr) => {
+    if (!isoStr) return "কখনো না";
+    const diff = Date.now() - new Date(isoStr).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return "এইমাত্র";
+    if (mins < 60) return `${mins} মিনিট আগে`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs} ঘণ্টা আগে`;
+    return `${Math.floor(hrs/24)} দিন আগে`;
+  };
+
   const refresh = async () => {
     setLoading(true);
     try {
@@ -26462,7 +26478,6 @@ const GDrive = {
 
     const meta = JSON.stringify({
       name: compressed ? this.BACKUP_FILENAME + ".gz" : this.BACKUP_FILENAME,
-      parents: [folderId],
       description: `SBM Backup — ${new Date().toLocaleString("en-US")} | ${compressed ? `gzip ${(compressedBytes/1024).toFixed(0)}KB←${(originalBytes/1024).toFixed(0)}KB` : `json ${(originalBytes/1024).toFixed(0)}KB`}`,
       appProperties: { hg_compressed: compressed ? "gzip" : "none", hg_version: "5.0" },
     });
@@ -26472,15 +26487,25 @@ const GDrive = {
 
     let url, method;
     if (existing) {
-      url = `https://www.googleapis.com/upload/drive/v3/files/${existing}?uploadType=multipart`;
+      // 🔴 ফিক্স: Drive API v3-এ PATCH/update রিকোয়েস্টে "parents" ফিল্ড
+      // সরাসরি metadata body-তে পাঠানো নিষেধ — Google নিজেই এরর দেয়
+      // ("The parents field is not directly writable in update requests.
+      // Use the addParents and removeParents parameters instead.")। তাই
+      // update-এর সময় parents বাদ দিয়ে (উপরের meta object-এ আর নেই),
+      // ফোল্ডার নিশ্চিত করতে URL-এ addParents query param যোগ করা হলো।
+      url = `https://www.googleapis.com/upload/drive/v3/files/${existing}?uploadType=multipart&addParents=${folderId}`;
       method = "PATCH";
     } else {
+      // নতুন ফাইল তৈরির (POST/create) সময় parents body-তে পাঠানো ঠিকই আছে —
+      // এখানে আলাদা করে যোগ করা হলো যেহেতু উপরের shared meta থেকে সরানো হয়েছে।
       url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart";
       method = "POST";
     }
 
+    const metaObj = JSON.parse(meta);
+    if (!existing) metaObj.parents = [folderId];
     const form = new FormData();
-    form.append("metadata", new Blob([meta], { type: "application/json" }));
+    form.append("metadata", new Blob([JSON.stringify(metaObj)], { type: "application/json" }));
     form.append("file", fileBlob);
 
     const r = await fetch(url, {
