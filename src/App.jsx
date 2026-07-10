@@ -9484,19 +9484,31 @@ function SmartBusinessMgmt() {
       const mergedData = {}; // colName -> merge-এর পর ফ্রেশ array (বা অপরিবর্তিত হলে local array)
       if (driveData) {
         setMasterSyncDetail("Merge করা হচ্ছে...");
-        // ৩. প্রতিটা collection merge করো — _updatedAt দেখে নতুনটা জেতে
+        // 🔴 ফিক্স #৯ (data-resurrection bug): আগে merge শুধু union করত —
+        // কোনো রেকর্ড লোকালে না থাকলে (মুছে রিসাইকেল বিনে গেছে) কিন্তু Drive-এর
+        // পুরনো ব্যাকআপে থাকলে, সেটা timestamp না দেখেই ফিরিয়ে আনা হতো
+        // (`!existing` শর্তেই যোগ হয়ে যেত)। এখন Drive-এর রেকর্ড যদি deletedCustomers/
+        // deletedProducts (রিসাইকেল বিন/tombstone লিস্ট)-এ থাকে, merge সেটা
+        // বাদ দেয় — মুছে ফেলা কাস্টমার/পণ্য আর Master Sync-এ ভূতের মতো ফিরে আসবে না।
+        const deletedIdSets = {
+          customers: new Set((deletedCustomers || []).map(r => String(r.id))),
+          products:  new Set((deletedProducts  || []).map(r => String(r.id))),
+        };
         let anyChange = false;
         COLLECTIONS.forEach(([colName, localArr, setter]) => {
           const driveArr = driveData[colName] || [];
           if (!driveArr.length) { mergedData[colName] = localArr; return; }
 
+          const tombstones = deletedIdSets[colName];
           const merged = new Map();
           // প্রথমে local state রাখো
           (localArr || []).forEach(r => { if (r?.id != null) merged.set(String(r.id), r); });
-          // Drive-এর record দেখো — _updatedAt বেশি হলে জেতে
+          // Drive-এর record দেখো — _updatedAt বেশি হলে জেতে, কিন্তু tombstone-এ
+          // থাকা (ইচ্ছাকৃতভাবে মোছা) রেকর্ড কখনো resurrect হবে না
           driveArr.forEach(dr => {
             if (dr?.id == null) return;
             const key = String(dr.id);
+            if (tombstones?.has(key)) return; // ইচ্ছাকৃতভাবে মোছা — বাদ
             const existing = merged.get(key);
             if (!existing || (dr._updatedAt || 0) > (existing._updatedAt || 0)) {
               merged.set(key, dr);
@@ -9639,17 +9651,36 @@ function SmartBusinessMgmt() {
         try { await RetentionDB.saveIfNewDay(data); } catch {}
         try { await WormArchive.archiveIfNewMonth(data); } catch {}
 
-        // #৪ ডেল্টা সিঙ্ক — local file destination-এর checkpoint hash আগেরটার
-        // সাথে মিললে পুরো ফাইল আবার লেখার দরকার নেই।
-        const newHashes = data._meta?.contentHash || buildContentHashes(data);
-        if (await DeltaSync.shouldSkip("autoLocalFile", newHashes)) return;
-
+        // 🔴 ফিক্স #১ (stale auto-backup ফাইল): ফাইলনেম রোজ বদলায়
+        // (sbm-auto-{date}.json) কিন্তু আগে শুধু DeltaSync hash-এর ওপর ভিত্তি
+        // করে লেখা হতো — কনটেন্ট না বদলালে নতুন তারিখের ফাইলটাই কখনো তৈরি
+        // হতো না, ফলে আজকের ফাইল অনেক আগের (stale) ডেটা বহন করত। এখন
+        // ক্যালেন্ডার-তারিখ বদলে গেলে hash অপরিবর্তিত থাকলেও অন্তত একবার
+        // লেখা নিশ্চিত করা হয় (dateChanged চেক), যাতে প্রতিদিনের ফাইল
+        // সবসময় ওইদিনের প্রকৃত অবস্থা প্রতিফলিত করে।
         const dateStr = new Date().toISOString().split("T")[0];
+        const lastWrittenDate = localStorage.getItem("hg_last_auto_file_date");
+        const dateChanged = lastWrittenDate !== dateStr;
+
+        // #৪ ডেল্টা সিঙ্ক — local file destination-এর checkpoint hash আগেরটার
+        // সাথে মিললে এবং তারিখও না বদলালে পুরো ফাইল আবার লেখার দরকার নেই।
+        const newHashes = data._meta?.contentHash || buildContentHashes(data);
+        if (!dateChanged && await DeltaSync.shouldSkip("autoLocalFile", newHashes)) return;
+
         await withRetry(() => FS.saveBackup(data, `sbm-auto-${dateStr}.json`), { retries: 2 }); // #৫
+        localStorage.setItem("hg_last_auto_file_date", dateStr);
         const ts = new Date().toISOString();
         setLastLocalBackup(ts);
         await save(SK.lastLocalBackup, ts);
         await DeltaSync.markSynced("autoLocalFile", newHashes);
+
+        // 🔴 ফিক্স #২ (ব্যাকগ্রাউন্ড স্ন্যাপশট-গ্যাপ): আগে IndexedDB স্ন্যাপশট
+        // শুধু ম্যানুয়াল বাটন/Master Sync/স্ক্রিন-খোলা টাইমারেই তৈরি হতো —
+        // Settings স্ক্রিন বন্ধ থাকলে কখনোই না। এখন প্রতি auto-cycle-এই (যখন
+        // ফাইলও লেখা হচ্ছে) একটা স্ন্যাপশটও রাখা হয়, যাতে "স্ন্যাপশট রিস্টোর"
+        // বাটনে সবসময় অন্তত একটা সাম্প্রতিক কপি পাওয়া যায়।
+        try { await SnapshotDB.save({ ...data, _savedAt: ts }); } catch {}
+
         if (Math.random() < 0.1) FS.deleteOldBackups(7); // মাঝেমধ্যে পুরনো (>৭দিন) ফাইল পরিষ্কার
         if (Math.random() < 0.1) FieldChangeLog.prune(); // #১৫ — একই ফ্রিকোয়েন্সিতে চেঞ্জ-লগও সীমার মধ্যে রাখা
       } catch {}
@@ -23473,6 +23504,7 @@ function Settings_({ T, S, shopName,
             data={buildManualBackupData()}
             setters={manualBackupSetters}
             showToast={showToast} T={T} S={S}
+            googleDriveToken={googleDriveToken}
           />
           <button style={{ ...S.cancelBtn, width:"100%", marginTop:10, color:"#4285F4", border:"1px solid #4285F433" }}
             onClick={() => { setShowGdExpanded(false); setGdUnlocked(false); }}>
@@ -24378,7 +24410,7 @@ function PinResetSettings({ T, S, devContact, setDevContact, masterResetHash, se
 // Firebase Google Sign-in → access token → Drive API
 // কাস্টমার নিজের Firebase config দেয় → তার Google account দিয়ে login করে
 // → নিজের Drive-এ backup যায় — সম্পূর্ণ private
-function GoogleDriveSection({ data, setters, showToast, T, S }) {
+function GoogleDriveSection({ data, setters, showToast, T, S, googleDriveToken }) {
   const [clientId, setClientId] = useState(() => localStorage.getItem("sbm_gd_client_id") || "");
   const [connected, setConnected] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -24408,6 +24440,28 @@ function GoogleDriveSection({ data, setters, showToast, T, S }) {
   const getFirebaseGoogleToken = useCallback(async () => {
     return GDrive.interactiveAuth(GOOGLE_WEB_CLIENT_ID);
   }, []);
+
+  // 🔴 ফিক্স #৩/#৫/#৬: একক জায়গা থেকে usable token বের করা। আগে restore/backup
+  // পাথগুলো শুধু এই ডিভাইসের নিজস্ব localStorage টোকেন দেখত, না পেলে সরাসরি
+  // ইন্টারঅ্যাক্টিভ (পপআপ) auth-এ চলে যেত — এমনকি "silentBackup"-এও, যেটা
+  // মাঝেমধ্যে অপ্রত্যাশিত ব্রাউজার পপআপ খুলে ফেলত। এখন ক্রমানুসারে চেষ্টা হয়:
+  // ১) এই ডিভাইসের নিজের টোকেন, ২) Firestore-এ শেয়ার করা admin-এর টোকেন
+  // (background auto-upload যেটা ব্যবহার করে — স্টাফ ফোনেও কাজ করবে), ৩) silent
+  // refresh (কোনো UI ছাড়াই), এবং শুধু allowInteractive===true হলে ৪) শেষ
+  // অবলম্বন হিসেবে ইন্টারঅ্যাক্টিভ লগইন।
+  const getUsableToken = useCallback(async ({ allowInteractive = true } = {}) => {
+    let token = localStorage.getItem("sbm_gd_token");
+    if (token && !GDrive.isTokenExpired()) return token;
+    const shared = googleDriveToken;
+    const sharedFresh = shared?.token && shared?.savedAt && (Date.now() - shared.savedAt) < 68 * 60 * 1000;
+    if (sharedFresh) return shared.token;
+    try {
+      const fresh = await GDrive.ensureTokenSilent(GOOGLE_WEB_CLIENT_ID);
+      if (fresh) return fresh;
+    } catch {}
+    if (allowInteractive) return getFirebaseGoogleToken();
+    return null;
+  }, [googleDriveToken, getFirebaseGoogleToken]);
   useEffect(() => {
     const token = localStorage.getItem("sbm_gd_token");
     if (token) { setConnected(true); }
@@ -24431,11 +24485,14 @@ function GoogleDriveSection({ data, setters, showToast, T, S }) {
       const newHashes = buildContentHashes(data);
       if (await DeltaSync.shouldSkip("drive", newHashes)) return;
 
-      let token = localStorage.getItem("sbm_gd_token");
-      if (!token || GDrive.isTokenExpired()) {
-        try { token = await getFirebaseGoogleToken(); }
-        catch { return; } // silent fail
-      }
+      // 🔴 ফিক্স #৫: আগে এখানে token expire হলে getFirebaseGoogleToken()
+      // (ইন্টারঅ্যাক্টিভ OAuth, ব্রাউজার পপআপ) কল হতো — একটা "silent" নামের
+      // ফাংশনে এটা স্ববিরোধী ও বিভ্রান্তিকর UX তৈরি করত। এখন allowInteractive:
+      // false দিয়ে শুধু silent উপায়ে (নিজের টোকেন → শেয়ার্ড টোকেন → silent
+      // refresh) চেষ্টা হয়; কোনোটাই না পেলে এই cycle চুপচাপ স্কিপ হয়ে যায়,
+      // কোনো পপআপ ছাড়াই — পরের cycle-এ আবার চেষ্টা হবে।
+      const token = await getUsableToken({ allowInteractive: false });
+      if (!token) return;
       // #৫ রিট্রাই + ব্যাকঅফ — নিঃশব্দ auto-backup-এও প্রযোজ্য
       await withRetry(() => GDrive.uploadBackup(token, {
         ...data, _autoBackup: true, _savedAt: new Date().toISOString(),
@@ -24445,7 +24502,7 @@ function GoogleDriveSection({ data, setters, showToast, T, S }) {
       setLastSync(now);
       await DeltaSync.markSynced("drive", newHashes);
     } catch {}
-  }, [data, getFirebaseGoogleToken]);
+  }, [data, getUsableToken]);
 
   const handleConnect = async () => {
     setSyncing(true);
@@ -24471,14 +24528,11 @@ function GoogleDriveSection({ data, setters, showToast, T, S }) {
     setSyncing(true);
     setStatus("idle");
     try {
-      let token = localStorage.getItem("sbm_gd_token");
-      if (!token || GDrive.isTokenExpired()) {
-        try { token = await getFirebaseGoogleToken(); }
-        catch {
-          setNeedAuth(true);
-          setStatus("error"); setStatusMsg("পুনরায় Google লগইন করুন");
-          setSyncing(false); return;
-        }
+      const token = await getUsableToken({ allowInteractive: true });
+      if (!token) {
+        setNeedAuth(true);
+        setStatus("error"); setStatusMsg("পুনরায় Google লগইন করুন");
+        setSyncing(false); return;
       }
       await GDrive.uploadBackup(token, {
         ...pickBackupFields(data),
@@ -24502,10 +24556,13 @@ function GoogleDriveSection({ data, setters, showToast, T, S }) {
     if (!confirmRestore) {
       setPreviewLoading(true); setStatus("idle"); setStatusMsg("");
       try {
-        let token = localStorage.getItem("sbm_gd_token");
-        if (!token || GDrive.isTokenExpired()) {
-          try { token = await getFirebaseGoogleToken(); }
-          catch { setNeedAuth(true); setStatus("error"); setStatusMsg("পুনরায় Google লগইন করুন"); setPreviewLoading(false); return; }
+        // 🔴 ফিক্স #৩: আগে এখানে শুধু এই ডিভাইসের নিজের localStorage টোকেন
+        // দেখা হতো — না থাকলে সরাসরি নতুন ইন্টারঅ্যাক্টিভ লগইন চাইত, যদিও
+        // background auto-upload ইতিমধ্যে Firestore-এ admin-এর শেয়ার্ড টোকেন
+        // ব্যবহার করে ব্যাকআপ নিচ্ছিল। এখন সেই শেয়ার্ড টোকেনও আগে ট্রাই হয়।
+        const token = await getUsableToken({ allowInteractive: true }).catch(() => null);
+        if (!token) {
+          setNeedAuth(true); setStatus("error"); setStatusMsg("পুনরায় Google লগইন করুন"); setPreviewLoading(false); return;
         }
         // #৫ রিট্রাই + ব্যাকঅফ
         const d = await withRetry(() => GDrive.downloadBackup(token), { retries: 2 });
@@ -24527,8 +24584,7 @@ function GoogleDriveSection({ data, setters, showToast, T, S }) {
     setRestoring(true); setConfirmRestore(false);
     try {
       const d = previewData || await (async () => {
-        let token = localStorage.getItem("sbm_gd_token");
-        if (!token || GDrive.isTokenExpired()) token = await getFirebaseGoogleToken();
+        const token = await getUsableToken({ allowInteractive: true });
         return withRetry(() => GDrive.downloadBackup(token), { retries: 2 });
       })();
       const valid = validateBackup(d);
@@ -25429,6 +25485,14 @@ function LocalStorageSection({ data, setters, showToast, T, S }) {
               <div style={{ color: "#c4b5fd", fontWeight: 800, fontSize: 12 }}>🔐 এনক্রিপ্টেড ব্যাকআপ</div>
               <div style={{ color: "#64748b", fontSize: 10, marginTop: 2 }}>
                 AES-256 — PIN ছাড়া কেউ ফাইল খুলতে পারবে না। PIN ভুলে গেলে ব্যাকআপ উদ্ধার অসম্ভব!
+                {/* 🔴 ফিক্স #৪: আগে এই টগল অন করলে ইউজার ধরে নিতেন সব ব্যাকআপ
+                    এনক্রিপ্টেড — আসলে এটা শুধু নিচের "ডাউনলোড" বাটনে প্রযোজ্য।
+                    Auto-backup/Drive/স্ন্যাপশট ব্যাকগ্রাউন্ডে চুপচাপ চলে বলে
+                    প্রতিবার PIN চাওয়া সম্ভব না, তাই ওগুলো এনক্রিপ্ট হয় না —
+                    এই সীমাবদ্ধতা স্পষ্ট করে লেখা হলো, যাতে ভুল ধারণা না হয়। */}
+                <div style={{ color: "#a855f7", marginTop: 4 }}>
+                  ⚠️ শুধু নিচের "ডাউনলোড" বাটনে প্রযোজ্য — auto-backup, Google Drive ও স্ন্যাপশট ব্যাকআপ সবসময় এনক্রিপ্ট ছাড়াই (plain JSON) থাকে।
+                </div>
               </div>
             </div>
             <button
@@ -26032,7 +26096,10 @@ function BackupArchivePanel({ data, setters, showToast, GREEN }) {
 // রিস্টোর success মেসেজে contentHash mismatch থাকলে সংক্ষিপ্ত সতর্কতা জোড়া —
 // GoogleDriveSection/LocalStorageSection-এর তিনটা restore পাথই এটা ব্যবহার করে
 function contentIssueSuffix(valid) {
-  return (valid?.contentIssues?.length) ? ` ⚠️ ${valid.contentIssues.length}টি ফিল্ডে কনটেন্ট-মিসম্যাচ সন্দেহ` : "";
+  const parts = [];
+  if (valid?.checksumMismatch) parts.push("checksum মেলেনি — ফাইলটি সন্দেহজনক/পুরনো হতে পারে");
+  if (valid?.contentIssues?.length) parts.push(`${valid.contentIssues.length}টি ফিল্ডে কনটেন্ট-মিসম্যাচ সন্দেহ`);
+  return parts.length ? ` ⚠️ ${parts.join(", ")}` : "";
 }
 function validateBackup(data) {
   if (!data || typeof data !== "object") return { ok: false, msg: "ব্যাকআপ ডেটা পাওয়া যায়নি" };
@@ -26053,6 +26120,7 @@ function validateBackup(data) {
   if (data.expenses     && !Array.isArray(data.expenses))     return { ok: false, msg: "expenses ডেটা corrupt" };
   if (data.returns      && !Array.isArray(data.returns))      return { ok: false, msg: "returns ডেটা corrupt" };
   // Checksum verify (যদি থাকে)
+  let checksumMismatch = false;
   if (data._meta?.checksum) {
     // v6 checksum: কেন্দ্রীয় BACKUP_FIELDS রেজিস্ট্রি (১৮টি collection) থেকে,
     // buildBackupData-এর মতো একই ক্রমে recompute করা — নতুন ফিল্ড যোগ হলে
@@ -26085,9 +26153,12 @@ function validateBackup(data) {
     ].join("-");
     const checksumOk = expectedV6 === data._meta.checksum || expectedV4 === data._meta.checksum || expectedV3 === data._meta.checksum || expectedV2 === data._meta.checksum;
     if (!checksumOk) {
-      // Warning only — strict reject করব না, partial backup-ও কাজে লাগতে পারে
+      // 🔴 ফিক্স #৭: আগে শুধু console.warn হতো, ইউজার কখনো দেখতেন না যে
+      // ব্যাকআপ ফাইলের checksum মেলেনি — এখন এই ফ্ল্যাগ রিটার্ন ভ্যালুতে যোগ
+      // হলো (contentIssueSuffix ব্যবহার করে সব restore-success মেসেজেই এখন দেখা যাবে)।
       console.warn("[validateBackup] Checksum mismatch", { v6: expectedV6, v4: expectedV4, v3: expectedV3, v2: expectedV2, got: data._meta.checksum });
     }
+    checksumMismatch = !checksumOk;
   }
   // #২ per-record content-hash যাচাই (v7+ ব্যাকআপে থাকে) — count same থাকলেও
   // কোনো রেকর্ডের ভেতরের ডেটা corrupt/বদলে গেছে কিনা এটা ধরে। শুধু warning —
@@ -26108,6 +26179,7 @@ function validateBackup(data) {
   return {
     ok: true,
     contentIssues,
+    checksumMismatch,
     counts: {
       customers: data.customers?.length || 0, products: data.products?.length || 0,
       invoices: data.invoices?.length || 0,   txns: data.txns?.length || 0,
@@ -26666,19 +26738,11 @@ const LocalBackup = {
     return SnapshotDB.getLastSync();
   },
 
-  downloadAsFile(data) {
-    const json = JSON.stringify(
-      { ...data, _exportedAt: new Date().toISOString(), _version: "5.0" },
-      null, 2
-    );
-    const blob = new Blob([json], { type: "application/json" });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement("a");
-    a.href     = url;
-    a.download = `sbm-backup-${new Date().toISOString().split("T")[0]}.json`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
-  },
+  // 🔴 ফিক্স #৮: আগে এখানে downloadAsFile() নামে একটা মেথড ছিল যেটা কোথাও
+  // কল হতো না (dead code) এবং Capacitor APK-তে কাজও করত না (শুধু browser
+  // anchor-download, নেটিভ Filesystem হ্যান্ডলিং ছাড়া)। বাস্তব ডাউনলোড বাটন
+  // (handleDownloadFile, LocalStorageSection-এ) সবসময় FS.saveBackup() ব্যবহার
+  // করে যেটা APK-তে ঠিকভাবে কাজ করে — তাই এই ডুপ্লিকেট/ভাঙা মেথডটা বাদ দেওয়া হলো।
 
   setAutoEnabled(v) { localStorage.setItem(this.AUTO_KEY, v ? "1" : "0"); },
   isAutoEnabled()   { return localStorage.getItem(this.AUTO_KEY) === "1"; },
