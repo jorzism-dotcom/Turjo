@@ -337,7 +337,8 @@ function HighlightText({ text, query, style, highlightColor = "#22c55e" }) {
 }
 
 // ─── SupplierPicker — টাইপাহেড সার্চ-করে-বাছাই সাপ্লায়ার সিলেক্টর ───────────
-// BD_PHARMA_COMPANIES (২২০টি) এর মধ্যে ফাজি সার্চ (smartMatch), অথবা "নিজে লিখুন" কাস্টম মোড।
+// BD_PHARMA_COMPANIES (MEDICINE_DATASET থেকে ডিরাইভ করা, ২১১টি) এর মধ্যে ফাজি সার্চ (smartMatch),
+// অথবা "নিজে লিখুন" কাস্টম মোড।
 function SupplierPicker({ value, onChange, error, T, S, autoFocus }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -5531,6 +5532,58 @@ async function parseAiImageEntry(dataUrl, anthropicKey, { onStart, onDone, onErr
   }
 }
 
+// ── #৭ AI ফিচার — চালান/ইনভয়েসের ছবি → বাল্ক ক্রয় এন্ট্রি (একাধিক লাইন-আইটেম একসাথে এক্সট্র্যাক্ট) ──
+// dataUrl: "data:image/jpeg;base64,...." ফরম্যাটে ক্যামেরা/গ্যালারি থেকে পাওয়া চালান/ইনভয়েসের ছবি।
+// একাধিক পণ্যের নাম+পরিমাণ+ক্রয়মূল্য (ও সম্ভব হলে সাপ্লায়ার নাম) একসাথে বের করে array আকারে দেয়।
+// এখানেও রিভিউ-কনফার্ম বাধ্যতামূলক থাকবে (কলার সাইডে) — সরাসরি সেভ হয় না।
+async function parseAiInvoiceImage(dataUrl, anthropicKey, { onStart, onDone, onError } = {}) {
+  if (onStart) onStart();
+  if (!anthropicKey) { if (onError) onError("সেটিংসে Anthropic API Key দিন"); return null; }
+  if (!dataUrl || !dataUrl.startsWith("data:")) { if (onError) onError("ছবি পাওয়া যায়নি, আবার চেষ্টা করুন"); return null; }
+  const m = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+  if (!m) { if (onError) onError("ছবির ফরম্যাট সাপোর্টেড না"); return null; }
+  const [, mediaType, base64Data] = m;
+  const prompt = `তুমি একটি বাংলাদেশি ফার্মেসি/দোকানের ইনভেন্টরি সহকারী। এই ছবিতে সাপ্লায়ারের একটি কাগজের চালান/ইনভয়েস
+(হাতে-লেখা বা প্রিন্টেড) আছে, যেখানে একাধিক পণ্যের লাইন-আইটেম তালিকা আছে।
+ছবি থেকে যা দেখতে পাচ্ছ তাই বের করো — অনুমান করে সংখ্যা বানিও না, কোনো ফিল্ড অস্পষ্ট/অনুপস্থিত হলে null দাও।
+শুধু নিচের JSON ফরম্যাটে উত্তর দাও, অন্য কোনো টেক্সট/মার্কডাউন/ব্যাখ্যা ছাড়া:
+{"supplier": "চালানের উপরে/নিচে থাকা সাপ্লায়ার বা কোম্পানির নাম (string বা null)", "items": [{"name": "পণ্যের নাম ও পাওয়ার/সাইজ একসাথে (string)", "qty": সংখ্যা বা null, "unitCost": এক ইউনিটের ক্রয়মূল্য সংখ্যা বা null}]}
+নিয়ম: বাংলা সংখ্যা (০-৯) থাকলে ইংরেজি সংখ্যায় বদলাও। প্রতিটা লাইন-আইটেম আলাদা করে items অ্যারেতে দাও, বাদ দিও না।
+"name" ফিল্ডে চালানে যা লেখা আছে হুবহু তাই রাখো, বানান ঠিক করার চেষ্টা করো না। মোট/সাবটোটাল/ট্যাক্সের লাইন items-এ রেখো না, শুধু প্রকৃত পণ্যের লাইন। ছবি অস্পষ্ট/অপ্রাসঙ্গিক হলে items: [] দেবে।`;
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": anthropicKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 2000,
+        messages: [{
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } },
+            { type: "text", text: prompt },
+          ],
+        }],
+      }),
+    });
+    if (!res.ok) throw new Error(`API error ${res.status}`);
+    const d = await res.json();
+    const raw = (d.content?.[0]?.text || "").trim().replace(/^```json\s*|```$/g, "");
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.items)) throw new Error("bad shape");
+    if (onDone) onDone(parsed);
+    return parsed;
+  } catch (e) {
+    if (onError) onError("AI থেকে উত্তর পাওয়া যায়নি — ছবি স্পষ্ট কিনা ও নেট সংযোগ/API Key চেক করুন");
+    return null;
+  }
+}
+
 // SMS via CapacitorHttp (bypasses WebView CORS) or fetch fallback
 async function httpPost(url, headers, body, isForm = false) {
   // Capacitor native HTTP — no CORS issues in APK
@@ -6422,241 +6475,23 @@ function downloadBackupFile(data, filename) {
 // ─── Seeds ────────────────────────────────────────────────────────────────────
 const PRODUCT_CATEGORIES = ["সব", "অ্যান্টিবায়োটিক", "ব্যথানাশক", "গ্যাস্ট্রিক", "ডায়াবেটিস", "ভিটামিন", "স্যালাইন", "ড্রেসিং", "সিরাপ", "চর্মরোগ", "হৃদরোগ", "অন্যান্য"];
 
-// বাংলাদেশের সক্রিয় ওষুধ কোম্পানির লিস্ট (MedEx থেকে, ২২০টি — যেগুলোর বাস্তবে বাজারে ব্র্যান্ড আছে)
-const BD_PHARMA_COMPANIES = [
-  "ACI Limited",
-  "ACME Laboratories Ltd.",
-  "Ad-din Pharmaceuticals Ltd.",
-  "Aexim Pharmaceuticals Ltd.",
-  "Al-Madina Pharmaceuticals Ltd.",
-  "Albion Laboratories Limited",
-  "Albion Specialized Pharma Limited",
-  "Alco Pharma Ltd.",
-  "Alien Pharma",
-  "Alkad Laboratories",
-  "Allied Pharmaceuticals Ltd.",
-  "Ambee Pharmaceuticals Ltd.",
-  "Amico Laboratories Ltd.",
-  "Amulet Pharmaceuticals Ltd.",
-  "APC Pharma Ltd.",
-  "Apex Pharma Ltd.",
-  "Apollo Pharmaceutical Ltd.",
-  "AqVida Bangladesh",
-  "Arges Life Science Limited",
-  "Aristopharma Ltd.",
-  "Army Pharma Limited",
-  "Asiatic Laboratories Ltd.",
-  "Astra Biopharmaceuticals Ltd.",
-  "Avarox Pharmaceuticals Ltd.",
-  "Aztec Pharmaceuticals Ltd.",
-  "Beacon Pharmaceuticals PLC",
-  "Beauty Formulas",
-  "Belsen Pharmaceuticals Ltd.",
-  "Bengal Drugs Ltd.",
-  "Benham Pharmaceuticals Ltd.",
-  "Beximco Pharmaceuticals Ltd.",
-  "Bexter Pharmaceuticals",
-  "BIO Care Pharmaceutical",
-  "Biocell Ayurvedic Limited",
-  "Biogen Pharmaceuticals Ltd.",
-  "Biopharma Limited",
-  "BOTS Pvt. Limited",
-  "Bright HealthCare",
-  "Bristol Pharmaceuticals Ltd.",
-  "Bronson Laboratories (BD) Ltd.",
-  "C2C Pharma Ltd.",
-  "Centeon Pharma Ltd.",
-  "Central Pharmaceuticals Ltd.",
-  "Chemist Laboratories Ltd.",
-  "City Overseas Ltd.",
-  "Concord Pharmaceuticals Ltd.",
-  "Cosmic Pharma Ltd.",
-  "Cosmo Pharma Laboratories Ltd.",
-  "Credence Pharmaceuticals Ltd.",
-  "CuRx",
-  "DBL Healthcare Ltd.",
-  "DBL Pharmaceuticals Ltd.",
-  "Decent Pharma Laboratories Ltd.",
-  "Delta Pharma Ltd.",
-  "Derma Health Care",
-  "Dermolive",
-  "Desh Pharmaceuticals Ltd.",
-  "Discount Pharma",
-  "Diva's Secret",
-  "Doctor TIMS Pharmaceuticals Ltd.",
-  "Doctor's Chemical Works Ltd.",
-  "Dr Rhazes",
-  "Drug International Ltd.",
-  "Edruc Limited",
-  "EMCS Pharma Limited",
-  "EMPECS Medical Device Co., Ltd.",
-  "Empiric Laboratories Ltd.",
-  "Ergon Pharmaceuticals (AY)",
-  "Eskayef Pharmaceuticals Ltd.",
-  "Ethical Drugs Limited",
-  "Euro Pharma Ltd.",
-  "Everest Pharmaceuticals Ltd.",
-  "FnF Pharmaceuticals Ltd.",
-  "Gaco Pharmaceuticals Ltd.",
-  "General Pharmaceuticals Ltd.",
-  "Genvio Pharma Ltd.",
-  "Get Well Limited",
-  "GlaxoSmithKline Pharmaceuticals",
-  "Globe Pharmaceuticals Ltd.",
-  "Globex Pharmaceuticals Ltd.",
-  "Gonoshasthaya Pharma Ltd.",
-  "Goodman Pharmaceuticals Ltd.",
-  "Green Laboratories (Unani)",
-  "Greenland Pharmaceuticals Ltd.",
-  "Guardian Healthcare Ltd.",
-  "Hallmark Pharmaceuticals Ltd.",
-  "Healthcare Pharmaceuticals Ltd.",
-  "Herbex & Co (Unani)",
-  "Hudson Pharmaceuticals Ltd.",
-  "Ibn Sina Pharmaceuticals Ltd.",
-  "Incepta Pharmaceuticals Ltd.",
-  "Indo Bangla Pharmaceutical",
-  "Institute of Public Health (IPH)",
-  "International Agencies (Bd.) Limited",
-  "Janata Traders",
-  "Jayson Natural Products Ltd.",
-  "Jayson Pharmaceutical Ltd.",
-  "Jenphar Bangladesh Ltd.",
-  "JMI Syringes & Medical Devices Ltd.",
-  "Kawsar Chemicals",
-  "Kemiko Pharmaceuticals Ltd.",
-  "Kumudini Pharma Ltd.",
-  "Labaid Pharma Ltd.",
-  "Leon Pharmaceuticals Ltd.",
-  "Lexicon Pharma",
-  "Libra Infusions Ltd.",
-  "Libra Pharmaceuticals Ltd.",
-  "Maks Drug Limited",
-  "Marie Stopes Bangladesh",
-  "Marker Pharma Ltd.",
-  "Marksman Pharmaceuticals Ltd.",
-  "Medicon Pharmaceuticals Ltd.",
-  "Medimet Pharmaceuticals Ltd.",
-  "MedRx Life Science Ltd.",
-  "MGH Healthcare Limited",
-  "Microlife Corporation",
-  "MicroMed",
-  "Millat Pharmaceuticals Ltd.",
-  "Modern Pharmaceuticals Ltd.",
-  "Momotaz Pharmaceuticals Ltd.",
-  "Monicopharma Ltd.",
-  "MST Pharma",
-  "Mundipharma (BD) Pvt. Ltd.",
-  "Mystic Pharmaceuticals Ltd.",
-  "Naafco Pharma PLC",
-  "National Drug Co. Ltd.",
-  "Navana Pharmaceuticals Ltd.",
-  "NEMUS Pharmaceutical Pvt. Ltd.",
-  "Neoventis Pharmaceuticals Ltd.",
-  "Nevian Lifescience PLC",
-  "Nipa Pharmaceuticals Ltd.",
-  "NIPRO",
-  "NIPRO JMI Pharma Ltd.",
-  "Novatek Pharmaceuticals Ltd.",
-  "Novelta Bestway Pharma Ltd.",
-  "Novo Healthcare and Pharma Ltd.",
-  "Novo Nordisk Pharma (Pvt.) Ltd.",
-  "Novus Pharmaceuticals Ltd.",
-  "Nutrilife Pharma",
-  "Nuvista Pharma Ltd.",
-  "One Pharma Ltd.",
-  "Opsonin Herbal & Nutraceuticals Ltd.",
-  "Opsonin Pharma Ltd.",
-  "Organic Herbal & Nutraceuticals Ltd.",
-  "Orion Infusion Ltd.",
-  "Orion Pharma Ltd.",
-  "OSL Pharma Limited",
-  "Oyster Pharmaceuticals Ltd.",
-  "Pacific Pharmaceuticals Ltd.",
-  "Peoples Pharma Ltd.",
-  "Pfizer",
-  "Pharmacil Limited",
-  "Pharmadesh Laboratories Ltd.",
-  "Pharmasia Limited",
-  "Pharmik Laboratories Ltd.",
-  "Physic Pharmaceuticals Ltd.",
-  "Popular Pharmaceuticals Ltd.",
-  "Premier Pharmaceuticals Ltd.",
-  "Prime Pharmaceuticals Ltd.",
-  "Pristine Pharmaceuticals Ltd.",
-  "Purnava Limited",
-  "Quality Pharmaceuticals Ltd.",
-  "Radiant Export Import Enterprise",
-  "Radiant Nutraceuticals Ltd.",
-  "Radiant Pharmaceuticals Ltd.",
-  "Radius Pharmaceuticals Ltd.",
-  "Rangs Pharmaceuticals Ltd.",
-  "Reckitt & Benckiser Ltd.",
-  "Reliance Pharmaceuticals Ltd.",
-  "Reman Drug Laboratories Ltd.",
-  "Remark HB Limited (Remark LLC.)",
-  "Renata PLC",
-  "Rephco Pharmaceuticals Ltd.",
-  "River Pharma",
-  "RN Pharmaceuticals",
-  "Roche Bangladesh Ltd.",
-  "Royal Pharmaceutical Ltd.",
-  "S.N. Pharmaceutical Ltd.",
-  "Salton Pharmaceuticals Ltd.",
-  "SANDOZ (A Novartis Division)",
-  "Save Pharmaceuticals Ltd.",
-  "SB Laboratories Ltd.",
-  "Seema Pharmaceuticals Ltd.",
-  "SEKO Laboratories (Unani)",
-  "Servier Bangladesh Operation",
-  "Sharif Pharmaceuticals Ltd.",
-  "SHINIL Pharma Limited",
-  "Shuvro Limited",
-  "Silco Pharmaceutical Ltd.",
-  "Silva Pharmaceuticals Ltd.",
-  "Skylab Pharmaceuticals Ltd.",
-  "SMC Enterprise Ltd.",
-  "Somatec Pharmaceuticals Ltd.",
-  "Sonear Laboratories Ltd.",
-  "Square Pharmaceuticals PLC",
-  "Sun Pharmaceutical (Bangladesh) Ltd.",
-  "Sun Pharmaceutical Industries Ltd.",
-  "Sunman-Birdem Pharma Ltd.",
-  "Supreme Pharmaceutical Ltd.",
-  "Synovia Pharma PLC.",
-  "Syntho Laboratories Ltd.",
-  "Team Pharmaceuticals Ltd.",
-  "Techno Drugs Ltd.",
-  "The White Horse Pharmaceuticals Ltd.",
-  "Total Herbal & Nutraceuticals",
-  "Total Natural Company (Unani)",
-  "Ultra Pharma Ltd.",
-  "UNIDO Pharmaceuticals Ltd.",
-  "UniHealth Limited",
-  "UniMed UniHealth Pharmaceuticals Ltd.",
-  "Union Pharmaceuticals Ltd.",
-  "Unique Pharmaceuticals Ltd.",
-  "United Pharmaceuticals Ltd.",
-  "Veritas Pharmaceuticals Ltd.",
-  "Virgo Pharmaceuticals Ltd.",
-  "Walmart Pharma Ltd.",
-  "West-Coast Pharmaceutical Works Ltd.",
-  "ZAS Corporation",
-  "Zenith Pharmaceuticals Ltd.",
-  "Ziska Pharmaceuticals Ltd.",
-];
-
-// ─── MEDICINE_DATASET — নাম-ভিত্তিক অটো-সাজেশন ডেটাসেট ──────────────────────
+// ─── MEDICINE_DATASET — নাম-ভিত্তিক অটো-সাজেশন ডেটাসেট (ও কোম্পানি/সাপ্লায়ার লিস্টের সোর্স) ──
 // প্রতিটি এন্ট্রি: [নাম, পাওয়ার/শক্তি, কোম্পানি]। উৎস: MedEx.com.bd থেকে সংগৃহীত একটি ওপেন
 // GitHub ডেটাসেট (mahfuj-m/Medicine-s-Dataset) — ২০,৫০০+ প্রকৃত/verified বাংলাদেশি ব্র্যান্ড এন্ট্রি,
-// হাতে-বানানো/অনুমাননির্ভর কোনো ডেটা নেই। কোম্পানি নাম MedEx-এর মূল বানানেই রাখা হয়েছে, তাই
-// BD_PHARMA_COMPANIES লিস্টের সাথে সবসময় হুবহু নাও মিলতে পারে (না মিললে SupplierPicker "কাস্টম" মোডে
-// টেক্সট হিসেবে দেখাবে — ফিচার ভাঙবে না)। এই ফাইলটা (medicineDataset.json) App.jsx-এর পাশে repo-তে
-// আলাদাভাবে যোগ করতে হবে — নিচে import দ্রষ্টব্য।
+// হাতে-বানানো/অনুমাননির্ভর কোনো ডেটা নেই। এই ফাইলটা (medicineDataset.json) App.jsx-এর পাশে repo-তে
+// আলাদাভাবে যোগ করতে হবে — নাহলে বিল্ড ভাঙবে।
 import MEDICINE_DATASET from "./medicineDataset.json";
 // দ্রুত সাজেশন-সার্চের জন্য লোয়ারকেস লেবেল প্রি-কম্পিউট (২০,০০০+ এন্ট্রিতে প্রতি কি-স্ট্রোকে বারবার
 // toLowerCase() চালানো এড়াতে — নাহলে টাইপ করার সময় স্টাটার/ল্যাগ হতে পারে বাজেট ফোনে)
 const MEDICINE_LABELS_LC = MEDICINE_DATASET.map(([n, p]) => (p ? `${n} ${p}` : n).toLowerCase());
+
+// বাংলাদেশের ওষুধ কোম্পানি/সাপ্লায়ার লিস্ট — আলাদা হার্ডকোড অ্যারে না রেখে MEDICINE_DATASET থেকেই
+// ডিরাইভ করা হয় (একবার, module লোডের সময়) যাতে দুটো লিস্টের মধ্যে বানান/এন্ট্রি mismatch না হয় —
+// এটাই এখন একমাত্র সোর্স অফ ট্রুথ (২১১টি ইউনিক কোম্পানি, বর্ণানুক্রমে সর্ট করা)।
+const BD_PHARMA_COMPANIES = [...new Set(
+  MEDICINE_DATASET.map(([, , company]) => company).filter(Boolean)
+)].sort((a, b) => a.localeCompare(b));
+
 
 // ─── medDatasetLabel — একটা এন্ট্রির প্রদর্শন টেক্সট (নাম + পাওয়ার) তৈরি করে ──────────
 function medDatasetLabel(entry) {
@@ -7083,8 +6918,8 @@ function ExpiryYearMonthPicker({ value, onChange, style = {} }) {
 
   return (
     <div style={style}>
-      <div style={{ marginBottom: 8 }}>
-        <label style={{ color:"#94a3b8", fontSize:10, fontWeight:700, display:"block", marginBottom:4 }}>⚡ দ্রুত টাইপ (MM/YY) — স্ট্রিপে যেভাবে ছাপা আছে সেভাবেই লিখুন</label>
+      <div>
+        <label style={{ color:"#94a3b8", fontSize:10, fontWeight:700, display:"block", marginBottom:4 }}>⚡ মেয়াদ লিখুন (MM/YY) — স্ট্রিপে যেভাবে ছাপা আছে সেভাবেই লিখুন</label>
         <input
           value={shorthand}
           onChange={e => handleShorthandChange(e.target.value)}
@@ -7099,28 +6934,6 @@ function ExpiryYearMonthPicker({ value, onChange, style = {} }) {
             {isPast ? `⚠️ ${BN_MONTHS[parseInt(local.month,10)-1]}, ${local.year} — এই তারিখ অতীতের, ঠিক আছে তো?` : `✓ ${BN_MONTHS[parseInt(local.month,10)-1]}, ${local.year}`}
           </div>
         )}
-      </div>
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
-      <div>
-        <label style={{ color:"#94a3b8", fontSize:10, fontWeight:700, display:"block", marginBottom:4 }}>সাল (Year)</label>
-        <select
-          value={local.year}
-          onChange={e => update(e.target.value, local.month)}
-          style={{ width:"100%", padding:"9px 10px", borderRadius:10, border:"1.5px solid #334155", background:"#0f172a", color:"#e2e8f0", fontSize:13, fontWeight:700, fontFamily:"inherit", outline:"none", cursor:"pointer" }}>
-          <option value="">— সাল —</option>
-          {years.map(y => <option key={y} value={String(y)}>{y}</option>)}
-        </select>
-      </div>
-      <div>
-        <label style={{ color:"#94a3b8", fontSize:10, fontWeight:700, display:"block", marginBottom:4 }}>মাস (Month)</label>
-        <select
-          value={local.month}
-          onChange={e => update(local.year, e.target.value)}
-          style={{ width:"100%", padding:"9px 10px", borderRadius:10, border:"1.5px solid #334155", background:"#0f172a", color:"#e2e8f0", fontSize:13, fontWeight:700, fontFamily:"inherit", outline:"none", cursor:"pointer" }}>
-          <option value="">— মাস —</option>
-          {BN_MONTHS.map((m,i) => <option key={i+1} value={String(i+1).padStart(2,"0")}>{m}</option>)}
-        </select>
-      </div>
       </div>
     </div>
   );
@@ -13403,8 +13216,8 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                   }}
                   style={{
                     position: "relative",
-                    background: isSelected ? `${glowColor}1f` : (p.demandType === "uncommon" ? "#a78bfa14" : T.card),
-                    border: `1.5px solid ${isSelected ? glowColor : (p.demandType === "uncommon" ? "#a78bfa55" : T.border)}`,
+                    background: isSelected ? `${glowColor}1f` : (p.demandType === "uncommon" ? "#a78bfa14" : "#22c55e0d"),
+                    border: `1.5px solid ${isSelected ? glowColor : (p.demandType === "uncommon" ? "#a78bfa55" : "#22c55e3d")}`,
                     borderRadius: 12,
                     padding: "10px 10px",
                     display: "flex", flexDirection: "column", gap: 4,
@@ -13421,9 +13234,11 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                       style={{ position: "absolute", top: 6, right: 6, width: 20, height: 20, borderRadius: "50%", border: "none", background: "#ef444433", color: "#ef4444", fontSize: 11, fontWeight: 900, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2 }}>✕</button>
                   )}
 
-                  {/* আনকমন ব্যাজ */}
-                  {!isSelected && p.demandType === "uncommon" && (
-                    <div style={{ position: "absolute", top: 6, right: 6, background:"#a78bfa33", color:"#a78bfa", fontSize: 8.5, fontWeight: 800, borderRadius: 5, padding: "1px 5px", zIndex: 2 }}>আনকমন</div>
+                  {/* কমন/আনকমন ব্যাজ */}
+                  {!isSelected && (
+                    p.demandType === "uncommon"
+                      ? <div style={{ position: "absolute", top: 6, right: 6, background:"#a78bfa33", color:"#a78bfa", fontSize: 8.5, fontWeight: 800, borderRadius: 5, padding: "1px 5px", zIndex: 2 }}>আনকমন</div>
+                      : <div style={{ position: "absolute", top: 6, right: 6, background:"#22c55e33", color:"#22c55e", fontSize: 8.5, fontWeight: 800, borderRadius: 5, padding: "1px 5px", zIndex: 2 }}>কমন</div>
                   )}
 
                   {/* পণ্যের নাম */}
@@ -18536,6 +18351,12 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   const [peFilter,        setPeFilter]        = useState("today"); // "today" | "date" | "all"
   const [peHistDate,      setPeHistDate]      = useState("");
   const [peSearch,        setPeSearch]        = useState("");
+  // ── #৭ AI ফিচার — চালান/ইনভয়েসের ছবি → বাল্ক ক্রয় এন্ট্রি ──────────────────
+  const [peInvoiceBusy,   setPeInvoiceBusy]   = useState(false);
+  const [peInvoiceErr,    setPeInvoiceErr]    = useState("");
+  const [peInvoiceItems,  setPeInvoiceItems]  = useState(null); // null = বন্ধ, array = রিভিউ চলছে
+  const [peInvoiceSupplier, setPeInvoiceSupplier] = useState("");
+  const peInvoiceInputRef = useRef(null);
 
   const [quickStockId, setQuickStockId]= useState(null); // product being quick-edited
   const [quickStockVal,setQuickStockVal]= useState("");
@@ -18830,6 +18651,58 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           return latest?.batchNo || null;
         })();
 
+        // ── একটা পণ্যে একটা ব্যাচ যোগ করার কেন্দ্রীয় লজিক (Weighted Average Cost) —
+        // এককভাবে savePE (নিচে) থেকে, আর বাল্ক চালান-কনফার্ম থেকেও এই একই ফাংশন কল হয় ──
+        const applyPurchaseBatch = ({ productId, qty, unitCost, unitSell, expiryDate, supplier, note, isFreeStock }) => {
+          const prod = products.find(p => p.id === productId);
+          if (!prod || !qty || qty <= 0) return null;
+          const cost    = isFreeStock ? 0 : (unitCost || prod.costPrice || 0);
+          const sell    = unitSell || prod.price || 0;
+          const total   = qty * cost;
+          const now     = new Date().toISOString();
+          const oldStock = prod.stock || 0;
+          const oldCost  = prod.costPrice || 0;
+          const newCostPrice = oldStock + qty > 0
+            ? (oldStock * oldCost + qty * cost) / (oldStock + qty)
+            : cost;
+          const batchNo = getNextBatch(productId);
+          const newBatch = {
+            batchNo, qty, costPrice: cost, sellPrice: sell,
+            expiryDate: expiryDate || "", supplier: supplier || "", note: note || "", at: now,
+          };
+          const entry = {
+            id: "pe_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+            _type: "pe",
+            productId, productName: prod.name,
+            qty, unitCost: cost, unitSell: sell, totalCost: total,
+            expiryDate: expiryDate || "", batch: batchNo, supplier: supplier || "",
+            note: isFreeStock ? `🎁 ফ্রি স্টক${note ? " — " + note : ""}` : note || "",
+            isFreeStock: isFreeStock || false,
+            at: now, dateKey: now.split("T")[0], unit: prod.unit || "",
+          };
+          const newStock = oldStock + qty;
+          setProducts(prev => prev.map(p => p.id === productId
+            ? {
+                ...p,
+                stock: newStock,
+                costPrice: Math.round(newCostPrice * 10000) / 10000,
+                price: sell || p.price,
+                lastUpdated: now,
+                expiryDate: expiryDate || p.expiryDate,
+                batches: [...(p.batches || []), newBatch],
+              }
+            : p
+          ));
+          setStockMovements(prev => [{
+            id: "sm_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7), productId,
+            productName: prod.name, stock: newStock,
+            prevStock: oldStock, delta: qty,
+            at: now, dateKey: now.split("T")[0], source: "purchase"
+          }, ...prev]);
+          setPurchaseOrders(prev => [entry, ...prev]);
+          return { prod, qty };
+        };
+
         const savePE = () => {
           const errs = {};
           if (!peForm.productId) errs.productId = true;
@@ -18841,66 +18714,43 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           }
           const prod = products.find(p => p.id === peForm.productId);
           if (!prod) return;
-          const qty      = parseFloat(peForm.qty);
-          // Fix: isFreeStock হলে unitCost = 0 (weighted average সঠিক হবে)
-          const unitCost = peForm.isFreeStock ? 0 : (parseFloat(peForm.unitCost) || prod.costPrice || 0);
-          const unitSell = parseFloat(peForm.unitSell) || prod.price || 0;
-          const total    = qty * unitCost;
-          const now      = new Date().toISOString();
-          // Weighted Average Cost — ফ্রি স্টকেও avg কমবে (unitCost=0)
-          const oldStock = prod.stock || 0;
-          const oldCost  = prod.costPrice || 0;
-          const newCostPrice = oldStock + qty > 0
-            ? (oldStock * oldCost + qty * unitCost) / (oldStock + qty)
-            : unitCost;
-          const batchNo = getNextBatch(peForm.productId);
-          const newBatch = {
-            batchNo,
-            qty,
-            costPrice: unitCost,
-            sellPrice: unitSell,
-            expiryDate: peForm.expiryDate || "",
-            supplier: peForm.supplier || "",
-            note: peForm.note || "",
-            at: now,
-          };
-          const entry = {
-            id: "pe_" + Date.now(),
-            _type: "pe",
+          const result = applyPurchaseBatch({
             productId: peForm.productId,
-            productName: prod.name,
-            qty, unitCost, unitSell, totalCost: total,
-            expiryDate: peForm.expiryDate || "",
-            batch: batchNo,
-            supplier: peForm.supplier || "",
-            note: peForm.isFreeStock ? `🎁 ফ্রি স্টক${peForm.note ? " — " + peForm.note : ""}` : peForm.note || "",
-            isFreeStock: peForm.isFreeStock || false,
-            at: now, dateKey: now.split("T")[0],
-            unit: prod.unit || "",
-          };
-          const newStock = oldStock + qty;
-          setProducts(prev => prev.map(p => p.id === peForm.productId
-            ? {
-                ...p,
-                stock: newStock,
-                costPrice: Math.round(newCostPrice * 10000) / 10000,
-                price: unitSell || p.price,
-                lastUpdated: now,
-                expiryDate: peForm.expiryDate || p.expiryDate,
-                batches: [...(p.batches || []), newBatch],
-              }
-            : p
-          ));
-          setStockMovements(prev => [{
-            id: "sm_" + Date.now(), productId: peForm.productId,
-            productName: prod.name, stock: newStock,
-            prevStock: oldStock, delta: qty,
-            at: now, dateKey: now.split("T")[0], source: "purchase"
-          }, ...prev]);
-          setPurchaseOrders(prev => [entry, ...prev]);
+            qty: parseFloat(peForm.qty),
+            unitCost: parseFloat(peForm.unitCost) || 0,
+            unitSell: parseFloat(peForm.unitSell) || 0,
+            expiryDate: peForm.expiryDate,
+            supplier: peForm.supplier,
+            note: peForm.note,
+            isFreeStock: peForm.isFreeStock,
+          });
+          if (!result) return;
           setPeForm(f => ({ ...EMPTY_PE, supplier: f.supplier }));
           setPeFormErrors({});
-          showToast(`✅ ${prod.name} — ${qty} ${prod.unit||"পিস"} স্টকে যোগ হয়েছে`, "#a78bfa");
+          showToast(`✅ ${result.prod.name} — ${result.qty} ${result.prod.unit||"পিস"} স্টকে যোগ হয়েছে`, "#a78bfa");
+        };
+
+        // ── #৭ AI ফিচার — চালান/ইনভয়েসের ছবি থেকে পাওয়া সবগুলো (checked) লাইন-আইটেম একসাথে সেভ ──
+        const confirmInvoiceItems = () => {
+          const toSave = (peInvoiceItems || []).filter(it => it.include && it.productId && parseFloat(it.qty) > 0);
+          if (!toSave.length) { showToast("অন্তত একটা পণ্য টিক দিন", "#ef4444"); return; }
+          let successCount = 0;
+          toSave.forEach(it => {
+            const r = applyPurchaseBatch({
+              productId: it.productId,
+              qty: parseFloat(it.qty),
+              unitCost: parseFloat(it.unitCost) || 0,
+              unitSell: 0,
+              expiryDate: "",
+              supplier: peInvoiceSupplier,
+              note: "🧾 চালানের ছবি থেকে বাল্ক এন্ট্রি",
+              isFreeStock: false,
+            });
+            if (r) successCount++;
+          });
+          setPeInvoiceItems(null);
+          setPeInvoiceSupplier("");
+          showToast(`✅ ${successCount}টা পণ্য স্টকে যোগ হয়েছে`, "#a78bfa");
         };
 
         const displayed  = allEntries
@@ -18955,6 +18805,111 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               <span style={{ fontSize:18, lineHeight:1 }}>{peShowForm ? "✕" : "+"}</span>
               {peShowForm ? "ফর্ম বন্ধ করুন" : "আজকের ক্রয় এন্ট্রি করুন"}
             </button>
+
+            {/* ── #৭ AI ফিচার — চালান/ইনভয়েসের ছবি → বাল্ক ক্রয় এন্ট্রি ─────────────── */}
+            {!peInvoiceItems && (
+              <button type="button" disabled={peInvoiceBusy}
+                onClick={() => peInvoiceInputRef.current?.click()}
+                style={{
+                  width:"100%", marginBottom:12, padding:"11px 14px", borderRadius:12,
+                  border:"1.5px solid #a78bfa66", background: peInvoiceBusy ? "#a78bfa22" : "transparent",
+                  color:"#a78bfa", fontWeight:800, fontSize:13, cursor: peInvoiceBusy ? "default" : "pointer",
+                  fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:8,
+                }}>
+                {peInvoiceBusy ? "⏳ চালান পড়া হচ্ছে..." : "🧾 চালান/ইনভয়েসের ছবি তুলে বাল্ক এন্ট্রি করুন"}
+              </button>
+            )}
+            <input ref={peInvoiceInputRef} type="file" accept="image/*" capture="environment" style={{ display:"none" }}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = () => {
+                  parseAiInvoiceImage(reader.result, anthropicKey, {
+                    onStart: () => { setPeInvoiceBusy(true); setPeInvoiceErr(""); },
+                    onDone: (parsed) => {
+                      setPeInvoiceBusy(false);
+                      const items = parsed?.items || [];
+                      if (!items.length) { setPeInvoiceErr("চালান থেকে কোনো পণ্য পড়া যায়নি — স্পষ্ট ছবি তুলে আবার চেষ্টা করুন"); return; }
+                      // প্রতিটা লাইন-আইটেমের নামের সাথে সবচেয়ে কাছাকাছি বিদ্যমান পণ্য খুঁজে বের করা (smartMatch)
+                      const mapped = items.map((it, idx) => {
+                        let bestId = "", bestScore = 0;
+                        for (const p of products) {
+                          const s = Math.max(smartMatch(p.name, it.name || ""), smartMatch(it.name || "", p.name));
+                          if (s > bestScore) { bestScore = s; bestId = p.id; }
+                        }
+                        return {
+                          key: "inv_" + idx,
+                          rawName: it.name || "",
+                          productId: bestScore >= 1 ? bestId : "",
+                          qty: it.qty != null ? String(it.qty) : "",
+                          unitCost: it.unitCost != null ? String(it.unitCost) : "",
+                          include: bestScore >= 1, // ম্যাচ না পেলে ডিফল্ট আনচেক, ইউজারকে ম্যানুয়ালি বেছে নিতে হবে
+                        };
+                      });
+                      setPeInvoiceItems(mapped);
+                      setPeInvoiceSupplier(parsed?.supplier || "");
+                      showToast(`🧾 ${items.length}টা পণ্য পড়া হয়েছে — চেক করে কনফার্ম করুন`);
+                    },
+                    onError: (msg) => { setPeInvoiceBusy(false); setPeInvoiceErr(msg); },
+                  });
+                };
+                reader.readAsDataURL(file);
+              }} />
+            {peInvoiceErr && !peInvoiceItems && <div style={{ color:"#ef4444", fontSize:12, fontWeight:700, marginBottom:10 }}>⚠️ {peInvoiceErr}</div>}
+
+            {/* ── বাল্ক চালান রিভিউ প্যানেল — সরাসরি সেভ না, কনফার্ম বাধ্যতামূলক ────────── */}
+            {peInvoiceItems && (
+              <div className="qc-gradient-card" style={{ ...S.card, background:"linear-gradient(135deg,#2d1a5e18,#4c1d9518)", marginBottom:14 }}>
+                <div style={{ color:"#a78bfa", fontWeight:800, fontSize:14, marginBottom:8 }}>
+                  🧾 চালান রিভিউ — {peInvoiceItems.length}টা লাইন, চেক করে কনফার্ম করুন
+                </div>
+                <label style={S.label}>🏭 সাপ্লায়ার (পুরো চালানের জন্য)</label>
+                <input style={{ ...S.input, marginBottom:10 }} value={peInvoiceSupplier}
+                  onChange={e => setPeInvoiceSupplier(e.target.value)}
+                  placeholder="সাপ্লায়ার/কোম্পানির নাম" />
+                {peInvoiceItems.map((it, idx) => (
+                  <div key={it.key} style={{ border:`1px solid ${it.include ? "#a78bfa55" : T.border}`, borderRadius:10, padding:"8px 10px", marginBottom:8, opacity: it.include ? 1 : 0.55 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6 }}>
+                      <input type="checkbox" checked={it.include}
+                        onChange={e => setPeInvoiceItems(arr => arr.map((x,i) => i===idx ? { ...x, include: e.target.checked } : x))} />
+                      <div style={{ flex:1, fontSize:12, color: T.sub, fontWeight:700 }}>চালানে লেখা: "{it.rawName}"</div>
+                    </div>
+                    <label style={S.label}>মিলিয়ে দেখুন — কোন পণ্য?</label>
+                    <select
+                      value={it.productId}
+                      onChange={e => setPeInvoiceItems(arr => arr.map((x,i) => i===idx ? { ...x, productId: e.target.value, include: !!e.target.value && x.include !== false ? true : x.include } : x))}
+                      style={{ ...S.input, marginBottom:8, border: !it.productId && it.include ? "1.5px solid #ef4444" : S.input.border }}>
+                      <option value="">— পণ্য বেছে নিন —</option>
+                      {products.map(p => <option key={p.id} value={p.id}>{p.name}{p.unit ? ` (${p.unit})` : ""}</option>)}
+                    </select>
+                    <div style={{ display:"flex", gap:8 }}>
+                      <div style={{ flex:1 }}>
+                        <label style={S.label}>পরিমাণ</label>
+                        <input type="number" inputMode="decimal" style={S.input} value={it.qty}
+                          onChange={e => setPeInvoiceItems(arr => arr.map((x,i) => i===idx ? { ...x, qty: e.target.value } : x))} />
+                      </div>
+                      <div style={{ flex:1 }}>
+                        <label style={S.label}>একক ক্রয়মূল্য</label>
+                        <input type="number" inputMode="decimal" style={S.input} value={it.unitCost}
+                          onChange={e => setPeInvoiceItems(arr => arr.map((x,i) => i===idx ? { ...x, unitCost: e.target.value } : x))} />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                <div style={{ display:"flex", gap:8, marginTop:4 }}>
+                  <button type="button" onClick={() => { setPeInvoiceItems(null); setPeInvoiceErr(""); }}
+                    style={{ flex:1, padding:"11px", borderRadius:10, border:`1px solid ${T.border}`, background:"transparent", color:T.sub, fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}>
+                    বাতিল
+                  </button>
+                  <button type="button" onClick={confirmInvoiceItems}
+                    style={{ flex:2, padding:"11px", borderRadius:10, border:"none", background:"linear-gradient(135deg,#7c3aed,#a78bfa)", color:"#fff", fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}>
+                    ✅ টিক দেওয়া সব পণ্য স্টকে যোগ করুন
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* ── সারাংশ কার্ড (সাপ্লায়ার বাকি সরানো) ─────────────────────── */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
@@ -19651,7 +19606,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           <div style={{ position:"relative", marginBottom: formErrors.name ? 2 : 4 }}>
             <div style={{ display:"flex", gap:6, alignItems:"center" }}>
               <input style={{ ...S.input, flex:1, marginBottom:0, border: formErrors.name ? "1.5px solid #ef4444" : S.input.border }} placeholder="" defaultValue={form.name}
-                ref={el => { nameInputRef.current = el; if (el && !el._b) { el._b=true; el.addEventListener("compositionend", (e) => { {setForm(f=>({...f,name:el.value})); if (el.value.trim()) setFormErrors(er=>({...er,name:false}));}; }, {passive:true}); el.addEventListener("blur", (e) => { {setForm(f=>({...f,name:el.value})); if (el.value.trim()) setFormErrors(er=>({...er,name:false}));}; setTimeout(() => setNameSuggestOpen(false), 200); }, {passive:true}); el.addEventListener("focus", () => setNameSuggestOpen(true), {passive:true}); el.addEventListener("input", (e) => { if(!e.isComposing){ {setForm(f=>({...f,name:el.value})); if (el.value.trim()) setFormErrors(er=>({...er,name:false}));}; setNameSuggestOpen(true); } }, {passive:true}); } }} onChange={()=>{}}
+                ref={el => { nameInputRef.current = el; if (el && !el._b) { el._b=true; el.addEventListener("compositionend", (e) => { {setForm(f=>({...f,name:el.value})); if (el.value.trim()) setFormErrors(er=>({...er,name:false}));}; }, {passive:true}); el.addEventListener("blur", (e) => { {setForm(f=>({...f,name:el.value})); if (el.value.trim()) setFormErrors(er=>({...er,name:false}));}; setTimeout(() => setNameSuggestOpen(false), 200); }, {passive:true}); el.addEventListener("focus", () => setNameSuggestOpen(true), {passive:true}); el.addEventListener("input", (e) => { /* বাংলা IME কম্পোজিশনের মাঝেও (স্পেস দেওয়ার আগেই) সাজেশন দেখাতে হবে — তাই isComposing চেক বাদ, প্রতি কি-স্ট্রোকেই আপডেট করা হচ্ছে (আনকন্ট্রোল্ড ইনপুট বলে DOM value/커서 নিয়ে সমস্যা হয় না) */ setForm(f=>({...f,name:el.value})); if (el.value.trim()) setFormErrors(er=>({...er,name:false})); setNameSuggestOpen(true); }, {passive:true}); } }} onChange={()=>{}}
                 autoCorrect="off" autoCapitalize="off" spellCheck="false" autoComplete="off"
                 inputMode="text" enterKeyHint="next" />
             </div>
@@ -19821,7 +19776,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           <div key={p.id} className="qc-gradient-card" style={{
             ...S.card, marginBottom: 0, padding: "12px 14px",
             borderLeft: (p.stock||0)===0 ? "3px solid #ef4444" : (p.stock||0)<=(p.minStockAlert||5) ? "3px solid #f59e0b" : `3px solid #22c55e44`,
-            background: (p.demandType === "uncommon") ? "linear-gradient(135deg,#a78bfa0d,transparent)" : S.card.background,
+            background: (p.demandType === "uncommon") ? "linear-gradient(135deg,#a78bfa0d,transparent)" : "linear-gradient(135deg,#22c55e0d,transparent)",
             cursor: "pointer",
           }}
             onClick={() => { setQuickStockId(null); }}>
@@ -19835,7 +19790,9 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                 <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
                   <span style={{ color: T.text, fontWeight: 700, fontSize: 14 }}>{p.name}{p.unit ? <span style={{ color: T.sub, fontWeight: 600, fontSize: 12, marginLeft: 4 }}>({p.unit})</span> : null}</span>
                   {p.productType === "service" && <span style={{ background:"#0ea5e922", color:"#38bdf8", fontSize:10, borderRadius:6, padding:"1px 7px", fontWeight:800, border:"1px solid #38bdf844", flexShrink:0 }}>🔧 সার্ভিস</span>}
-                  {p.demandType === "uncommon" && <span style={{ background:"#a78bfa22", color:"#a78bfa", fontSize:10, borderRadius:6, padding:"1px 7px", fontWeight:800, border:"1px solid #a78bfa44", flexShrink:0 }}>আনকমন</span>}
+                  {p.demandType === "uncommon"
+                    ? <span style={{ background:"#a78bfa22", color:"#a78bfa", fontSize:10, borderRadius:6, padding:"1px 7px", fontWeight:800, border:"1px solid #a78bfa44", flexShrink:0 }}>আনকমন</span>
+                    : <span style={{ background:"#22c55e22", color:"#22c55e", fontSize:10, borderRadius:6, padding:"1px 7px", fontWeight:800, border:"1px solid #22c55e44", flexShrink:0 }}>কমন</span>}
                 </div>
                 {/* ── সারি ২: ক্রয়|বিক্রয়|স্টক|সাপ্লায়ার ── */}
                 <div style={{ display:"flex", gap:6, marginTop:3, flexWrap:"wrap", alignItems:"center" }}>
