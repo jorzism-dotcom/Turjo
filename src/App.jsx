@@ -360,8 +360,15 @@ function SupplierPicker({ value, onChange, error, T, S, autoFocus }) {
       <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
         <input style={{ ...S.input, flex: 1, marginBottom: 0, border: error ? "1.5px solid #ef4444" : S.input.border }}
           placeholder="সাপ্লায়ারের নাম লিখুন"
-          value={value || ""}
-          onChange={e => onChange(e.target.value)}
+          defaultValue={value || ""}
+          ref={el => { if (el && !el._b) { el._b = true;
+            // বাংলা IME কম্পোজিশনের সাথে কনফ্লিক্ট এড়াতে uncontrolled ইনপুট — controlled হলে প্রতি
+            // কি-স্ট্রোকে React re-render কম্পোজিশন ভেঙে দিতে পারে, ফলে টাইপ করা নাম সেভ হতো না।
+            el.addEventListener("input", () => onChange(el.value), { passive: true });
+            el.addEventListener("compositionend", () => onChange(el.value), { passive: true });
+            el.addEventListener("blur", () => onChange(el.value), { passive: true });
+          } }}
+          onChange={() => {}}
           autoFocus={autoFocus !== false} autoComplete="off" />
         <button type="button" onClick={() => { setCustomMode(false); onChange(""); }}
           style={{ background: "none", border: `1px solid ${T.border}`, color: T.sub, borderRadius: 8, padding: "10px 10px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", flexShrink: 0 }}>↩ তালিকা</button>
@@ -6919,7 +6926,7 @@ function ExpiryYearMonthPicker({ value, onChange, style = {} }) {
   return (
     <div style={style}>
       <div>
-        <label style={{ color:"#94a3b8", fontSize:10, fontWeight:700, display:"block", marginBottom:4 }}>⚡ মেয়াদ লিখুন (MM/YY) — স্ট্রিপে যেভাবে ছাপা আছে সেভাবেই লিখুন</label>
+        <label style={{ color:"#94a3b8", fontSize:10, fontWeight:700, display:"block", marginBottom:4 }}>⚡ মেয়াদ লিখুন (MM/YY)</label>
         <input
           value={shorthand}
           onChange={e => handleShorthandChange(e.target.value)}
@@ -18271,18 +18278,6 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   const updateExtraBatch = (id, patch) => setExtraBatches(b => b.map(r => r.id === id ? { ...r, ...patch } : r));
   const removeExtraBatch = (id) => setExtraBatches(b => b.filter(r => r.id !== id));
   const totalNewStock = (parseInt(form.stock) || 0) + extraBatches.reduce((s, r) => s + (parseInt(r.qty) || 0), 0);
-  // ── #৬ প্রতি-ব্যাচ আলাদাভাবে এডিট — শুধু এক্সপায়ারি বদলানো যায়, বাকি (পরিমাণ/ব্যাচ নং) অক্ষত থাকে ──
-  // ইতিমধ্যে বিক্রি হওয়া অংশের হিস্টোরিক্যাল রেকর্ড (invoices/purchaseOrders) অপরিবর্তিত থাকে, শুধু products[].batches[] আপডেট হয়
-  const [editingBatch, setEditingBatch] = useState(null); // { productId, batchNo, expiryDate }
-  const saveBatchExpiry = () => {
-    if (!editingBatch) return;
-    setProducts(prev => prev.map(p => {
-      if (p.id !== editingBatch.productId) return p;
-      return { ...p, batches: (p.batches || []).map(b => b.batchNo === editingBatch.batchNo ? { ...b, expiryDate: editingBatch.expiryDate } : b) };
-    }));
-    showToast("ব্যাচের মেয়াদ আপডেট হয়েছে");
-    setEditingBatch(null);
-  };
   const [search,       setSearch]       = useState("");
   // React 18 useDeferredValue — type করলে UI block হবে না
   const deferredSearch = useDeferredValue(search);
@@ -19821,9 +19816,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                   // ── #৬ ডুপ্লিকেট-এক্সপায়ারি সতর্কতা (একই পণ্যের একাধিক ব্যাচে হুবহু একই মেয়াদ) ──
                   const expCount = {};
                   activeBatches.forEach(b => { if (b.expiryDate) expCount[b.expiryDate] = (expCount[b.expiryDate]||0) + 1; });
-                  const canEditBatch = currentUser?.role !== "staff" && p.batches && p.batches.length > 0;
                   return (
-                    <>
                     <div style={{ marginTop:5, display:"flex", flexWrap:"wrap", gap:4 }}>
                       {activeBatches.map((b, bi) => {
                         const daysLeft = b.expiryDate ? Math.ceil((new Date(b.expiryDate) - new Date()) / 86400000) : null;
@@ -19840,26 +19833,10 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                               </span>
                             )}
                             {isDup && <span title="একই মেয়াদের একাধিক ব্যাচ" style={{ fontSize:9 }}>⚠️</span>}
-                            {canEditBatch && (
-                              <button type="button" title="এই ব্যাচের মেয়াদ ঠিক করুন"
-                                onClick={(e) => { e.stopPropagation(); setEditingBatch({ productId: p.id, batchNo: b.batchNo, expiryDate: b.expiryDate || "" }); }}
-                                style={{ background:"transparent", border:"none", color:bColor, fontSize:11, cursor:"pointer", padding:0, marginLeft:2, lineHeight:1 }}>✏️</button>
-                            )}
                           </span>
                         );
                       })}
                     </div>
-                    {editingBatch && editingBatch.productId === p.id && (
-                      <div onClick={e => e.stopPropagation()} style={{ marginTop:6, background:"#a78bfa10", border:"1px solid #a78bfa44", borderRadius:10, padding:8 }}>
-                        <div style={{ color:"#a78bfa", fontSize:11, fontWeight:800, marginBottom:6 }}>✏️ ব্যাচ {editingBatch.batchNo} — শুধু মেয়াদ ঠিক করুন</div>
-                        <ExpiryYearMonthPicker value={editingBatch.expiryDate} onChange={v => setEditingBatch(eb => ({ ...eb, expiryDate: v }))} />
-                        <div style={{ display:"flex", gap:8, marginTop:8 }}>
-                          <button type="button" onClick={() => setEditingBatch(null)} style={{ flex:1, padding:"8px", borderRadius:8, border:`1px solid ${T.border}`, background:"transparent", color:T.sub, fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>বাতিল</button>
-                          <button type="button" onClick={saveBatchExpiry} style={{ flex:1, padding:"8px", borderRadius:8, border:"none", background:"linear-gradient(135deg,#7c3aed,#a78bfa)", color:"#fff", fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>সেভ করুন</button>
-                        </div>
-                      </div>
-                    )}
-                    </>
                   );
                 })()}
               </div>
