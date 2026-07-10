@@ -242,6 +242,15 @@ function parseBatchNum(batchStr) {
   return isNaN(num) ? 0 : num;
 }
 
+// ─── bnMonthYear — "YYYY-MM-01" → "মার্চ, ২০২৭" (রিভিউ লিস্ট ও ব্যাচ-এডিটে পুনঃব্যবহার) ──
+const BN_MONTH_NAMES = ["জানুয়ারি","ফেব্রুয়ারি","মার্চ","এপ্রিল","মে","জুন","জুলাই","আগস্ট","সেপ্টেম্বর","অক্টোবর","নভেম্বর","ডিসেম্বর"];
+function bnMonthYear(dateStr) {
+  if (!dateStr || !/^\d{4}-\d{2}/.test(dateStr)) return "";
+  const y = dateStr.slice(0, 4);
+  const m = parseInt(dateStr.slice(5, 7), 10);
+  return (m >= 1 && m <= 12) ? `${BN_MONTH_NAMES[m - 1]}, ${y}` : "";
+}
+
 // ─── calcNextBatch — Option B: Date-based B-YYMM-N format ───────────────────
 // ক্রয়ের তারিখ থেকে B-YYMM-N ফরম্যাটে ব্যাচ আইডি জেনারেট করে
 // একই মাসে একাধিক ক্রয়: B-2506-1, B-2506-2, ...
@@ -324,6 +333,74 @@ function HighlightText({ text, query, style, highlightColor = "#22c55e" }) {
       </span>
       {text.slice(idx + q.length)}
     </span>
+  );
+}
+
+// ─── SupplierPicker — টাইপাহেড সার্চ-করে-বাছাই সাপ্লায়ার সিলেক্টর ───────────
+// BD_PHARMA_COMPANIES (২২০টি) এর মধ্যে ফাজি সার্চ (smartMatch), অথবা "নিজে লিখুন" কাস্টম মোড।
+function SupplierPicker({ value, onChange, error, T, S, autoFocus }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [customMode, setCustomMode] = useState(() => !!value && !BD_PHARMA_COMPANIES.includes(value));
+
+  const filtered = useMemo(() => {
+    const q = query.trim();
+    if (!q) return BD_PHARMA_COMPANIES.slice(0, 30);
+    return BD_PHARMA_COMPANIES
+      .map(c => ({ c, s: smartMatch(c, q) }))
+      .filter(x => x.s > 0)
+      .sort((a, b) => b.s - a.s)
+      .slice(0, 30)
+      .map(x => x.c);
+  }, [query]);
+
+  if (customMode) {
+    return (
+      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+        <input style={{ ...S.input, flex: 1, marginBottom: 0, border: error ? "1.5px solid #ef4444" : S.input.border }}
+          placeholder="সাপ্লায়ারের নাম লিখুন"
+          value={value || ""}
+          onChange={e => onChange(e.target.value)}
+          autoFocus={autoFocus !== false} autoComplete="off" />
+        <button type="button" onClick={() => { setCustomMode(false); onChange(""); }}
+          style={{ background: "none", border: `1px solid ${T.border}`, color: T.sub, borderRadius: 8, padding: "10px 10px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", flexShrink: 0 }}>↩ তালিকা</button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        style={{ ...S.input, marginBottom: 0, paddingRight: 30, border: error ? "1.5px solid #ef4444" : S.input.border }}
+        placeholder="🔍 সাপ্লায়ার খুঁজুন..."
+        value={open ? query : (value || "")}
+        onFocus={() => { setQuery(""); setOpen(true); }}
+        onChange={e => { setQuery(e.target.value); setOpen(true); }}
+        onBlur={() => setTimeout(() => setOpen(false), 250)}
+        autoComplete="off" />
+      {value && !open && (
+        <button type="button" tabIndex={-1}
+          onMouseDown={e => { e.preventDefault(); onChange(""); setQuery(""); }}
+          style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#64748b", cursor: "pointer", fontSize: 14, padding: 4 }}>✕</button>
+      )}
+      {open && (
+        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: T.card, border: `1px solid ${T.border}`, borderRadius: 12, zIndex: 200, maxHeight: 240, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.4)", marginTop: 4 }}>
+          <div onMouseDown={() => { setCustomMode(true); setOpen(false); }}
+            style={{ padding: "10px 14px", cursor: "pointer", color: "#a78bfa", fontWeight: 700, fontSize: 13, borderBottom: `1px solid ${T.border}` }}>
+            ✏️ নিজে লিখুন...
+          </div>
+          {filtered.length === 0 && (
+            <div style={{ padding: "10px 14px", color: T.sub, fontSize: 12 }}>কোনো মিল পাওয়া যায়নি — উপরে "নিজে লিখুন" চাপুন</div>
+          )}
+          {filtered.map(c => (
+            <div key={c} onMouseDown={() => { onChange(c); setOpen(false); }}
+              style={{ padding: "10px 14px", cursor: "pointer", borderBottom: `1px solid ${T.border}`, fontSize: 13, color: T.text }}>
+              <HighlightText text={c} query={query} highlightColor="#a78bfa" />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -5370,6 +5447,90 @@ async function generateSMS(customer, type, amount, balance, shopName, anthropicK
   }
 }
 
+// ─── #৭ AI ফিচার (পর্যায় ১) — এক লাইনে বাংলা টেক্সট থেকে পণ্য এন্ট্রি ফিল্ড পার্স ──────
+// "নাপা ৫০০ ১০ পিস ক্রয় ১০ টাকা বিক্রয় ১২ টাকা" → { name, qty, costPrice, price }
+// LLM মাঝে মাঝে সংখ্যা ভুল বানাতে (hallucinate) পারে বলে এখানে সরাসরি সেভ করা হয় না — পার্স হওয়া মাত্র
+// ফর্মে প্রি-ফিল হয়, ব্যবহারকারী নিজ চোখে দেখে-চেক করে তারপর "সেভ" চাপে (বাধ্যতামূলক রিভিউ স্টেপ)।
+async function parseAiQuickEntry(text, anthropicKey, { onStart, onDone, onError } = {}) {
+  if (onStart) onStart();
+  if (!anthropicKey) { if (onError) onError("সেটিংসে Anthropic API Key দিন"); return null; }
+  if (!text || !text.trim()) { if (onError) onError("কিছু লিখুন"); return null; }
+  const prompt = `তুমি একটি বাংলাদেশি দোকানের ইনভেন্টরি এন্ট্রি সহকারী। ব্যবহারকারী বাংলা/ইংরেজি মিশিয়ে এক লাইনে একটা পণ্য এন্ট্রি লিখেছে। শুধু নিচের JSON ফরম্যাটে উত্তর দাও, অন্য কোনো টেক্সট/মার্কডাউন/ব্যাখ্যা ছাড়া:
+{"name": "পণ্যের নাম ও পাওয়ার (string বা null)", "qty": সংখ্যা বা null, "costPrice": সংখ্যা বা null, "price": সংখ্যা বা null}
+নিয়ম: বাংলা সংখ্যা (০-৯) থাকলে ইংরেজি সংখ্যায় বদলাও। "ক্রয়" মানে costPrice, "বিক্রয়"/"বিক্রি" মানে price। নাম-এ পণ্যের নাম+পাওয়ার/সাইজ রাখো (যেমন "নাপা ৫০০" → "নাপা 500mg" এভাবে না বদলে যা লেখা ঠিক তাই রাখো, শুধু বানান ঠিক করো না)। যা বলা হয়নি তার মান null দেবে।
+ইনপুট: "${text.trim()}"`;
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": anthropicKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 300, messages: [{ role: "user", content: prompt }] })
+    });
+    if (!res.ok) throw new Error(`API error ${res.status}`);
+    const d = await res.json();
+    const raw = (d.content?.[0]?.text || "").trim().replace(/^```json\s*|```$/g, "");
+    const parsed = JSON.parse(raw);
+    if (onDone) onDone(parsed);
+    return parsed;
+  } catch (e) {
+    if (onError) onError("AI থেকে উত্তর পাওয়া যায়নি — নেট সংযোগ/API Key চেক করুন");
+    return null;
+  }
+}
+
+// ── #৭ AI ফিচার (পর্যায় ২) — ওষুধের স্ট্রিপ/প্যাকেটের ছবি থেকে নাম+পাওয়ার+কোম্পানি+মেয়াদ অটো-এক্সট্র্যাক্ট ──
+// dataUrl: "data:image/jpeg;base64,...." ফরম্যাটে ক্যামেরা/গ্যালারি থেকে পাওয়া ছবি।
+// রিভিউ-কনফার্ম বাধ্যতামূলক থাকবে (কলার সাইডে) — AI ভুল সংখ্যা "কনফিডেন্টলি" বানিয়ে দিতে পারে,
+// তাই এখানে সরাসরি সেভ হয় না, শুধু ফর্ম প্রি-ফিল হয়।
+async function parseAiImageEntry(dataUrl, anthropicKey, { onStart, onDone, onError } = {}) {
+  if (onStart) onStart();
+  if (!anthropicKey) { if (onError) onError("সেটিংসে Anthropic API Key দিন"); return null; }
+  if (!dataUrl || !dataUrl.startsWith("data:")) { if (onError) onError("ছবি পাওয়া যায়নি, আবার চেষ্টা করুন"); return null; }
+  const m = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+  if (!m) { if (onError) onError("ছবির ফরম্যাট সাপোর্টেড না"); return null; }
+  const [, mediaType, base64Data] = m;
+  const prompt = `তুমি একটি বাংলাদেশি ফার্মেসি/দোকানের ইনভেন্টরি সহকারী। এই ছবিতে একটি ওষুধের স্ট্রিপ/প্যাকেট/বাক্স আছে।
+ছবি থেকে যা দেখতে পাচ্ছ তাই বের করো — অনুমান করে কিছু বানিও না, নিশ্চিত না হলে null দাও।
+শুধু নিচের JSON ফরম্যাটে উত্তর দাও, অন্য কোনো টেক্সট/মার্কডাউন/ব্যাখ্যা ছাড়া:
+{"name": "ব্র্যান্ড নাম ও পাওয়ার/শক্তি একসাথে (string বা null)", "company": "উৎপাদনকারী কোম্পানির নাম (string বা null)", "expiryMonth": ১-১২ সংখ্যা বা null, "expiryYear": চার-অঙ্কের বছর সংখ্যা বা null}
+নিয়ম: "name" ফিল্ডে যা স্ট্রিপ/প্যাকেটে ছাপা আছে হুবহু তাই রাখো (যেমন "Napa 500mg")। মেয়াদ (EXP/Expiry) সাধারণত MM/YY বা MM/YYYY ফরম্যাটে ছাপা থাকে — সেখান থেকে মাস ও বছর আলাদা করে দাও, YY হলে ২০ যোগ করে পূর্ণ বছর দাও। ছবি অস্পষ্ট/অপ্রাসঙ্গিক হলে সব ফিল্ড null দেবে।`;
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": anthropicKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 300,
+        messages: [{
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } },
+            { type: "text", text: prompt },
+          ],
+        }],
+      }),
+    });
+    if (!res.ok) throw new Error(`API error ${res.status}`);
+    const d = await res.json();
+    const raw = (d.content?.[0]?.text || "").trim().replace(/^```json\s*|```$/g, "");
+    const parsed = JSON.parse(raw);
+    if (onDone) onDone(parsed);
+    return parsed;
+  } catch (e) {
+    if (onError) onError("AI থেকে উত্তর পাওয়া যায়নি — ছবি স্পষ্ট কিনা ও নেট সংযোগ/API Key চেক করুন");
+    return null;
+  }
+}
+
 // SMS via CapacitorHttp (bypasses WebView CORS) or fetch fallback
 async function httpPost(url, headers, body, isForm = false) {
   // Capacitor native HTTP — no CORS issues in APK
@@ -6261,30 +6422,247 @@ function downloadBackupFile(data, filename) {
 // ─── Seeds ────────────────────────────────────────────────────────────────────
 const PRODUCT_CATEGORIES = ["সব", "অ্যান্টিবায়োটিক", "ব্যথানাশক", "গ্যাস্ট্রিক", "ডায়াবেটিস", "ভিটামিন", "স্যালাইন", "ড্রেসিং", "সিরাপ", "চর্মরোগ", "হৃদরোগ", "অন্যান্য"];
 
-// বাংলাদেশের শীর্ষ ওষুধ কোম্পানি
+// বাংলাদেশের সক্রিয় ওষুধ কোম্পানির লিস্ট (MedEx থেকে, ২২০টি — যেগুলোর বাস্তবে বাজারে ব্র্যান্ড আছে)
 const BD_PHARMA_COMPANIES = [
-  "Square Pharmaceuticals",
-  "Beximco Pharmaceuticals",
-  "Incepta Pharmaceuticals",
-  "Opsonin Pharma",
-  "Eskayef Pharmaceuticals",
   "ACI Limited",
-  "Renata Limited",
-  "Healthcare Pharmaceuticals",
-  "Drug International",
-  "General Pharmaceuticals",
-  "Ibn Sina Pharmaceuticals",
-  "Aristopharma",
-  "Acme Laboratories",
-  "Orion Pharma",
-  "Nuvista Pharma",
-  "Popular Pharmaceuticals",
-  "Jayson Pharmaceuticals",
-  "Radiant Pharmaceuticals",
-  "Pacific Pharmaceuticals",
-  "Unimed & Unihealth",
-  "অন্যান্য সাপ্লায়ার",
+  "ACME Laboratories Ltd.",
+  "Ad-din Pharmaceuticals Ltd.",
+  "Aexim Pharmaceuticals Ltd.",
+  "Al-Madina Pharmaceuticals Ltd.",
+  "Albion Laboratories Limited",
+  "Albion Specialized Pharma Limited",
+  "Alco Pharma Ltd.",
+  "Alien Pharma",
+  "Alkad Laboratories",
+  "Allied Pharmaceuticals Ltd.",
+  "Ambee Pharmaceuticals Ltd.",
+  "Amico Laboratories Ltd.",
+  "Amulet Pharmaceuticals Ltd.",
+  "APC Pharma Ltd.",
+  "Apex Pharma Ltd.",
+  "Apollo Pharmaceutical Ltd.",
+  "AqVida Bangladesh",
+  "Arges Life Science Limited",
+  "Aristopharma Ltd.",
+  "Army Pharma Limited",
+  "Asiatic Laboratories Ltd.",
+  "Astra Biopharmaceuticals Ltd.",
+  "Avarox Pharmaceuticals Ltd.",
+  "Aztec Pharmaceuticals Ltd.",
+  "Beacon Pharmaceuticals PLC",
+  "Beauty Formulas",
+  "Belsen Pharmaceuticals Ltd.",
+  "Bengal Drugs Ltd.",
+  "Benham Pharmaceuticals Ltd.",
+  "Beximco Pharmaceuticals Ltd.",
+  "Bexter Pharmaceuticals",
+  "BIO Care Pharmaceutical",
+  "Biocell Ayurvedic Limited",
+  "Biogen Pharmaceuticals Ltd.",
+  "Biopharma Limited",
+  "BOTS Pvt. Limited",
+  "Bright HealthCare",
+  "Bristol Pharmaceuticals Ltd.",
+  "Bronson Laboratories (BD) Ltd.",
+  "C2C Pharma Ltd.",
+  "Centeon Pharma Ltd.",
+  "Central Pharmaceuticals Ltd.",
+  "Chemist Laboratories Ltd.",
+  "City Overseas Ltd.",
+  "Concord Pharmaceuticals Ltd.",
+  "Cosmic Pharma Ltd.",
+  "Cosmo Pharma Laboratories Ltd.",
+  "Credence Pharmaceuticals Ltd.",
+  "CuRx",
+  "DBL Healthcare Ltd.",
+  "DBL Pharmaceuticals Ltd.",
+  "Decent Pharma Laboratories Ltd.",
+  "Delta Pharma Ltd.",
+  "Derma Health Care",
+  "Dermolive",
+  "Desh Pharmaceuticals Ltd.",
+  "Discount Pharma",
+  "Diva's Secret",
+  "Doctor TIMS Pharmaceuticals Ltd.",
+  "Doctor's Chemical Works Ltd.",
+  "Dr Rhazes",
+  "Drug International Ltd.",
+  "Edruc Limited",
+  "EMCS Pharma Limited",
+  "EMPECS Medical Device Co., Ltd.",
+  "Empiric Laboratories Ltd.",
+  "Ergon Pharmaceuticals (AY)",
+  "Eskayef Pharmaceuticals Ltd.",
+  "Ethical Drugs Limited",
+  "Euro Pharma Ltd.",
+  "Everest Pharmaceuticals Ltd.",
+  "FnF Pharmaceuticals Ltd.",
+  "Gaco Pharmaceuticals Ltd.",
+  "General Pharmaceuticals Ltd.",
+  "Genvio Pharma Ltd.",
+  "Get Well Limited",
+  "GlaxoSmithKline Pharmaceuticals",
+  "Globe Pharmaceuticals Ltd.",
+  "Globex Pharmaceuticals Ltd.",
+  "Gonoshasthaya Pharma Ltd.",
+  "Goodman Pharmaceuticals Ltd.",
+  "Green Laboratories (Unani)",
+  "Greenland Pharmaceuticals Ltd.",
+  "Guardian Healthcare Ltd.",
+  "Hallmark Pharmaceuticals Ltd.",
+  "Healthcare Pharmaceuticals Ltd.",
+  "Herbex & Co (Unani)",
+  "Hudson Pharmaceuticals Ltd.",
+  "Ibn Sina Pharmaceuticals Ltd.",
+  "Incepta Pharmaceuticals Ltd.",
+  "Indo Bangla Pharmaceutical",
+  "Institute of Public Health (IPH)",
+  "International Agencies (Bd.) Limited",
+  "Janata Traders",
+  "Jayson Natural Products Ltd.",
+  "Jayson Pharmaceutical Ltd.",
+  "Jenphar Bangladesh Ltd.",
+  "JMI Syringes & Medical Devices Ltd.",
+  "Kawsar Chemicals",
+  "Kemiko Pharmaceuticals Ltd.",
+  "Kumudini Pharma Ltd.",
+  "Labaid Pharma Ltd.",
+  "Leon Pharmaceuticals Ltd.",
+  "Lexicon Pharma",
+  "Libra Infusions Ltd.",
+  "Libra Pharmaceuticals Ltd.",
+  "Maks Drug Limited",
+  "Marie Stopes Bangladesh",
+  "Marker Pharma Ltd.",
+  "Marksman Pharmaceuticals Ltd.",
+  "Medicon Pharmaceuticals Ltd.",
+  "Medimet Pharmaceuticals Ltd.",
+  "MedRx Life Science Ltd.",
+  "MGH Healthcare Limited",
+  "Microlife Corporation",
+  "MicroMed",
+  "Millat Pharmaceuticals Ltd.",
+  "Modern Pharmaceuticals Ltd.",
+  "Momotaz Pharmaceuticals Ltd.",
+  "Monicopharma Ltd.",
+  "MST Pharma",
+  "Mundipharma (BD) Pvt. Ltd.",
+  "Mystic Pharmaceuticals Ltd.",
+  "Naafco Pharma PLC",
+  "National Drug Co. Ltd.",
+  "Navana Pharmaceuticals Ltd.",
+  "NEMUS Pharmaceutical Pvt. Ltd.",
+  "Neoventis Pharmaceuticals Ltd.",
+  "Nevian Lifescience PLC",
+  "Nipa Pharmaceuticals Ltd.",
+  "NIPRO",
+  "NIPRO JMI Pharma Ltd.",
+  "Novatek Pharmaceuticals Ltd.",
+  "Novelta Bestway Pharma Ltd.",
+  "Novo Healthcare and Pharma Ltd.",
+  "Novo Nordisk Pharma (Pvt.) Ltd.",
+  "Novus Pharmaceuticals Ltd.",
+  "Nutrilife Pharma",
+  "Nuvista Pharma Ltd.",
+  "One Pharma Ltd.",
+  "Opsonin Herbal & Nutraceuticals Ltd.",
+  "Opsonin Pharma Ltd.",
+  "Organic Herbal & Nutraceuticals Ltd.",
+  "Orion Infusion Ltd.",
+  "Orion Pharma Ltd.",
+  "OSL Pharma Limited",
+  "Oyster Pharmaceuticals Ltd.",
+  "Pacific Pharmaceuticals Ltd.",
+  "Peoples Pharma Ltd.",
+  "Pfizer",
+  "Pharmacil Limited",
+  "Pharmadesh Laboratories Ltd.",
+  "Pharmasia Limited",
+  "Pharmik Laboratories Ltd.",
+  "Physic Pharmaceuticals Ltd.",
+  "Popular Pharmaceuticals Ltd.",
+  "Premier Pharmaceuticals Ltd.",
+  "Prime Pharmaceuticals Ltd.",
+  "Pristine Pharmaceuticals Ltd.",
+  "Purnava Limited",
+  "Quality Pharmaceuticals Ltd.",
+  "Radiant Export Import Enterprise",
+  "Radiant Nutraceuticals Ltd.",
+  "Radiant Pharmaceuticals Ltd.",
+  "Radius Pharmaceuticals Ltd.",
+  "Rangs Pharmaceuticals Ltd.",
+  "Reckitt & Benckiser Ltd.",
+  "Reliance Pharmaceuticals Ltd.",
+  "Reman Drug Laboratories Ltd.",
+  "Remark HB Limited (Remark LLC.)",
+  "Renata PLC",
+  "Rephco Pharmaceuticals Ltd.",
+  "River Pharma",
+  "RN Pharmaceuticals",
+  "Roche Bangladesh Ltd.",
+  "Royal Pharmaceutical Ltd.",
+  "S.N. Pharmaceutical Ltd.",
+  "Salton Pharmaceuticals Ltd.",
+  "SANDOZ (A Novartis Division)",
+  "Save Pharmaceuticals Ltd.",
+  "SB Laboratories Ltd.",
+  "Seema Pharmaceuticals Ltd.",
+  "SEKO Laboratories (Unani)",
+  "Servier Bangladesh Operation",
+  "Sharif Pharmaceuticals Ltd.",
+  "SHINIL Pharma Limited",
+  "Shuvro Limited",
+  "Silco Pharmaceutical Ltd.",
+  "Silva Pharmaceuticals Ltd.",
+  "Skylab Pharmaceuticals Ltd.",
+  "SMC Enterprise Ltd.",
+  "Somatec Pharmaceuticals Ltd.",
+  "Sonear Laboratories Ltd.",
+  "Square Pharmaceuticals PLC",
+  "Sun Pharmaceutical (Bangladesh) Ltd.",
+  "Sun Pharmaceutical Industries Ltd.",
+  "Sunman-Birdem Pharma Ltd.",
+  "Supreme Pharmaceutical Ltd.",
+  "Synovia Pharma PLC.",
+  "Syntho Laboratories Ltd.",
+  "Team Pharmaceuticals Ltd.",
+  "Techno Drugs Ltd.",
+  "The White Horse Pharmaceuticals Ltd.",
+  "Total Herbal & Nutraceuticals",
+  "Total Natural Company (Unani)",
+  "Ultra Pharma Ltd.",
+  "UNIDO Pharmaceuticals Ltd.",
+  "UniHealth Limited",
+  "UniMed UniHealth Pharmaceuticals Ltd.",
+  "Union Pharmaceuticals Ltd.",
+  "Unique Pharmaceuticals Ltd.",
+  "United Pharmaceuticals Ltd.",
+  "Veritas Pharmaceuticals Ltd.",
+  "Virgo Pharmaceuticals Ltd.",
+  "Walmart Pharma Ltd.",
+  "West-Coast Pharmaceutical Works Ltd.",
+  "ZAS Corporation",
+  "Zenith Pharmaceuticals Ltd.",
+  "Ziska Pharmaceuticals Ltd.",
 ];
+
+// ─── MEDICINE_DATASET — নাম-ভিত্তিক অটো-সাজেশন ডেটাসেট ──────────────────────
+// প্রতিটি এন্ট্রি: [নাম, পাওয়ার/শক্তি, কোম্পানি]। উৎস: MedEx.com.bd থেকে সংগৃহীত একটি ওপেন
+// GitHub ডেটাসেট (mahfuj-m/Medicine-s-Dataset) — ২০,৫০০+ প্রকৃত/verified বাংলাদেশি ব্র্যান্ড এন্ট্রি,
+// হাতে-বানানো/অনুমাননির্ভর কোনো ডেটা নেই। কোম্পানি নাম MedEx-এর মূল বানানেই রাখা হয়েছে, তাই
+// BD_PHARMA_COMPANIES লিস্টের সাথে সবসময় হুবহু নাও মিলতে পারে (না মিললে SupplierPicker "কাস্টম" মোডে
+// টেক্সট হিসেবে দেখাবে — ফিচার ভাঙবে না)। এই ফাইলটা (medicineDataset.json) App.jsx-এর পাশে repo-তে
+// আলাদাভাবে যোগ করতে হবে — নিচে import দ্রষ্টব্য।
+import MEDICINE_DATASET from "./medicineDataset.json";
+// দ্রুত সাজেশন-সার্চের জন্য লোয়ারকেস লেবেল প্রি-কম্পিউট (২০,০০০+ এন্ট্রিতে প্রতি কি-স্ট্রোকে বারবার
+// toLowerCase() চালানো এড়াতে — নাহলে টাইপ করার সময় স্টাটার/ল্যাগ হতে পারে বাজেট ফোনে)
+const MEDICINE_LABELS_LC = MEDICINE_DATASET.map(([n, p]) => (p ? `${n} ${p}` : n).toLowerCase());
+
+// ─── medDatasetLabel — একটা এন্ট্রির প্রদর্শন টেক্সট (নাম + পাওয়ার) তৈরি করে ──────────
+function medDatasetLabel(entry) {
+  const [n, p] = entry;
+  return p ? `${n} ${p}` : n;
+}
 
 // ফার্মেসির জন্য প্রিসেট একক
 const PRESET_UNITS = [
@@ -6660,7 +7038,7 @@ const IcInvoice  = () => <Ic d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 
 function ExpiryYearMonthPicker({ value, onChange, style = {} }) {
   const BN_MONTHS = ["জানুয়ারি","ফেব্রুয়ারি","মার্চ","এপ্রিল","মে","জুন","জুলাই","আগস্ট","সেপ্টেম্বর","অক্টোবর","নভেম্বর","ডিসেম্বর"];
   const curYear = new Date().getFullYear();
-  const years = Array.from({ length: 15 }, (_, i) => curYear + i); // এই বছর থেকে ১৫ বছর
+  const years = Array.from({ length: 21 }, (_, i) => curYear - 5 + i); // অতীত সংশোধনের জন্য -৫ থেকে +১৫ বছর
 
   // 🐛 ফিক্স: আগে external `value` থেকে সরাসরি year/month re-parse করা হতো, যার ফলে
   // year বা month একটিমাত্র সিলেক্ট করলে (অন্যটি খালি থাকায়) onChange("") কল হয়ে আগের
@@ -6668,21 +7046,61 @@ function ExpiryYearMonthPicker({ value, onChange, style = {} }) {
   // এখন local state-এ year/month আলাদাভাবে রাখা হচ্ছে যাতে একটি সিলেক্ট করার পর অন্যটি
   // সিলেক্ট করা পর্যন্ত আগের সিলেকশন টিকে থাকে।
   const parseVal = (v) => (v && /^\d{4}-\d{2}/.test(v) ? { year: v.slice(0,4), month: v.slice(5,7) } : { year: "", month: "" });
+  const toShorthand = (p) => (p.year && p.month ? `${p.month}/${p.year.slice(2)}` : "");
   const [local, setLocal] = useState(() => parseVal(value));
+  const [shorthand, setShorthand] = useState(() => toShorthand(parseVal(value)));
+  const [shorthandError, setShorthandError] = useState("");
 
   // বাহির থেকে value পরিবর্তিত হলে (যেমন: edit মোডে প্রোডাক্ট লোড হলে, অথবা ফর্ম রিসেট হলে) sync করো
   useEffect(() => {
-    setLocal(parseVal(value));
+    const p = parseVal(value);
+    setLocal(p);
+    setShorthand(toShorthand(p));
+    setShorthandError("");
   }, [value]);
 
-  const update = (year, month) => {
+  const update = (year, month, skipShorthandSync) => {
     setLocal({ year, month });
+    if (!skipShorthandSync) { setShorthand(toShorthand({ year, month })); setShorthandError(""); }
     if (year && month) onChange(`${year}-${month}-01`);
     else onChange("");
   };
 
+  // শর্টহ্যান্ড টাইপ: "0327" → "03/27" → year=2027, month=03 — ড্রপডাউনে লাইভ সিঙ্ক হবে
+  const handleShorthandChange = (raw) => {
+    const digits = raw.replace(/[^\d]/g, "").slice(0, 4);
+    const formatted = digits.length > 2 ? `${digits.slice(0,2)}/${digits.slice(2)}` : digits;
+    setShorthand(formatted);
+    if (digits.length < 4) { setShorthandError(""); return; } // অসম্পূর্ণ — এখনো পার্স করব না
+    const mm = digits.slice(0,2);
+    const monthNum = parseInt(mm, 10);
+    if (monthNum < 1 || monthNum > 12) { setShorthandError("মাস ০১-১২ এর মধ্যে হবে"); return; }
+    setShorthandError("");
+    update(String(2000 + parseInt(digits.slice(2,4), 10)), mm, true);
+  };
+
+  const isPast = local.year && local.month && new Date(`${local.year}-${local.month}-01`) < new Date(curYear, new Date().getMonth(), 1);
+
   return (
-    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, ...style }}>
+    <div style={style}>
+      <div style={{ marginBottom: 8 }}>
+        <label style={{ color:"#94a3b8", fontSize:10, fontWeight:700, display:"block", marginBottom:4 }}>⚡ দ্রুত টাইপ (MM/YY) — স্ট্রিপে যেভাবে ছাপা আছে সেভাবেই লিখুন</label>
+        <input
+          value={shorthand}
+          onChange={e => handleShorthandChange(e.target.value)}
+          placeholder="যেমনঃ 0327"
+          inputMode="numeric"
+          maxLength={5}
+          autoComplete="off"
+          style={{ width:"100%", padding:"9px 10px", borderRadius:10, border: shorthandError ? "1.5px solid #ef4444" : "1.5px solid #334155", background:"#0f172a", color:"#e2e8f0", fontSize:14, fontWeight:800, fontFamily:"inherit", outline:"none", letterSpacing:1 }} />
+        {shorthandError && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:3 }}>⚠️ {shorthandError}</div>}
+        {!shorthandError && local.year && local.month && (
+          <div style={{ color: isPast ? "#f59e0b" : "#22c55e", fontSize:11, fontWeight:700, marginTop:3 }}>
+            {isPast ? `⚠️ ${BN_MONTHS[parseInt(local.month,10)-1]}, ${local.year} — এই তারিখ অতীতের, ঠিক আছে তো?` : `✓ ${BN_MONTHS[parseInt(local.month,10)-1]}, ${local.year}`}
+          </div>
+        )}
+      </div>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
       <div>
         <label style={{ color:"#94a3b8", fontSize:10, fontWeight:700, display:"block", marginBottom:4 }}>সাল (Year)</label>
         <select
@@ -6702,6 +7120,7 @@ function ExpiryYearMonthPicker({ value, onChange, style = {} }) {
           <option value="">— মাস —</option>
           {BN_MONTHS.map((m,i) => <option key={i+1} value={String(i+1).padStart(2,"0")}>{m}</option>)}
         </select>
+      </div>
       </div>
     </div>
   );
@@ -6864,6 +7283,57 @@ function VoiceSearchButton({ onResult, lang = "bn-BD", color = "#22c55e" }) {
         </svg>
       )}
       <style>{`@keyframes voicePulse{0%,100%{opacity:1}50%{opacity:0.5}}`}</style>
+    </button>
+  );
+}
+
+// ── #৭ AI ফিচার (পর্যায় ৩) — লেবেলসহ ভয়েস বাটন, VoiceSearchButton-এর একই SpeechRecognition ──
+// লজিক কিন্তু টেক্সট-লেবেলড ও disabled/listening কন্ট্রোল করা যায় (বাইরের busy-state এর সাথে সিঙ্কের জন্য)।
+function VoiceSearchButtonFull({ onResult, lang = "bn-BD", color = "#a78bfa", label = "🎤 বলুন", disabled = false, listening, onListenChange, style = {} }) {
+  const recRef = useRef(null);
+  const SpeechRecognition = typeof window !== "undefined" &&
+    (window.SpeechRecognition || window.webkitSpeechRecognition);
+
+  const start = () => {
+    if (disabled) return;
+    if (listening) {
+      try { recRef.current?.stop(); } catch {}
+      onListenChange(false);
+      return;
+    }
+    try {
+      const rec = new SpeechRecognition();
+      rec.lang = lang;
+      rec.interimResults = false;
+      rec.maxAlternatives = 1;
+      rec.onstart  = () => onListenChange(true);
+      rec.onend    = () => onListenChange(false);
+      rec.onerror  = () => onListenChange(false);
+      rec.onresult = (e) => {
+        const text = e.results[0][0].transcript;
+        if (text) onResult(text);
+        onListenChange(false);
+      };
+      rec.start();
+      recRef.current = rec;
+    } catch { onListenChange(false); }
+  };
+
+  if (!SpeechRecognition) return null; // ডিভাইসে সাপোর্ট না থাকলে বাটনই দেখাবে না — early return সব hooks-এর পরে
+
+  return (
+    <button type="button" onClick={start} disabled={disabled}
+      title={listening ? "শুনছি... (ট্যাপ করুন বন্ধ করতে)" : "বাংলায় বলুন — যেমন: নাপা ৫০০ দশ পিস ক্রয় দশ টাকা বিক্রয় বারো টাকা"}
+      style={{
+        padding: "7px 8px", borderRadius: 8, cursor: disabled ? "default" : "pointer",
+        display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+        fontWeight: 700, fontSize: 12, fontFamily: "inherit",
+        border: `1px solid ${color}66`,
+        background: listening ? `${color}22` : "transparent",
+        color, animation: listening ? "voicePulse 1s ease-in-out infinite" : "none",
+        ...style,
+      }}>
+      {label}
     </button>
   );
 }
@@ -10481,6 +10951,7 @@ function SmartBusinessMgmt() {
               currentUser={currentUser} hasPerm={hasPerm}
               shopName={shopName}
               auditLog={auditLog}
+              anthropicKey={anthropicKey}
             />
           </ErrorBoundary>
         )}
@@ -12008,6 +12479,13 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
         }))
         .filter(p => p._score > 0)
         .sort((a, b) => b._score - a._score);
+    } else {
+      // সার্চ নেই — কমন পণ্য আগে, আনকমন পরে
+      ps = [...ps].sort((a, b) => {
+        const da = (a.demandType || "common") === "uncommon" ? 1 : 0;
+        const db = (b.demandType || "common") === "uncommon" ? 1 : 0;
+        return da - db;
+      });
     }
     return ps;
   }, [productsWithSerial, catFilter, prodSearch]);
@@ -12925,8 +13403,8 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                   }}
                   style={{
                     position: "relative",
-                    background: isSelected ? `${glowColor}1f` : T.card,
-                    border: `1.5px solid ${isSelected ? glowColor : T.border}`,
+                    background: isSelected ? `${glowColor}1f` : (p.demandType === "uncommon" ? "#a78bfa14" : T.card),
+                    border: `1.5px solid ${isSelected ? glowColor : (p.demandType === "uncommon" ? "#a78bfa55" : T.border)}`,
                     borderRadius: 12,
                     padding: "10px 10px",
                     display: "flex", flexDirection: "column", gap: 4,
@@ -12941,6 +13419,11 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                     <button
                       onClick={(e) => { e.stopPropagation(); setItems(prev => prev.filter(i => i.productId !== p.id)); }}
                       style={{ position: "absolute", top: 6, right: 6, width: 20, height: 20, borderRadius: "50%", border: "none", background: "#ef444433", color: "#ef4444", fontSize: 11, fontWeight: 900, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2 }}>✕</button>
+                  )}
+
+                  {/* আনকমন ব্যাজ */}
+                  {!isSelected && p.demandType === "uncommon" && (
+                    <div style={{ position: "absolute", top: 6, right: 6, background:"#a78bfa33", color:"#a78bfa", fontSize: 8.5, fontWeight: 800, borderRadius: 5, padding: "1px 5px", zIndex: 2 }}>আনকমন</div>
                   )}
 
                   {/* পণ্যের নাম */}
@@ -14487,23 +14970,11 @@ function DashPurchaseEntryModal({ T, S, products, setProducts, setStockMovements
         )}
 
         {/* সাপ্লায়ার — পরিমাণ ও ক্রয়মূল্যের উপরে */}
-        <div>
+        <div style={{ marginBottom: 12 }}>
           <label style={S.label}>🏭 সাপ্লায়ার</label>
-          <select style={{ ...S.input, cursor:"pointer" }}
-            value={BD_PHARMA_COMPANIES.includes(peForm.supplier) ? peForm.supplier : (peForm.supplier ? "__custom__" : "")}
-            onChange={e => {
-              if (e.target.value === "__custom__") setPeForm(f => ({ ...f, supplier: "" }));
-              else setPeForm(f => ({ ...f, supplier: e.target.value }));
-            }}>
-            <option value="">— সাপ্লায়ার নির্বাচন —</option>
-            {BD_PHARMA_COMPANIES.map(c => <option key={c} value={c}>{c}</option>)}
-            <option value="__custom__">✏️ নিজে লিখুন...</option>
-          </select>
-          {(!BD_PHARMA_COMPANIES.includes(peForm.supplier) && peForm.supplier !== "" && peForm.supplier) && (
-            <input style={{ ...S.input, marginTop:4 }} placeholder=""
-              value={peForm.supplier}
-              onChange={e => setPeForm(f => ({ ...f, supplier: e.target.value }))} />
-          )}
+          <SupplierPicker T={T} S={S}
+            value={peForm.supplier}
+            onChange={v => setPeForm(f => ({ ...f, supplier: v }))} />
         </div>
 
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
@@ -17974,10 +18445,29 @@ function InvoiceReceiptPrint({ inv, customer, type }) {
 }
 
 // ── Products ───────────────────────────────────────────────────────────────────
-function Products({ T, S, products, setProducts, showToast, stockMovements = [], setStockMovements, purchaseOrders = [], setPurchaseOrders, deletedProducts = [], setDeletedProducts, initialTab, currentUser, hasPerm, shopName, auditLog }) {
+function Products({ T, S, products, setProducts, showToast, stockMovements = [], setStockMovements, purchaseOrders = [], setPurchaseOrders, deletedProducts = [], setDeletedProducts, initialTab, currentUser, hasPerm, shopName, auditLog, anthropicKey }) {
   const [showAdd,      setShowAdd]      = useState(false);
   const [editId,       setEditId]       = useState(null);
-  const [form,         setForm]         = useState({ name: "", price: "", stock: "", minStockAlert: "5", category: "অন্যান্য", company: "", productType: "product", costPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false });
+  const [form,         setForm]         = useState({ name: "", price: "", stock: "", minStockAlert: "5", category: "অন্যান্য", company: "", productType: "product", costPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false, demandType: "common" });
+  // ── #৪ মাল্টি-ব্যাচ এক্সপায়ারি — নতুন পণ্যে একই সাথে একাধিক আলাদা এক্সপায়ারির চালান যোগ করার জন্য ──
+  // প্রাথমিক স্টক/মেয়াদ (form.stock/form.expiryDate) থাকে প্রথম ব্যাচ হিসেবে, extraBatches-এ বাকিগুলো
+  const [extraBatches, setExtraBatches] = useState([]); // [{ id, qty, expiryDate }]
+  const addExtraBatch    = () => setExtraBatches(b => [...b, { id: uid(), qty: "", expiryDate: "" }]);
+  const updateExtraBatch = (id, patch) => setExtraBatches(b => b.map(r => r.id === id ? { ...r, ...patch } : r));
+  const removeExtraBatch = (id) => setExtraBatches(b => b.filter(r => r.id !== id));
+  const totalNewStock = (parseInt(form.stock) || 0) + extraBatches.reduce((s, r) => s + (parseInt(r.qty) || 0), 0);
+  // ── #৬ প্রতি-ব্যাচ আলাদাভাবে এডিট — শুধু এক্সপায়ারি বদলানো যায়, বাকি (পরিমাণ/ব্যাচ নং) অক্ষত থাকে ──
+  // ইতিমধ্যে বিক্রি হওয়া অংশের হিস্টোরিক্যাল রেকর্ড (invoices/purchaseOrders) অপরিবর্তিত থাকে, শুধু products[].batches[] আপডেট হয়
+  const [editingBatch, setEditingBatch] = useState(null); // { productId, batchNo, expiryDate }
+  const saveBatchExpiry = () => {
+    if (!editingBatch) return;
+    setProducts(prev => prev.map(p => {
+      if (p.id !== editingBatch.productId) return p;
+      return { ...p, batches: (p.batches || []).map(b => b.batchNo === editingBatch.batchNo ? { ...b, expiryDate: editingBatch.expiryDate } : b) };
+    }));
+    showToast("ব্যাচের মেয়াদ আপডেট হয়েছে");
+    setEditingBatch(null);
+  };
   const [search,       setSearch]       = useState("");
   // React 18 useDeferredValue — type করলে UI block হবে না
   const deferredSearch = useDeferredValue(search);
@@ -17988,10 +18478,21 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     [products]
   );
 
+  const [demandFilter, setDemandFilter] = useState("সব"); // "সব" | "common" | "uncommon"
+
   const filteredAll = useMemo(() => {
     const q = (deferredSearch || "").trim();
-    if (!q || q.startsWith("__")) return productsWithSerialAll;
-    return productsWithSerialAll
+    let base = productsWithSerialAll;
+    if (demandFilter !== "সব") base = base.filter(p => (p.demandType || "common") === demandFilter);
+    if (!q || q.startsWith("__")) {
+      // সার্চ নেই — ডিফল্ট সর্ট: কমন আগে, আনকমন পরে (স্টেবল, বাকি অর্ডার অক্ষত)
+      return [...base].sort((a, b) => {
+        const da = (a.demandType || "common") === "uncommon" ? 1 : 0;
+        const db = (b.demandType || "common") === "uncommon" ? 1 : 0;
+        return da - db;
+      });
+    }
+    return base
       .map(p => ({
         ...p,
         _score: Math.max(
@@ -18003,7 +18504,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       }))
       .filter(p => p._score > 0)
       .sort((a, b) => b._score - a._score);
-  }, [productsWithSerialAll, deferredSearch]);
+  }, [productsWithSerialAll, deferredSearch, demandFilter]);
 
   // ── FIFO active-batch map — প্রোডাক্ট লিস্টের ব্যাচ ব্যাজ দেখানোর জন্য (prodBatchMap fix) ──
   const prodBatchMap = useMemo(() => {
@@ -18048,6 +18549,47 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   // ── Mandatory field validation — নতুন পণ্য/সার্ভিস ফর্ম ও ক্রয় এন্ট্রি ফর্মের জন্য ──
   const [formErrors, setFormErrors] = useState({}); // { name, price }
   const [peFormErrors, setPeFormErrors] = useState({}); // { productId, qty }
+  // ── #১ নাম অটো-সাজেশন — MEDICINE_DATASET থেকে নাম+পাওয়ার সাজেস্ট, সিলেক্ট করলে সাপ্লায়ার অটো-ফিল ──
+  const [nameSuggestOpen, setNameSuggestOpen] = useState(false);
+  const nameInputRef = useRef(null);
+  const nameSuggestions = useMemo(() => {
+    const raw = (form.name || "").trim();
+    if (raw.length < 2) return [];
+    const q = raw.toLowerCase();
+    // ২০,০০০+ এন্ট্রিতে দ্রুত স্ক্যানের জন্য প্রি-লোয়ারকেসড লেবেল ব্যবহার (smartMatch এর বদলে —
+    // fuzzy-ইন-অর্ডার টিয়ার বাদ, শুধু exact/prefix/includes — এটাই টাইপ করার সময়কার প্রকৃত ব্যবহার-প্যাটার্ন,
+    // আর প্রতি কি-স্ট্রোকে ২০,০০০ ফুল fuzzy-স্ক্যান বাজেট ফোনে স্টাটার করাতে পারে)
+    const out = [];
+    for (let i = 0; i < MEDICINE_DATASET.length; i++) {
+      const t = MEDICINE_LABELS_LC[i];
+      let s = 0;
+      if (t === q) s = 3;
+      else if (t.startsWith(q)) s = 2;
+      else if (t.includes(q)) s = 1;
+      if (s > 0) out.push({ entry: MEDICINE_DATASET[i], s });
+      if (out.length >= 400) break; // early-exit safety net, sort+slice নিচে top 8 বেছে নেবে
+    }
+    out.sort((a, b) => b.s - a.s);
+    return out.slice(0, 8).map(x => x.entry);
+  }, [form.name]);
+  const pickNameSuggestion = (entry) => {
+    const label = medDatasetLabel(entry);
+    if (nameInputRef.current) nameInputRef.current.value = label;
+    setForm(f => ({ ...f, name: label, company: (f.company && f.company.trim()) ? f.company : entry[2] }));
+    setFormErrors(er => ({ ...er, name: false, company: false }));
+    setNameSuggestOpen(false);
+  };
+  // ── #৭ AI ফিচার — এক লাইনে বাংলা টেক্সট থেকে ফর্ম ফিল্ড অটো-পার্স (পর্যায় ১) ──
+  const [showAiQuickEntry, setShowAiQuickEntry] = useState(false);
+  const [aiQuickText, setAiQuickText] = useState("");
+  const [aiQuickBusy, setAiQuickBusy] = useState(false);
+  const [aiQuickErr, setAiQuickErr] = useState("");
+  // ── #৭ AI ফিচার (পর্যায় ২) — স্ট্রিপ/প্যাকেটের ছবি থেকে অটো-এক্সট্র্যাক্ট ──
+  const [aiImageBusy, setAiImageBusy] = useState(false);
+  const [aiImageErr, setAiImageErr] = useState("");
+  const aiImageInputRef = useRef(null);
+  // ── #৭ AI ফিচার (পর্যায় ৩) — ভয়েস দিয়ে বলে এন্ট্রি (Web Speech API → টেক্সট → একই পার্সার) ──
+  const [aiVoiceListening, setAiVoiceListening] = useState(false);
   const activeUnits = customUnits !== null ? customUnits : PRESET_UNITS.filter(u => u !== "__custom__" && u !== "");
   const saveCustomUnits = (units) => {
     setCustomUnits(units);
@@ -18061,15 +18603,33 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     const errs = {};
     if (!form.name.trim()) errs.name = true;
     if (!form.price || parseFloat(form.price) <= 0) errs.price = true;
+    if (form.productType !== "service") {
+      if (!form.company || !form.company.trim()) errs.company = true;
+      if (!form.costPrice || parseFloat(form.costPrice) <= 0) errs.costPrice = true;
+      if (form.stock === "" || form.stock === null || form.stock === undefined || parseInt(form.stock) < 0 || isNaN(parseInt(form.stock))) errs.stock = true;
+      if (form.minStockAlert === "" || form.minStockAlert === null || form.minStockAlert === undefined || parseInt(form.minStockAlert) < 0 || isNaN(parseInt(form.minStockAlert))) errs.minStockAlert = true;
+      if (!form.expiryDate) errs.expiryDate = true;
+    }
     setFormErrors(errs);
-    if (errs.name || errs.price) {
+    if (Object.values(errs).some(Boolean)) {
       showToast(
         form.productType === "service"
           ? "নাম ও সার্ভিস চার্জ দিতে হবে"
-          : "নাম ও বিক্রয়মূল্য দিতে হবে",
+          : "সব ফিল্ড পূরণ করা আবশ্যক",
         "#ef4444"
       );
       return;
+    }
+    // ── #৪ মাল্টি-ব্যাচ ভ্যালিডেশন — প্রতিটি অতিরিক্ত ব্যাচে পরিমাণ ও মেয়াদ দুটোই থাকতে হবে ──
+    if (!editId && form.productType !== "service") {
+      const incompleteExtra = extraBatches.some(r =>
+        (r.qty && parseInt(r.qty) > 0 && !r.expiryDate) ||
+        (!r.qty || parseInt(r.qty) <= 0) && r.expiryDate
+      );
+      if (incompleteExtra) {
+        showToast("প্রতিটি অতিরিক্ত ব্যাচে পরিমাণ ও মেয়াদ দুটোই সঠিকভাবে দিতে হবে", "#ef4444");
+        return;
+      }
     }
     if (editId && currentUser?.role === "staff") { showToast("পণ্য এডিট করার অনুমতি নেই", "#ef4444"); return; }
     if (!editId && currentUser?.role === "staff" && !currentUser?.canAddProduct) { showToast("নতুন পণ্য যোগ করার অনুমতি নেই", "#ef4444"); return; }
@@ -18157,47 +18717,52 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     } else {
       const newId = uid();
       const unitCostVal = parseFloat(form.costPrice) || 0;
-      // নতুন পণ্যে initial stock থাকলে batches[] তৈরি করো (calcNextBatch — B-YYMM-N ফরম্যাট)
-      const initialBatchNo = newStockVal > 0 ? calcNextBatch(newId, [], [], now) : null;
-      const initialBatches = initialBatchNo ? [{
-        batchNo: initialBatchNo,
-        qty: newStockVal,
-        costPrice: unitCostVal,
-        sellPrice: parseFloat(form.price) || 0,
-        expiryDate: form.expiryDate || "",
-        supplier: form.company || "",
-        note: "প্রাথমিক স্টক",
-        at: now,
-      }] : [];
-      const prod = { ...prodFields, stock: newStockVal, batches: initialBatches };
+      // ── #৪ মাল্টি-ব্যাচ: প্রাথমিক স্টক-সারি + অতিরিক্ত (আলাদা এক্সপায়ারির) সারিগুলো মিলিয়ে batches[] তৈরি ──
+      const validExtra = (extraBatches || []).filter(r => r.qty && parseInt(r.qty) > 0 && r.expiryDate);
+      const extraQtyTotal = validExtra.reduce((s, r) => s + (parseInt(r.qty) || 0), 0);
+      const totalStockVal = newStockVal + extraQtyTotal;
+      const batchRows = [
+        ...(newStockVal > 0 ? [{ qty: newStockVal, expiryDate: form.expiryDate || "" }] : []),
+        ...validExtra.map(r => ({ qty: parseInt(r.qty), expiryDate: r.expiryDate })),
+      ];
+      // brand-new পণ্য বলে B-YYMM-N প্রিফিক্স নিজেই বানাচ্ছি (calcNextBatch-এর মতোই), শুধু N ক্রমান্বয়ে বাড়ছে প্রতি সারিতে
+      const byy = String(new Date(now).getFullYear()).slice(2);
+      const bmm = String(new Date(now).getMonth() + 1).padStart(2, "0");
+      const batchPrefix = `B-${byy}${bmm}-`;
+      const initialBatches = [];
+      const initialPOs = [];
+      batchRows.forEach((row, idx) => {
+        const batchNo = `${batchPrefix}${idx + 1}`;
+        initialBatches.push({
+          batchNo, qty: row.qty, costPrice: unitCostVal, sellPrice: parseFloat(form.price) || 0,
+          expiryDate: row.expiryDate || "", supplier: form.company || "", note: "প্রাথমিক স্টক", at: now,
+        });
+        initialPOs.push({
+          id: uid(), _type: "pe", productId: newId, productName: form.name.trim(),
+          unit: (form.unit === "__typing__" ? "" : form.unit) || "",
+          qty: row.qty, unitCost: unitCostVal, unitSell: parseFloat(form.price) || 0,
+          totalCost: row.qty * unitCostVal, isFreeStock: false,
+          expiryDate: row.expiryDate || "", batch: batchNo, supplier: form.company || "",
+          note: "প্রাথমিক স্টক", at: now, dateKey: now.split("T")[0],
+        });
+      });
+      const prod = { ...prodFields, stock: totalStockVal, batches: initialBatches };
       setProducts(prev => [...prev, { id: newId, ...prod }]);
-      // নতুন পণ্যে initial stock লগ করো (delta = newStockVal, prevStock = 0)
-      if (newStockVal > 0) {
+      // নতুন পণ্যে initial stock লগ করো (delta = totalStockVal, prevStock = 0)
+      if (totalStockVal > 0) {
         setStockMovements(prev => [{
           id: uid(), productId: newId, productName: form.name,
-          stock: newStockVal, prevStock: 0, delta: newStockVal,
+          stock: totalStockVal, prevStock: 0, delta: totalStockVal,
           at: now, dateKey: now.split("T")[0], source: "new",
         }, ...prev]);
-        // অটো ক্রয় এন্ট্রি লগ — batches[]-এর সাথে batchNo সিংক রাখা হলো
-        setPurchaseOrders(prev => [{
-          id: uid(), _type: "pe",
-          productId: newId, productName: form.name.trim(),
-          unit: (form.unit === "__typing__" ? "" : form.unit) || "",
-          qty: newStockVal, unitCost: unitCostVal,
-          unitSell: parseFloat(form.price) || 0,
-          totalCost: newStockVal * unitCostVal,
-          isFreeStock: false,
-          expiryDate: form.expiryDate || "",
-          batch: initialBatchNo,
-          supplier: form.company || "",
-          note: "প্রাথমিক স্টক",
-          at: now, dateKey: now.split("T")[0],
-        }, ...prev]);
+        // অটো ক্রয় এন্ট্রি লগ — প্রতিটি ব্যাচের জন্য আলাদা এন্ট্রি, batches[]-এর সাথে batchNo সিংক রাখা হলো
+        setPurchaseOrders(prev => [...initialPOs, ...prev]);
       }
-      showToast("নতুন পণ্য যোগ হয়েছে");
+      showToast(batchRows.length > 1 ? `নতুন পণ্য যোগ হয়েছে (${batchRows.length}টি আলাদা ব্যাচে)` : "নতুন পণ্য যোগ হয়েছে");
     }
-    setForm({ name: "", price: "", stock: "", minStockAlert: "", category: "অন্যান্য", company: "", productType: form.productType || "product", costPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false });
+    setForm({ name: "", price: "", stock: "", minStockAlert: "", category: "অন্যান্য", company: "", productType: form.productType || "product", costPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false, demandType: "common" });
     setFormErrors({});
+    setExtraBatches([]);
     setShowAdd(false);
   };
   
@@ -18507,26 +19072,11 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
 
                     {/* সাপ্লায়ার */}
                     <label style={S.label}>🏭 সাপ্লায়ার</label>
-                    {peCompanyCustom ? (
-                      <div style={{ display:"flex", gap:6, alignItems:"center", marginBottom:8 }}>
-                        <input style={{ ...S.input, flex:1, marginBottom:0 }} placeholder=""
-                          value={peNewProduct.company} onChange={e => setPeNewProduct(v => ({ ...v, company: e.target.value }))}
-                          autoFocus autoComplete="off" />
-                        <button type="button" onClick={() => { setPeCompanyCustom(false); setPeNewProduct(v => ({ ...v, company:"" })); }}
-                          style={{ background:"none", border:`1px solid ${T.border}`, color:T.sub, borderRadius:8, padding:"10px 10px", cursor:"pointer", fontSize:12, fontFamily:"inherit", flexShrink:0 }}>↩</button>
-                      </div>
-                    ) : (
-                      <select style={{ ...S.input, appearance:"none", WebkitAppearance:"none" }}
-                        value={BD_PHARMA_COMPANIES.includes(peNewProduct.company) ? peNewProduct.company : ""}
-                        onChange={e => {
-                          if (e.target.value === "__other__") { setPeCompanyCustom(true); setPeNewProduct(v => ({ ...v, company:"" })); }
-                          else { setPeNewProduct(v => ({ ...v, company: e.target.value })); setPeForm(f => ({ ...f, supplier: e.target.value })); }
-                        }}>
-                        <option value="">— সাপ্লায়ার নির্বাচন করুন —</option>
-                        {BD_PHARMA_COMPANIES.map(c => <option key={c} value={c}>{c}</option>)}
-                        <option value="__other__">✏️ নিজে লিখুন...</option>
-                      </select>
-                    )}
+                    <div style={{ marginBottom: 8 }}>
+                      <SupplierPicker T={T} S={S}
+                        value={peNewProduct.company}
+                        onChange={v => { setPeNewProduct(vv => ({ ...vv, company: v })); setPeForm(f => ({ ...f, supplier: v })); }} />
+                    </div>
 
                     {/* পরিমাণ + একক ক্রয়মূল্য */}
                     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
@@ -18607,21 +19157,9 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               {!peNewProduct && <>
                 <div>
                 <label style={S.label}>🏭 সাপ্লায়ার</label>
-                <select style={{ ...S.input, cursor:"pointer" }}
-                  value={BD_PHARMA_COMPANIES.includes(peForm.supplier) ? peForm.supplier : (peForm.supplier ? "__custom__" : "")}
-                  onChange={e => {
-                    if (e.target.value === "__custom__") setPeForm(f => ({ ...f, supplier: "" }));
-                    else setPeForm(f => ({ ...f, supplier: e.target.value }));
-                  }}>
-                  <option value="">— সাপ্লায়ার নির্বাচন —</option>
-                  {BD_PHARMA_COMPANIES.map(c => <option key={c} value={c}>{c}</option>)}
-                  <option value="__custom__">✏️ নিজে লিখুন...</option>
-                </select>
-                {(!BD_PHARMA_COMPANIES.includes(peForm.supplier) && peForm.supplier !== "" && peForm.supplier) && (
-                  <input style={{ ...S.input, marginTop:4 }} placeholder=""
-                    value={peForm.supplier}
-                    onChange={e => setPeForm(f => ({ ...f, supplier: e.target.value }))} />
-                )}
+                <SupplierPicker T={T} S={S}
+                  value={peForm.supplier}
+                  onChange={v => setPeForm(f => ({ ...f, supplier: v }))} />
               </div>
 
               {/* পরিমাণ + নতুন একক ক্রয়মূল্য */}
@@ -18937,7 +19475,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
         {(currentUser?.role !== "staff" || currentUser?.canAddProduct) && <button style={{ flex: 1, ...S.addBtn, marginBottom: 0, height: 44, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: `linear-gradient(135deg,#16a34a,#22c55e)`, boxShadow: "0 4px 16px #22c55e44" }}
-          onClick={() => { setShowAdd(v => !v); setEditId(null); setCompanyCustom(false); setFormErrors({}); setForm({ name: "", price: "", stock: "", category: "অন্যান্য", company: "", productType: "product", costPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false }); }}>
+          onClick={() => { setShowAdd(v => !v); setEditId(null); setCompanyCustom(false); setFormErrors({}); setExtraBatches([]); setForm({ name: "", price: "", stock: "", category: "অন্যান্য", company: "", productType: "product", costPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false, demandType: "common" }); }}>
           <IcPlus /> <span style={{ fontSize: 12, fontWeight: 800 }}>নতুন পণ্য</span>
         </button>}
         <SearchBar
@@ -18951,6 +19489,22 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           voiceColor="#22c55e"
           style={{ flex: 1, marginBottom: 0 }}
         />
+      </div>
+
+      {/* কমন/আনকমন ফিল্টার পিল */}
+      <div style={{ display:"flex", gap:6, marginBottom:10 }}>
+        {[
+          { id:"সব", label:"সব", color:"#38bdf8" },
+          { id:"common", label:"কমন", color:"#22c55e" },
+          { id:"uncommon", label:"আনকমন", color:"#a78bfa" },
+        ].map(f => (
+          <button key={f.id} onClick={() => setDemandFilter(f.id)}
+            style={{ padding:"6px 14px", borderRadius:20, border:`1.5px solid ${demandFilter === f.id ? f.color : T.border}`,
+              background: demandFilter === f.id ? f.color + "22" : "transparent",
+              color: demandFilter === f.id ? f.color : T.sub, fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
+            {f.label}
+          </button>
+        ))}
       </div>
 
       {showAdd && (
@@ -18968,37 +19522,163 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               </button>
             ))}
           </div>
-          <label style={S.label}>🏷️ {form.productType === "service" ? "সার্ভিসের নাম" : "পণ্যের নাম"} *</label>
-          <div style={{ display:"flex", gap:6, alignItems:"center", marginBottom: formErrors.name ? 2 : 4 }}>
-            <input style={{ ...S.input, flex:1, marginBottom:0, border: formErrors.name ? "1.5px solid #ef4444" : S.input.border }} placeholder="" defaultValue={form.name} ref={el => { if (el && !el._b) { el._b=true; el.addEventListener("compositionend", (e) => { {setForm(f=>({...f,name:el.value})); if (el.value.trim()) setFormErrors(er=>({...er,name:false}));}; }, {passive:true}); el.addEventListener("blur", (e) => { {setForm(f=>({...f,name:el.value})); if (el.value.trim()) setFormErrors(er=>({...er,name:false}));}; }, {passive:true}); el.addEventListener("input", (e) => { if(!e.isComposing){ {setForm(f=>({...f,name:el.value})); if (el.value.trim()) setFormErrors(er=>({...er,name:false}));}; } }, {passive:true}); } }} onChange={()=>{}}
-              autoCorrect="off" autoCapitalize="off" spellCheck="false" autoComplete="off"
-              inputMode="text" enterKeyHint="next" />
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:6 }}>
+            <label style={S.label}>🏷️ {form.productType === "service" ? "সার্ভিসের নাম" : "পণ্যের নাম"} *</label>
+            {form.productType !== "service" && !editId && (
+              <button type="button" onClick={() => { setShowAiQuickEntry(v => !v); setAiQuickErr(""); }}
+                style={{ background: showAiQuickEntry ? "#a78bfa22" : "transparent", border:"1px solid #a78bfa66", color:"#a78bfa", borderRadius:8, padding:"3px 9px", fontSize:11, fontWeight:800, cursor:"pointer", fontFamily:"inherit", marginBottom:4, display:"flex", alignItems:"center", gap:4 }}>
+                ✨ AI দিয়ে লিখুন
+              </button>
+            )}
+          </div>
+          {/* ── #৭ AI ফিচার (পর্যায় ১) — এক লাইনে বাংলা টেক্সট লিখে ফর্ম অটো-ফিল, সেভের আগে রিভিউ বাধ্যতামূলক ── */}
+          {showAiQuickEntry && form.productType !== "service" && !editId && (
+            <div style={{ background:"#a78bfa0c", border:"1px solid #a78bfa44", borderRadius:10, padding:"8px 10px", marginBottom:8 }}>
+              <div style={{ color:"#a78bfa", fontSize:11, fontWeight:700, marginBottom:6 }}>
+                এক লাইনে লিখুন, বলুন, বা স্ট্রিপের ছবি তুলুন — যেমন: "নাপা ৫০০ ১০ পিস ক্রয় ১০ টাকা বিক্রয় ১২ টাকা"
+              </div>
+              {/* ── #৭ পর্যায় ২/৩ — মাইক (ভয়েস) ও ক্যামেরা (ছবি) বাটন ── */}
+              <div style={{ display:"flex", gap:8, marginBottom:6 }}>
+                <VoiceSearchButtonFull
+                  disabled={aiQuickBusy || aiImageBusy}
+                  listening={aiVoiceListening}
+                  onListenChange={setAiVoiceListening}
+                  color="#a78bfa"
+                  label={aiVoiceListening ? "শুনছি..." : "🎤 বলুন"}
+                  onResult={(text) => {
+                    if (!text) return;
+                    setAiQuickText(text);
+                    parseAiQuickEntry(text, anthropicKey, {
+                      onStart: () => { setAiQuickBusy(true); setAiQuickErr(""); },
+                      onDone: (parsed) => {
+                        setAiQuickBusy(false);
+                        if (!parsed) { setAiQuickErr("বুঝতে পারিনি — আবার বলুন বা টাইপ করুন"); return; }
+                        if (nameInputRef.current && parsed.name) nameInputRef.current.value = parsed.name;
+                        setForm(f => ({
+                          ...f,
+                          name: parsed.name || f.name,
+                          stock: parsed.qty != null ? String(parsed.qty) : f.stock,
+                          costPrice: parsed.costPrice != null ? String(parsed.costPrice) : f.costPrice,
+                          price: parsed.price != null ? String(parsed.price) : f.price,
+                        }));
+                        setFormErrors(er => ({ ...er, name:false, stock:false, costPrice:false, price:false }));
+                        setShowAiQuickEntry(false);
+                        setAiQuickText("");
+                        showToast("🎤 ভয়েস থেকে ফর্ম পূরণ হয়েছে — সেভ করার আগে একবার চোখ বুলিয়ে নিন");
+                      },
+                      onError: (msg) => { setAiQuickBusy(false); setAiQuickErr(msg); },
+                    });
+                  }}
+                  style={{ flex:1 }} />
+                <button type="button" disabled={aiQuickBusy || aiImageBusy}
+                  onClick={() => aiImageInputRef.current?.click()}
+                  style={{ flex:1, padding:"7px 8px", borderRadius:8, border:"1px solid #a78bfa66", background: aiImageBusy ? "#a78bfa22" : "transparent", color:"#a78bfa", fontWeight:700, fontSize:12, cursor: (aiQuickBusy||aiImageBusy) ? "default" : "pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
+                  {aiImageBusy ? "পড়া হচ্ছে..." : "📷 স্ট্রিপের ছবি"}
+                </button>
+                <input ref={aiImageInputRef} type="file" accept="image/*" capture="environment" style={{ display:"none" }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = ""; // একই ফাইল আবার সিলেক্ট করলেও onChange ফায়ার হবে
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                      parseAiImageEntry(reader.result, anthropicKey, {
+                        onStart: () => { setAiImageBusy(true); setAiImageErr(""); setAiQuickErr(""); },
+                        onDone: (parsed) => {
+                          setAiImageBusy(false);
+                          if (!parsed || (!parsed.name && !parsed.company && !parsed.expiryMonth)) {
+                            setAiImageErr("ছবি থেকে কিছু পড়া যায়নি — স্পষ্ট ছবি তুলে আবার চেষ্টা করুন");
+                            return;
+                          }
+                          if (nameInputRef.current && parsed.name) nameInputRef.current.value = parsed.name;
+                          setForm(f => ({
+                            ...f,
+                            name: parsed.name || f.name,
+                            company: parsed.company || f.company,
+                            expiryDate: (parsed.expiryYear && parsed.expiryMonth)
+                              ? `${parsed.expiryYear}-${String(parsed.expiryMonth).padStart(2,"0")}-01`
+                              : f.expiryDate,
+                          }));
+                          setFormErrors(er => ({ ...er, name:false, company:false, expiryDate:false }));
+                          setShowAiQuickEntry(false);
+                          showToast("📷 ছবি থেকে ফর্ম পূরণ হয়েছে — সেভ করার আগে একবার চোখ বুলিয়ে নিন");
+                        },
+                        onError: (msg) => { setAiImageBusy(false); setAiImageErr(msg); },
+                      });
+                    };
+                    reader.readAsDataURL(file);
+                  }} />
+              </div>
+              {aiImageErr && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginBottom:6 }}>⚠️ {aiImageErr}</div>}
+              <textarea
+                value={aiQuickText}
+                onChange={e => setAiQuickText(e.target.value)}
+                placeholder="নাম, পরিমাণ, ক্রয়মূল্য, বিক্রয়মূল্য লিখুন..."
+                rows={2}
+                style={{ ...S.input, marginBottom:6, resize:"vertical", fontFamily:"inherit" }} />
+              {aiQuickErr && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginBottom:6 }}>⚠️ {aiQuickErr}</div>}
+              <div style={{ display:"flex", gap:8 }}>
+                <button type="button" disabled={aiQuickBusy || !aiQuickText.trim()}
+                  onClick={() => parseAiQuickEntry(aiQuickText, anthropicKey, {
+                    onStart: () => { setAiQuickBusy(true); setAiQuickErr(""); },
+                    onDone: (parsed) => {
+                      setAiQuickBusy(false);
+                      if (!parsed) { setAiQuickErr("বুঝতে পারিনি — আবার সহজভাবে লিখুন"); return; }
+                      if (nameInputRef.current && parsed.name) nameInputRef.current.value = parsed.name;
+                      setForm(f => ({
+                        ...f,
+                        name: parsed.name || f.name,
+                        stock: parsed.qty != null ? String(parsed.qty) : f.stock,
+                        costPrice: parsed.costPrice != null ? String(parsed.costPrice) : f.costPrice,
+                        price: parsed.price != null ? String(parsed.price) : f.price,
+                      }));
+                      setFormErrors(er => ({ ...er, name:false, stock:false, costPrice:false, price:false }));
+                      setShowAiQuickEntry(false);
+                      setAiQuickText("");
+                      showToast("✨ ফর্ম পূরণ হয়েছে — সেভ করার আগে একবার চোখ বুলিয়ে নিন");
+                    },
+                    onError: (msg) => { setAiQuickBusy(false); setAiQuickErr(msg); },
+                  })}
+                  style={{ flex:1, padding:"8px", borderRadius:8, border:"none", background: aiQuickBusy ? "#a78bfa66" : "linear-gradient(135deg,#7c3aed,#a78bfa)", color:"#fff", fontWeight:800, fontSize:12, cursor: aiQuickBusy ? "default" : "pointer", fontFamily:"inherit" }}>
+                  {aiQuickBusy ? "পার্স হচ্ছে..." : "✨ পার্স করুন"}
+                </button>
+                <button type="button" onClick={() => { setShowAiQuickEntry(false); setAiQuickText(""); setAiQuickErr(""); setAiImageErr(""); }}
+                  style={{ padding:"8px 12px", borderRadius:8, border:`1px solid ${T.border}`, background:"transparent", color:T.sub, fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>বাতিল</button>
+              </div>
+              {!anthropicKey && <div style={{ color:T.sub, fontSize:10, marginTop:6 }}>ℹ️ সেটিংসে Anthropic API Key দিলে এই ফিচার কাজ করবে</div>}
+            </div>
+          )}
+          <div style={{ position:"relative", marginBottom: formErrors.name ? 2 : 4 }}>
+            <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+              <input style={{ ...S.input, flex:1, marginBottom:0, border: formErrors.name ? "1.5px solid #ef4444" : S.input.border }} placeholder="" defaultValue={form.name}
+                ref={el => { nameInputRef.current = el; if (el && !el._b) { el._b=true; el.addEventListener("compositionend", (e) => { {setForm(f=>({...f,name:el.value})); if (el.value.trim()) setFormErrors(er=>({...er,name:false}));}; }, {passive:true}); el.addEventListener("blur", (e) => { {setForm(f=>({...f,name:el.value})); if (el.value.trim()) setFormErrors(er=>({...er,name:false}));}; setTimeout(() => setNameSuggestOpen(false), 200); }, {passive:true}); el.addEventListener("focus", () => setNameSuggestOpen(true), {passive:true}); el.addEventListener("input", (e) => { if(!e.isComposing){ {setForm(f=>({...f,name:el.value})); if (el.value.trim()) setFormErrors(er=>({...er,name:false}));}; setNameSuggestOpen(true); } }, {passive:true}); } }} onChange={()=>{}}
+                autoCorrect="off" autoCapitalize="off" spellCheck="false" autoComplete="off"
+                inputMode="text" enterKeyHint="next" />
+            </div>
+            {/* ── #১ নাম অটো-সাজেশন ড্রপডাউন — নাম+পাওয়ার মিলিয়ে সাজেস্ট, সিলেক্ট করলে সাপ্লায়ার অটো-ফিল ── */}
+            {nameSuggestOpen && nameSuggestions.length > 0 && (
+              <div style={{ position:"absolute", top:"100%", left:0, right:0, background:T.card, border:`1px solid ${T.border}`, borderRadius:12, zIndex:200, maxHeight:220, overflowY:"auto", boxShadow:"0 8px 24px rgba(0,0,0,0.4)", marginTop:4 }}>
+                {nameSuggestions.map((entry, i) => (
+                  <div key={i} onMouseDown={() => pickNameSuggestion(entry)}
+                    style={{ padding:"9px 14px", cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center", borderBottom:`1px solid ${T.border}` }}>
+                    <span style={{ color:T.text, fontWeight:700, fontSize:13 }}>
+                      <HighlightText text={medDatasetLabel(entry)} query={form.name} highlightColor="#22c55e" />
+                    </span>
+                    <span style={{ color:T.sub, fontSize:10 }}>{entry[2].replace(/ (Ltd\.|Limited|PLC)$/, "")}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
           {formErrors.name && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginBottom:6, marginTop:-2 }}>⚠️ নাম আবশ্যক</div>}
           {/* ── সাপ্লায়ার selector — শুধু পণ্যের জন্য ── */}
           {form.productType !== "service" && (<>
-          <label style={S.label}>🏭 সাপ্লায়ার</label>
-          {companyCustom ? (
-            <div style={{ display:"flex", gap:6, alignItems:"center" }}>
-              <input style={{ ...S.input, flex:1, marginBottom:0 }} placeholder=""
-                value={form.company||""}
-                onChange={e => setForm({ ...form, company: e.target.value })}
-                autoFocus autoComplete="off" />
-              <button type="button" onClick={() => { setCompanyCustom(false); setForm({ ...form, company: "" }); }}
-                style={{ background:"none", border:`1px solid ${T.border}`, color:T.sub, borderRadius:8, padding:"10px 10px", cursor:"pointer", fontSize:12, fontFamily:"inherit", flexShrink:0 }}>↩ তালিকা</button>
-            </div>
-          ) : (
-            <select style={{ ...S.input, appearance:"none", WebkitAppearance:"none" }}
-              value={BD_PHARMA_COMPANIES.includes(form.company||"") ? (form.company||"") : ""}
-              onChange={e => {
-                if (e.target.value === "__other__") { setCompanyCustom(true); setForm({ ...form, company: "" }); }
-                else setForm({ ...form, company: e.target.value });
-              }}>
-              <option value="">— সাপ্লায়ার নির্বাচন করুন —</option>
-              <option value="__other__">✏️ নিজে লিখুন...</option>
-              {BD_PHARMA_COMPANIES.map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
-          )}
+          <label style={S.label}>🏭 সাপ্লায়ার *</label>
+          <SupplierPicker key={editId || "new"} T={T} S={S}
+            error={formErrors.company}
+            value={form.company || ""}
+            onChange={v => { setForm({ ...form, company: v }); if (v.trim()) setFormErrors(er => ({ ...er, company: false })); }} />
+          {formErrors.company && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ সাপ্লায়ার আবশ্যক</div>}
           </>)}
           {/* সার্ভিস: শুধু চার্জ | পণ্য: ক্রয়মূল্য + বিক্রয়মূল্য + স্টক + অ্যালার্ট */}
           {form.productType === "service" ? (<>
@@ -19006,10 +19686,11 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
             <input style={{ ...S.input, border: formErrors.price ? "1.5px solid #ef4444" : S.input.border }} placeholder="" type="number" value={form.price} onChange={e => { setForm({ ...form, price: e.target.value }); if (parseFloat(e.target.value) > 0) setFormErrors(er=>({...er,price:false})); }} inputMode="numeric" pattern="[0-9]*" />
             {formErrors.price && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ সার্ভিস চার্জ আবশ্যক</div>}
           </>) : (<>
-          <label style={S.label}>💵 ক্রয়মূল্য (৳)</label>
+          <label style={S.label}>💵 ক্রয়মূল্য (৳) *</label>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
             <div>
-              <input style={{ ...S.input, marginBottom:0 }} placeholder="" type="number" value={form.costPrice} onChange={e => setForm({ ...form, costPrice: e.target.value })} inputMode="numeric" pattern="[0-9]*" />
+              <input style={{ ...S.input, marginBottom:0, border: formErrors.costPrice ? "1.5px solid #ef4444" : S.input.border }} placeholder="" type="number" value={form.costPrice} onChange={e => { setForm({ ...form, costPrice: e.target.value }); if (parseFloat(e.target.value) > 0) setFormErrors(er=>({...er,costPrice:false})); }} inputMode="numeric" pattern="[0-9]*" />
+              {formErrors.costPrice && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ ক্রয়মূল্য আবশ্যক</div>}
             </div>
             <div>
               <label style={{ ...S.label, fontSize:11, marginBottom:3 }}>💰 বিক্রয়মূল্য (৳) *</label>
@@ -19017,29 +19698,106 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               {formErrors.price && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ বিক্রয়মূল্য আবশ্যক</div>}
             </div>
             <div>
-              <label style={{ ...S.label, fontSize:11, marginBottom:3 }}>📦 প্রাথমিক স্টক</label>
-              <input style={{ ...S.input, marginBottom:0 }} placeholder="" type="number" value={form.stock} onChange={e => setForm({ ...form, stock: e.target.value })} inputMode="numeric" pattern="[0-9]*" />
+              <label style={{ ...S.label, fontSize:11, marginBottom:3 }}>📦 প্রাথমিক স্টক *</label>
+              <input style={{ ...S.input, marginBottom:0, border: formErrors.stock ? "1.5px solid #ef4444" : S.input.border }} placeholder="" type="number" value={form.stock} onChange={e => { setForm({ ...form, stock: e.target.value }); if (e.target.value !== "" && parseInt(e.target.value) >= 0) setFormErrors(er=>({...er,stock:false})); }} inputMode="numeric" pattern="[0-9]*" />
+              {formErrors.stock && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ প্রাথমিক স্টক আবশ্যক</div>}
             </div>
             <div>
-              <label style={{ ...S.label, fontSize:11, marginBottom:3 }}>🔔 মিন স্টক অ্যালার্ট</label>
-              <input style={{ ...S.input, marginBottom:0 }} placeholder="" type="number" value={form.minStockAlert} onChange={e => setForm({ ...form, minStockAlert: e.target.value })} inputMode="numeric" pattern="[0-9]*" />
+              <label style={{ ...S.label, fontSize:11, marginBottom:3 }}>🔔 মিন স্টক অ্যালার্ট *</label>
+              <input style={{ ...S.input, marginBottom:0, border: formErrors.minStockAlert ? "1.5px solid #ef4444" : S.input.border }} placeholder="" type="number" value={form.minStockAlert} onChange={e => { setForm({ ...form, minStockAlert: e.target.value }); if (e.target.value !== "" && parseInt(e.target.value) >= 0) setFormErrors(er=>({...er,minStockAlert:false})); }} inputMode="numeric" pattern="[0-9]*" />
+              {formErrors.minStockAlert && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ মিন স্টক অ্যালার্ট আবশ্যক</div>}
             </div>
           </div>
-          <label style={{ ...S.label, marginTop:8 }}>📅 মেয়াদ উত্তীর্ণের তারিখ</label>
-          <ExpiryYearMonthPicker value={form.expiryDate} onChange={v => setForm({ ...form, expiryDate: v })} />
+          <label style={{ ...S.label, marginTop:8 }}>📅 মেয়াদ উত্তীর্ণের তারিখ *</label>
+          <ExpiryYearMonthPicker value={form.expiryDate} onChange={v => { setForm({ ...form, expiryDate: v }); if (v) setFormErrors(er=>({...er,expiryDate:false})); }}
+            style={formErrors.expiryDate ? { border: "1.5px solid #ef4444", borderRadius: 10, padding: 2 } : {}} />
+          {formErrors.expiryDate && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ মেয়াদ উত্তীর্ণের তারিখ আবশ্যক</div>}
+
+          {/* ── #৪ মাল্টি-ব্যাচ এক্সপায়ারি — একই পণ্যে একসাথে আলাদা এক্সপায়ারির একাধিক ব্যাচ যোগ (শুধু নতুন পণ্যে) ── */}
+          {!editId && (() => {
+            const validRows = [
+              ...(form.stock && parseInt(form.stock) > 0 ? [{ qty: parseInt(form.stock), expiryDate: form.expiryDate }] : []),
+              ...extraBatches.filter(r => r.qty && parseInt(r.qty) > 0 && r.expiryDate).map(r => ({ qty: parseInt(r.qty), expiryDate: r.expiryDate })),
+            ];
+            // ── #৬ ডুপ্লিকেট-এক্সপায়ারি সতর্কতা — একই মেয়াদ একাধিকবার দেওয়া হলে (অ-বাধ্যতামূলক সতর্কতা) ──
+            const expirySeen = {};
+            const dupExpiries = new Set();
+            validRows.forEach(r => { if (r.expiryDate) { if (expirySeen[r.expiryDate]) dupExpiries.add(r.expiryDate); expirySeen[r.expiryDate] = true; } });
+            return (
+              <div style={{ marginTop: 10 }}>
+                {extraBatches.map((row) => (
+                  <div key={row.id} style={{ display:"grid", gridTemplateColumns:"1fr 2fr auto", gap:8, alignItems:"end", marginBottom:8, background:"#a78bfa0c", border:"1px solid #a78bfa33", borderRadius:10, padding:8 }}>
+                    <div>
+                      <label style={{ ...S.label, fontSize:10 }}>📦 পরিমাণ</label>
+                      <input style={{ ...S.input, marginBottom:0 }} type="number" inputMode="numeric" pattern="[0-9]*" placeholder=""
+                        value={row.qty} onChange={e => updateExtraBatch(row.id, { qty: e.target.value })} />
+                    </div>
+                    <div>
+                      <label style={{ ...S.label, fontSize:10 }}>📅 এই ব্যাচের মেয়াদ</label>
+                      <ExpiryYearMonthPicker value={row.expiryDate} onChange={v => updateExtraBatch(row.id, { expiryDate: v })} />
+                    </div>
+                    <button type="button" onClick={() => removeExtraBatch(row.id)}
+                      style={{ background:"#ef444422", border:"1px solid #ef444455", color:"#ef4444", borderRadius:8, width:34, height:34, fontWeight:900, fontSize:14, cursor:"pointer" }}>✕</button>
+                  </div>
+                ))}
+                <button type="button" onClick={addExtraBatch}
+                  style={{ width:"100%", padding:"9px", borderRadius:10, border:"1.5px dashed #a78bfa66", background:"transparent", color:"#a78bfa", fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
+                  ➕ আরেকটা ব্যাচ যোগ করুন (আলাদা মেয়াদের জন্য)
+                </button>
+                {dupExpiries.size > 0 && (
+                  <div style={{ marginTop:8, display:"flex", alignItems:"center", gap:6, background:"#f59e0b12", border:"1px solid #f59e0b44", borderRadius:10, padding:"8px 12px" }}>
+                    <span style={{ fontSize:14 }}>⚠️</span>
+                    <span style={{ color:"#f59e0b", fontSize:11, fontWeight:700 }}>একই মেয়াদ একাধিক ব্যাচে দেওয়া হয়েছে — ইচ্ছাকৃত না হলে চেক করে নিন</span>
+                  </div>
+                )}
+                {extraBatches.length > 0 && (
+                  <div style={{ marginTop:8, background:"#22c55e0c", border:"1px solid #22c55e44", borderRadius:10, padding:"8px 12px" }}>
+                    <div style={{ color:T.sub, fontSize:11, fontWeight:700, marginBottom:6 }}>📋 সেভের আগে রিভিউ করুন</div>
+                    {validRows.map((r, i) => (
+                      <div key={i} style={{ display:"flex", justifyContent:"space-between", fontSize:12, padding:"3px 0", color:T.text }}>
+                        <span>ব্যাচ {i + 1}: {r.qty} পিস</span>
+                        <span style={{ fontWeight:700, color: dupExpiries.has(r.expiryDate) ? "#f59e0b" : "#a78bfa" }}>{bnMonthYear(r.expiryDate) || "মেয়াদ নেই"}</span>
+                      </div>
+                    ))}
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:6, paddingTop:6, borderTop:`1px solid ${T.border}` }}>
+                      <span style={{ color:T.sub, fontSize:12, fontWeight:700 }}>মোট স্টক (সব ব্যাচ মিলিয়ে)</span>
+                      <span style={{ color:"#22c55e", fontWeight:900, fontSize:16 }}>{totalNewStock}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* ── কমন/আনকমন — চাহিদা অনুযায়ী ট্যাগ, ডিফল্ট কমন ── */}
+          <label style={{ ...S.label, marginTop:8 }}>📊 চাহিদার ধরন</label>
+          <div style={{ display:"flex", gap:10 }}>
+            <label style={{ display:"flex", alignItems:"center", gap:6, flex:1, padding:"9px 12px", borderRadius:10, border:`1.5px solid ${form.demandType === "common" ? "#22c55e" : T.border}`, background: form.demandType === "common" ? "#22c55e15" : "transparent", cursor:"pointer" }}>
+              <input type="checkbox" checked={form.demandType === "common"} onChange={() => setForm({ ...form, demandType: "common" })} style={{ width:16, height:16, accentColor:"#22c55e", cursor:"pointer" }} />
+              <span style={{ color: form.demandType === "common" ? "#22c55e" : T.sub, fontWeight:700, fontSize:13 }}>কমন</span>
+            </label>
+            <label style={{ display:"flex", alignItems:"center", gap:6, flex:1, padding:"9px 12px", borderRadius:10, border:`1.5px solid ${form.demandType === "uncommon" ? "#a78bfa" : T.border}`, background: form.demandType === "uncommon" ? "#a78bfa15" : "transparent", cursor:"pointer" }}>
+              <input type="checkbox" checked={form.demandType === "uncommon"} onChange={() => setForm({ ...form, demandType: "uncommon" })} style={{ width:16, height:16, accentColor:"#a78bfa", cursor:"pointer" }} />
+              <span style={{ color: form.demandType === "uncommon" ? "#a78bfa" : T.sub, fontWeight:700, fontSize:13 }}>আনকমন</span>
+            </label>
+          </div>
           </>)}
-          {/* নতুন পণ্যে অটো প্রথম ব্যাচ — শুধু পণ্যের জন্য */}
+          {/* নতুন পণ্যে অটো ব্যাচ প্রিভিউ — শুধু পণ্যের জন্য */}
           {!editId && form.productType !== "service" && (() => {
+            const validExtraCount = extraBatches.filter(r => r.qty && parseInt(r.qty) > 0 && r.expiryDate).length;
+            const totalBatchCount = 1 + validExtraCount;
             const previewBatch = calcNextBatch(null, [], [], new Date().toISOString());
             return (
               <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:4, padding:"10px 14px", borderRadius:12, border:"1px solid #a78bfa44", background:"#a78bfa10" }}>
-                <span style={{ color:"#a78bfa", fontWeight:900, fontSize:14 }}>{previewBatch}</span>
-                <span style={{ color:T.sub, fontSize:11 }}>প্রথম ব্যাচ — স্বয়ংক্রিয়ভাবে যুক্ত হবে</span>
+                <span style={{ color:"#a78bfa", fontWeight:900, fontSize:14 }}>{previewBatch}{totalBatchCount > 1 ? ` … +${totalBatchCount - 1}` : ""}</span>
+                <span style={{ color:T.sub, fontSize:11 }}>
+                  {totalBatchCount > 1 ? `${totalBatchCount}টি আলাদা ব্যাচ — স্বয়ংক্রিয়ভাবে যুক্ত হবে` : "প্রথম ব্যাচ — স্বয়ংক্রিয়ভাবে যুক্ত হবে"}
+                </span>
               </div>
             );
           })()}
           <div style={S.rowBtns}>
-            <button style={S.cancelBtn} onClick={() => { setShowAdd(false); setEditId(null); }}>বাতিল</button>
+            <button style={S.cancelBtn} onClick={() => { setShowAdd(false); setEditId(null); setExtraBatches([]); }}>বাতিল</button>
             <button style={{ ...S.saveBtn, background: `linear-gradient(135deg,#16a34a,#22c55e)` }} onClick={saveProduct}>
               <IcCheck /> {editId ? "আপডেট" : "যোগ করুন"}
             </button>
@@ -19063,6 +19821,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           <div key={p.id} className="qc-gradient-card" style={{
             ...S.card, marginBottom: 0, padding: "12px 14px",
             borderLeft: (p.stock||0)===0 ? "3px solid #ef4444" : (p.stock||0)<=(p.minStockAlert||5) ? "3px solid #f59e0b" : `3px solid #22c55e44`,
+            background: (p.demandType === "uncommon") ? "linear-gradient(135deg,#a78bfa0d,transparent)" : S.card.background,
             cursor: "pointer",
           }}
             onClick={() => { setQuickStockId(null); }}>
@@ -19072,10 +19831,11 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                 {p.serial}
               </div>
               <div style={{ flex: 1 }}>
-                {/* ── সারি ১: নাম + সার্ভিস ব্যাজ ── */}
+                {/* ── সারি ১: নাম + সার্ভিস ব্যাজ + কমন/আনকমন ব্যাজ ── */}
                 <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
                   <span style={{ color: T.text, fontWeight: 700, fontSize: 14 }}>{p.name}{p.unit ? <span style={{ color: T.sub, fontWeight: 600, fontSize: 12, marginLeft: 4 }}>({p.unit})</span> : null}</span>
                   {p.productType === "service" && <span style={{ background:"#0ea5e922", color:"#38bdf8", fontSize:10, borderRadius:6, padding:"1px 7px", fontWeight:800, border:"1px solid #38bdf844", flexShrink:0 }}>🔧 সার্ভিস</span>}
+                  {p.demandType === "uncommon" && <span style={{ background:"#a78bfa22", color:"#a78bfa", fontSize:10, borderRadius:6, padding:"1px 7px", fontWeight:800, border:"1px solid #a78bfa44", flexShrink:0 }}>আনকমন</span>}
                 </div>
                 {/* ── সারি ২: ক্রয়|বিক্রয়|স্টক|সাপ্লায়ার ── */}
                 <div style={{ display:"flex", gap:6, marginTop:3, flexWrap:"wrap", alignItems:"center" }}>
@@ -19101,25 +19861,48 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                       })
                     : prodBatchMap[p.id]?.batch ? [{ batchNo: prodBatchMap[p.id].batch, qty: p.stock||0, expiryDate: prodBatchMap[p.id].expiryDate || "" }] : [];
                   if (activeBatches.length === 0) return null;
+                  // ── #৬ ডুপ্লিকেট-এক্সপায়ারি সতর্কতা (একই পণ্যের একাধিক ব্যাচে হুবহু একই মেয়াদ) ──
+                  const expCount = {};
+                  activeBatches.forEach(b => { if (b.expiryDate) expCount[b.expiryDate] = (expCount[b.expiryDate]||0) + 1; });
+                  const canEditBatch = currentUser?.role !== "staff" && p.batches && p.batches.length > 0;
                   return (
+                    <>
                     <div style={{ marginTop:5, display:"flex", flexWrap:"wrap", gap:4 }}>
                       {activeBatches.map((b, bi) => {
                         const daysLeft = b.expiryDate ? Math.ceil((new Date(b.expiryDate) - new Date()) / 86400000) : null;
                         const isExpired = daysLeft !== null && daysLeft < 0;
                         const isNear    = daysLeft !== null && daysLeft >= 0 && daysLeft <= 30;
+                        const isDup     = b.expiryDate && expCount[b.expiryDate] > 1;
                         const bColor    = isExpired ? "#ef4444" : isNear ? "#f59e0b" : "#a78bfa";
                         return (
-                          <span key={bi} style={{ display:"inline-flex", alignItems:"center", gap:4, background:bColor+"18", border:`1px solid ${bColor}44`, borderRadius:6, padding:"2px 7px" }}>
+                          <span key={bi} style={{ display:"inline-flex", alignItems:"center", gap:4, background:bColor+"18", border:`1px solid ${isDup ? "#f59e0b" : bColor+"44"}`, borderRadius:6, padding:"2px 7px" }}>
                             <span style={{ color:bColor, fontSize:10, fontWeight:700 }}>📦 {b.batchNo} ({b.qty})</span>
                             {b.expiryDate && (
                               <span style={{ color: isExpired?"#ef4444":isNear?"#f59e0b":"#94a3b8", fontSize:9, fontWeight:700 }}>
                                 {isExpired ? "⚠️মেয়াদ শেষ" : isNear ? `⏳${daysLeft}দিন` : `📅${b.expiryDate}`}
                               </span>
                             )}
+                            {isDup && <span title="একই মেয়াদের একাধিক ব্যাচ" style={{ fontSize:9 }}>⚠️</span>}
+                            {canEditBatch && (
+                              <button type="button" title="এই ব্যাচের মেয়াদ ঠিক করুন"
+                                onClick={(e) => { e.stopPropagation(); setEditingBatch({ productId: p.id, batchNo: b.batchNo, expiryDate: b.expiryDate || "" }); }}
+                                style={{ background:"transparent", border:"none", color:bColor, fontSize:11, cursor:"pointer", padding:0, marginLeft:2, lineHeight:1 }}>✏️</button>
+                            )}
                           </span>
                         );
                       })}
                     </div>
+                    {editingBatch && editingBatch.productId === p.id && (
+                      <div onClick={e => e.stopPropagation()} style={{ marginTop:6, background:"#a78bfa10", border:"1px solid #a78bfa44", borderRadius:10, padding:8 }}>
+                        <div style={{ color:"#a78bfa", fontSize:11, fontWeight:800, marginBottom:6 }}>✏️ ব্যাচ {editingBatch.batchNo} — শুধু মেয়াদ ঠিক করুন</div>
+                        <ExpiryYearMonthPicker value={editingBatch.expiryDate} onChange={v => setEditingBatch(eb => ({ ...eb, expiryDate: v }))} />
+                        <div style={{ display:"flex", gap:8, marginTop:8 }}>
+                          <button type="button" onClick={() => setEditingBatch(null)} style={{ flex:1, padding:"8px", borderRadius:8, border:`1px solid ${T.border}`, background:"transparent", color:T.sub, fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>বাতিল</button>
+                          <button type="button" onClick={saveBatchExpiry} style={{ flex:1, padding:"8px", borderRadius:8, border:"none", background:"linear-gradient(135deg,#7c3aed,#a78bfa)", color:"#fff", fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>সেভ করুন</button>
+                        </div>
+                      </div>
+                    )}
+                    </>
                   );
                 })()}
               </div>
@@ -19129,7 +19912,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                   onClick={(e) => {
                     e.stopPropagation();
                     if (editId === p.id) { setEditId(null); setShowAdd(false); }
-                    else { setEditId(p.id); setForm({ name: p.name, price: String(p.price), stock: String(p.stock || 0), minStockAlert: String(p.minStockAlert || 5), category: p.category || "অন্যান্য", company: p.company || "", productType: (p.productType === "retail" ? "product" : p.productType) || "product", costPrice: String(p.costPrice || ""), expiryDate: p.expiryDate || "", barcode: p.barcode || "", unit: p.unit || "" }); setShowAdd(false); setCompanyCustom(!!p.company && !BD_PHARMA_COMPANIES.includes(p.company)); }
+                    else { setEditId(p.id); setForm({ name: p.name, price: String(p.price), stock: String(p.stock || 0), minStockAlert: String(p.minStockAlert || 5), category: p.category || "অন্যান্য", company: p.company || "", productType: (p.productType === "retail" ? "product" : p.productType) || "product", costPrice: String(p.costPrice || ""), expiryDate: p.expiryDate || "", barcode: p.barcode || "", unit: p.unit || "", demandType: p.demandType || "common" }); setExtraBatches([]); setShowAdd(false); setCompanyCustom(!!p.company && !BD_PHARMA_COMPANIES.includes(p.company)); }
                   }}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
                 </button>}
