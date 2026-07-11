@@ -22550,6 +22550,38 @@ function DailyNotifCard({ S, T = {}, shopName, showToast, customers = [], invoic
             style={{ width:"100%", marginTop:8, background:"#22c55e22", color:"#86efac", border:"1px dashed #22c55e66", borderRadius:12, padding:"8px 0", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
             🔧 ডিবাগ: বাটন কাজ করছে কিনা টেস্ট করুন
           </button>
+          {/* 🔴 সাময়িক ডিবাগ বাটন ২ — সম্পূর্ণ SYNC (কোনো await/promise নেই),
+              তাই এটা কখনোই hang করতে পারবে না। এটা সরাসরি window.Capacitor
+              অবজেক্ট চেক করে বলে দেবে নেটিভ LocalNotifications প্রক্সিটা এই
+              বিল্ডে আদৌ রেজিস্টার্ড আছে কিনা — asynchronous plugin call
+              hang হওয়ার আসল কারণ এখান থেকেই বোঝা যাবে। */}
+          <button onClick={() => {
+              try {
+                const cap = window.Capacitor;
+                const lines = [];
+                lines.push(`window.Capacitor আছে: ${cap ? "হ্যাঁ" : "না"}`);
+                if (cap) {
+                  lines.push(`Platform: ${typeof cap.getPlatform === "function" ? cap.getPlatform() : "n/a"}`);
+                  lines.push(`isNativePlatform: ${typeof cap.isNativePlatform === "function" ? cap.isNativePlatform() : "n/a"}`);
+                  const plugins = cap.Plugins || {};
+                  const pluginNames = Object.keys(plugins);
+                  lines.push(`মোট রেজিস্টার্ড প্লাগইন: ${pluginNames.length}`);
+                  lines.push(`LocalNotifications প্রক্সি আছে: ${plugins.LocalNotifications ? "✅ হ্যাঁ" : "❌ না"}`);
+                  if (typeof cap.isPluginAvailable === "function") {
+                    lines.push(`isPluginAvailable('LocalNotifications'): ${cap.isPluginAvailable("LocalNotifications")}`);
+                  }
+                  lines.push(`সব প্লাগইনের নাম: ${pluginNames.join(", ") || "(খালি)"}`);
+                } else {
+                  lines.push("⚠️ window.Capacitor সম্পূর্ণ undefined — এটা নেটিভ অ্যাপ হিসেবেই লোড হয়নি (ব্রাউজার মোডে চলছে)");
+                }
+                window.alert(lines.join("\n"));
+              } catch(e) {
+                window.alert("সিঙ্ক ডিবাগ চেক নিজেই এরর দিলো: " + (e?.message || e));
+              }
+            }}
+            style={{ width:"100%", marginTop:8, background:"#3b82f622", color:"#93c5fd", border:"1px dashed #3b82f666", borderRadius:12, padding:"8px 0", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
+            🔎 ডিবাগ ২: নেটিভ প্লাগইন রেজিস্ট্রেশন চেক করুন (সিঙ্ক, কখনো hang করবে না)
+          </button>
           <button onClick={async () => {
               // 🔴 ডিবাগ ফিক্স — আগে এখানে try/catch/timeout ছিল না, তাই hang
               // হলে বাটন চাপ দিয়ে কিছুই দেখা যেত না (সম্পূর্ণ silent)। এখন
