@@ -22582,6 +22582,35 @@ function DailyNotifCard({ S, T = {}, shopName, showToast, customers = [], invoic
             style={{ width:"100%", marginTop:8, background:"#3b82f622", color:"#93c5fd", border:"1px dashed #3b82f666", borderRadius:12, padding:"8px 0", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
             🔎 ডিবাগ ২: নেটিভ প্লাগইন রেজিস্ট্রেশন চেক করুন (সিঙ্ক, কখনো hang করবে না)
           </button>
+          {/* 🔴 সাময়িক ডিবাগ বাটন ৩ — LocalNotifications বাদ দিয়ে সম্পূর্ণ ভিন্ন একটা
+              প্লাগইন (App.getInfo) কল করে দেখা — যদি এটাও hang করে, তাহলে বোঝা
+              যাবে পুরো Capacitor bridge-ই ভাঙা (শুধু LocalNotifications না)। */}
+          <button onClick={async () => {
+              const results = [];
+              try {
+                const AppPlugin = window.Capacitor?.Plugins?.App;
+                if (!AppPlugin) { window.alert("App প্লাগইন প্রক্সিই নেই!"); return; }
+                const withT = (p, ms) => Promise.race([
+                  p.then(r => ({ ok:true, r })),
+                  new Promise(res => setTimeout(() => res({ ok:false }), ms)),
+                ]);
+                const t0 = Date.now();
+                const res1 = await withT(AppPlugin.getInfo(), 4000);
+                results.push(`App.getInfo(): ${res1.ok ? "✅ সাড়া দিয়েছে (" + (Date.now()-t0) + "ms) — " + JSON.stringify(res1.r) : "❌ 4s hang করলো"}`);
+
+                const LN = window.Capacitor?.Plugins?.LocalNotifications;
+                const t1 = Date.now();
+                const res2 = await withT(LN.checkPermissions(), 4000);
+                results.push(`LocalNotifications.checkPermissions(): ${res2.ok ? "✅ সাড়া দিয়েছে (" + (Date.now()-t1) + "ms) — " + JSON.stringify(res2.r) : "❌ 4s hang করলো"}`);
+
+                window.alert(results.join("\n\n"));
+              } catch(e) {
+                window.alert("এরর: " + (e?.message || e) + "\n\nএ পর্যন্ত ফলাফল:\n" + results.join("\n"));
+              }
+            }}
+            style={{ width:"100%", marginTop:8, background:"#f59e0b22", color:"#fcd34d", border:"1px dashed #f59e0b66", borderRadius:12, padding:"8px 0", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
+            🧪 ডিবাগ ৩: App vs LocalNotifications ব্রিজ তুলনা করুন
+          </button>
           <button onClick={async () => {
               // 🔴 ডিবাগ ফিক্স — আগে এখানে try/catch/timeout ছিল না, তাই hang
               // হলে বাটন চাপ দিয়ে কিছুই দেখা যেত না (সম্পূর্ণ silent)। এখন
