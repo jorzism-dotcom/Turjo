@@ -2565,12 +2565,20 @@ const Notif = {
         await LocalNotifications.schedule({ notifications: [notif] });
         return;
       } catch(e) {
+        // 🔴 ফিক্স — আগে এই এরর এখানেই console.warn করে silently swallow করা
+        // হতো এবং ফাংশনটা normally return করত (fallback browser API silently
+        // কিছুই করত না, কারণ native WebView-তে "Notification" in window সাধারণত
+        // false বা permission granted থাকে না)। ফলে LocalNotifications.schedule()
+        // native side-এ আসলে ব্যর্থ হলেও Notif.send() কলার-এর কাছে সবসময় "সফল"
+        // দেখাত — sendTestNotif/rescheduleAll কখনো real error দেখতে পেত না, তাই
+        // fallback/retry ধাপও কখনো ট্রিগার হতো না। এখন এরর রি-থ্রো করা হচ্ছে যাতে
+        // কলাররা আসল ব্যর্থতা দেখতে ও তার উপর ভিত্তি করে পদক্ষেপ নিতে পারে।
         console.warn("Notif send (Capacitor) error:", e?.message || e);
-        // fallback করি browser API তে
+        if (window.Capacitor?.isNativePlatform()) throw e;
       }
     }
     try {
-      // Browser fallback
+      // Browser fallback (শুধু non-native/web platform-এর জন্য)
       if ("Notification" in window && Notification.permission === "granted") {
         new Notification(title, { body, icon: "/icons/icon-192.png" });
       }
@@ -9816,19 +9824,29 @@ function SmartBusinessMgmt() {
               if (Array.isArray(parsed) && parsed.length > 0) times = parsed;
             } catch {}
           }
-          const granted = await Notif.requestPermission();
-          if (!granted) return;
-          await LocalNotifications.cancel({ notifications: cancelIds });
-          for (let i = 0; i < Math.min(times.length, NOTIF_MAX_TIMES); i++) {
-            const t = times[i];
-            await Notif.send({
-              id: NOTIF_ID_BASE + i,
-              title: `✨ ${shopName} — আজকের সারসংক্ষেপ`,
-              iconColor: "#8b5cf6",
-              body: `${shopName} • দৈনিক রিপোর্ট`,
-              summaryText: `${shopName} • দৈনিক রিপোর্ট ✨`,
-              repeatDailyAt: { hour: t.hour, minute: t.minute },
-            });
+          // 🔴 ফিক্স — permission-check fallback বাদ দেওয়া হলো (sendTestNotif ও
+          // rescheduleAll-এ যেমন করা হয়েছে)। বারবার প্রমাণিত হয়েছে requestPermission()
+          // এই ডিভাইসে চিরকাল hang করে — তাই এটা রাখলে শুধু প্রতিবার role-switch হলে
+          // ১৫ সেকেন্ড নিঃশব্দে আটকে থাকত, কোনো লাভ ছাড়াই। এখন সরাসরি schedule()
+          // ট্রাই হবে, ব্যর্থ হলে কারণটা console-এ log হবে।
+          const doScheduleAll = async () => {
+            await LocalNotifications.cancel({ notifications: cancelIds });
+            for (let i = 0; i < Math.min(times.length, NOTIF_MAX_TIMES); i++) {
+              const t = times[i];
+              await Notif.send({
+                id: NOTIF_ID_BASE + i,
+                title: `✨ ${shopName} — আজকের সারসংক্ষেপ`,
+                iconColor: "#8b5cf6",
+                body: `${shopName} • দৈনিক রিপোর্ট`,
+                summaryText: `${shopName} • দৈনিক রিপোর্ট ✨`,
+                repeatDailyAt: { hour: t.hour, minute: t.minute },
+              });
+            }
+          };
+          try {
+            await doScheduleAll();
+          } catch (e) {
+            console.warn("[NotifGuard] doScheduleAll failed:", e?.message || e);
           }
         }
       } catch (e) {
@@ -22328,24 +22346,20 @@ function DailyNotifCard({ S, T = {}, shopName, showToast, customers = [], invoic
         }), 6000, "Notification schedule");
       }
     };
-    // 🔴 ফিক্স — Notif.requestPermission() (checkPermissions/requestPermissions)
-    // এই ডিভাইসে কোনো timeout ছাড়া plain await করলে চিরকাল hang করে থাকে (কখনো
-    // resolve হয় না) — যেটার মানে rescheduleAll() (অ্যাপ খোলার সময় স্বয়ংক্রিয়ভাবে
-    // কল হওয়াসহ) নিঃশব্দে আটকে যেত, তাই দৈনিক নোটিফিকেশনই কখনো শিডিউল হতো না।
-    // ডিবাগ ৫ প্রমাণ করেছে permission check বাদ দিয়ে সরাসরি schedule() কাজ করে।
+    // 🔴 ফিক্স — permission-check fallback পুরোপুরি বাদ দেওয়া হলো। বারবার (৬s/১৫s/২০s
+    // টেস্টে) প্রমাণিত হয়েছে requestPermission() এই ডিভাইসে চিরকাল hang করে (কোনো
+    // popup আসে না, resolve/reject কিছুই হয় না) — তাই এই fallback কখনোই সফল হতো না,
+    // শুধু প্রতিবার ১৫ সেকেন্ড নিঃশব্দে আটকে থাকত। ডিবাগ ৫ প্রমাণ করেছে permission
+    // আগে থেকেই granted আছে ও সরাসরি schedule() কাজ করে — তাই এখন ব্যর্থ হলে
+    // real error console-এ ও permStatus false করে দেখানো হচ্ছে, যাতে root cause
+    // (icon/channel/exact-alarm ইত্যাদি) সহজে ধরা যায়।
     try {
       await doScheduleAll();
       setPermStatus(true);
-      return;
     } catch(e) {
-      // সরাসরি schedule ব্যর্থ — তখনই permission request ট্রাই করব (timeout-guard সহ)
+      console.warn("rescheduleAll failed:", e?.message || e);
+      setPermStatus(false);
     }
-    try {
-      const granted = await withTimeout(Notif.requestPermission(), 15000, "Permission check");
-      setPermStatus(granted);
-      if (!granted) return;
-      await doScheduleAll();
-    } catch(e) { /* silent */ }
   };
 
   // 🔴 ফিক্স: UI-তে "চালু" (notifEnabled=true) দেখানো মানেই যে OS-এ আসলে
@@ -22410,41 +22424,27 @@ function DailyNotifCard({ S, T = {}, shopName, showToast, customers = [], invoic
   const sendTestNotif = async () => {
     const sum = buildSummary();
     const { body, largeBody } = buildNotifContent(sum, "\n\n(টেস্ট)");
-    const doSend = () => withTimeout(Notif.send({
-      id: 9999,
-      title: `✨ ${shopName} — আজকের সারসংক্ষেপ`,
-      iconColor: "#8b5cf6",
-      body,
-      largeBody,
-      summaryText: `${shopName} • দৈনিক রিপোর্ট ✨`,
-    }), 6000, "Notification send");
-    // 🔴 ফিক্স ৩ — এই ডিভাইসে LocalNotifications.checkPermissions()/
-    // requestPermissions() নিজেই hang করে (২০ সেকেন্ডেও সাড়া দেয়নি, কোনো
-    // পপআপও আসেনি) — অথচ ডিবাগ ৫ প্রমাণ করেছে permission checking বাদ দিয়ে
-    // সরাসরি schedule() কল করলে ঠিকমতো কাজ করে ও নোটিফিকেশন সত্যিই দেখায়।
-    // তাই permission-check ধাপ পুরোপুরি এড়িয়ে সরাসরি schedule() ট্রাই করা
-    // হচ্ছে (ডিবাগ ৫-এর মতোই) — ব্যর্থ হলেই কেবল permission request ট্রাই হবে।
+    // 🔴 ফিক্স — permission-check fallback পুরোপুরি বাদ দেওয়া হলো। এই ডিভাইসে
+    // checkPermissions()/requestPermissions() বারবার (৬s, ২০s, ১৫s টেস্টে) প্রমাণিত
+    // হয়েছে যে চিরকাল hang করে — কোনো popup আসে না, কখনো resolve/reject হয় না।
+    // আর ডিবাগ ৫ ইতিমধ্যে প্রমাণ করেছে permission আগে থেকেই granted আছে ও সরাসরি
+    // schedule() কাজ করে। তাই permission-check ধাপ বাদ দিয়ে, সরাসরি schedule()
+    // ব্যর্থ হলে তার real error-টাই এখন সরাসরি দেখানো হচ্ছে — root cause বোঝার
+        // জন্য এটাই এখন একমাত্র বাকি ধাপ।
     try {
-      await doSend();
+      await withTimeout(Notif.send({
+        id: 9999,
+        title: `✨ ${shopName} — আজকের সারসংক্ষেপ`,
+        iconColor: "#8b5cf6",
+        body,
+        largeBody,
+        summaryText: `${shopName} • দৈনিক রিপোর্ট ✨`,
+      }), 8000, "Notification send");
       showToast("🔔 টেস্ট নোটিফিকেশন পাঠানো হয়েছে");
-      return;
-    } catch (sendErr) {
-      // সরাসরি send ব্যর্থ — হয়তো সত্যিই permission নেই, তখনই request করব
-    }
-    try {
-      window.alert("⏳ এখন OK চাপার পর permission check হবে — যদি একটা Allow/Deny সিস্টেম পপআপ আসে, তাতে অবশ্যই 'Allow' চাপুন।");
-      const granted = await withTimeout(Notif.requestPermission(), 15000, "Permission check");
-      setPermStatus(granted);
-      if (!granted) {
-        showToast("⚠️ নোটিফিকেশন Permission নেই — Settings থেকে Allow করুন", "#ef4444");
-        return;
-      }
-      await doSend();
-      showToast("🔔 টেস্ট নোটিফিকেশন পাঠানো হয়েছে");
-    } catch(e) {
-      // 🔴 ডিবাগ ফলব্যাক — showToast নিজেই ব্যর্থ/অদৃশ্য হলেও যেন কারণটা চোখে পড়ে
-      try { showToast("নোটিফিকেশন পাঠানো যায়নি: " + e.message, "#ef4444"); } catch {}
-      try { window.alert("টেস্ট নোটিফিকেশন এরর: " + (e?.message || e)); } catch {}
+    } catch (e) {
+      console.warn("Notif send failed:", e?.message || e);
+      try { showToast("নোটিফিকেশন পাঠানো যায়নি: " + (e?.message || e), "#ef4444"); } catch {}
+      try { window.alert("টেস্ট নোটিফিকেশন এরর (আসল কারণ): " + (e?.message || e)); } catch {}
     }
   };
 
