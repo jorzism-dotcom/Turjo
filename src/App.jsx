@@ -9497,7 +9497,50 @@ function SmartBusinessMgmt() {
     return () => unsub();
   }, [fssReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useFSSCollection("txns", txns, setTxns, fssReady, { onSync: setSyncToast });
+  // ── txns Windowed Sync — শুধু শেষ ৩০ দিনের লেনদেন real-time ("আজকের বাকি/জমা"
+  // ড্যাশবোর্ড হিসাবের জন্য এতটুকুই যথেষ্ট)। আগে: পুরো collection pull, ১০ লাখ
+  // ইনভয়েসে txns-ও একই স্কেলে বাড়ত। নতুন txn তৈরি হলে addTxn()-এর ভেতরেই
+  // সরাসরি Firestore-এ push হয়। Firestore index লাগবে: txns → dateKey (ASC)।
+  useEffect(() => {
+    if (!fssReady || !FSS._db) return;
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - 30);
+    const cutoff = cutoffDate.toISOString().split("T")[0];
+
+    const colRef = collection(FSS._db, "txns");
+    const q = query(colRef, where("dateKey", ">=", cutoff), orderBy("dateKey", "desc"));
+
+    const unsub = onSnapshot(q, (snap) => {
+      const recent = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setTxns(recent);
+    }, () => { /* offline — Firestore cache থেকে কাজ চলবে */ });
+
+    return () => unsub();
+  }, [fssReady]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── কাস্টমার ডিটেইল পেজে পূর্ণ লেনদেন-ইতিহাস — windowed txns (৩০ দিন) যথেষ্ট না,
+  // তাই কাস্টমার ডিটেইল খোলার সময় সেই নির্দিষ্ট কাস্টমারের জন্য আলাদা Firestore
+  // query চালিয়ে সম্পূর্ণ ইতিহাস (কতদিন আগের হোক না কেন) আনা হয়। অফলাইনে বা
+  // fetch ব্যর্থ হলে windowed local txns-এই fallback করে (নিচে দেখুন)।
+  const [customerTxnsFull, setCustomerTxnsFull] = useState({ customerId: null, rows: null });
+  useEffect(() => {
+    if (!detailCId || !fssReady || !FSS._db) { setCustomerTxnsFull({ customerId: null, rows: null }); return; }
+    let cancelled = false;
+    setCustomerTxnsFull({ customerId: detailCId, rows: null }); // লোডিং শুরু
+    (async () => {
+      try {
+        const colRef = collection(FSS._db, "txns");
+        const q = query(colRef, where("customerId", "==", detailCId), orderBy("dateKey", "desc"));
+        const snap = await getDocs(q);
+        if (cancelled) return;
+        const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        setCustomerTxnsFull({ customerId: detailCId, rows });
+      } catch {
+        if (!cancelled) setCustomerTxnsFull({ customerId: detailCId, rows: null }); // ব্যর্থ — fallback windowed-এ
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [detailCId, fssReady]);
   useFSSCollection("smsLog", smsLog, setSmsLog, fssReady, { onSync: setSyncToast });
   useFSSCollection("suppliers", suppliers, setSuppliers, fssReady, { onSync: setSyncToast });
   useFSSCollection("purchaseOrders", purchaseOrders, setPurchaseOrders, fssReady, { onSync: setSyncToast });
@@ -9858,9 +9901,11 @@ function SmartBusinessMgmt() {
   // 🔴 stockMovements-ও এখন windowed (৩০ দিন) — invoices-এর মতো একই ১২-ঘণ্টার
   // cached full-pull প্যাটার্ন, যাতে auto-backup-এ পুরনো movement হারিয়ে না যায়।
   const FULL_PULL_KEY_SM = "hg_last_full_stockmovements_pull";
+  const FULL_PULL_KEY_TXN = "hg_last_full_txns_pull";
   const buildBackupData = useCallback(async () => {
     let fullInvoices = invoices;
     let fullStockMovements = stockMovements;
+    let fullTxns = txns;
     if (firebaseEnabled && FSS.isReady()) {
       const lastPull = Number(localStorage.getItem(FULL_PULL_KEY) || 0);
       if (Date.now() - lastPull >= FULL_PULL_INTERVAL) {
@@ -9876,14 +9921,22 @@ function SmartBusinessMgmt() {
           localStorage.setItem(FULL_PULL_KEY_SM, String(Date.now()));
         } catch { fullStockMovements = stockMovements; }
       }
+      const lastPullTxn = Number(localStorage.getItem(FULL_PULL_KEY_TXN) || 0);
+      if (Date.now() - lastPullTxn >= FULL_PULL_INTERVAL) {
+        try {
+          fullTxns = await FSS.getCollectionOnce("txns");
+          localStorage.setItem(FULL_PULL_KEY_TXN, String(Date.now()));
+        } catch { fullTxns = txns; }
+      }
     }
     const invoicesForBackup = (fullInvoices && fullInvoices.length >= invoices.length) ? fullInvoices : invoices;
     const stockMovementsForBackup = (fullStockMovements && fullStockMovements.length >= stockMovements.length) ? fullStockMovements : stockMovements;
+    const txnsForBackup = (fullTxns && fullTxns.length >= txns.length) ? fullTxns : txns;
     // ── কেন্দ্রীয় রেজিস্ট্রি (BACKUP_FIELDS) থেকে লুপ করে payload/checksum/counts
     // বানানো হয় — নতুন কোনো collection ভবিষ্যতে যোগ হলে শুধু ওই একটা array-তে
     // নাম যোগ করলেই এই তিনটাই (payload, checksum, counts) নিজে থেকে কভার করবে,
     // এখানে আলাদা করে টাচ করা লাগবে না।
-    const stateMap = { customers, products, invoices: invoicesForBackup, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements: stockMovementsForBackup, users, cashLogs, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers };
+    const stateMap = { customers, products, invoices: invoicesForBackup, txns: txnsForBackup, smsLog, paymentInvoices, purchaseOrders, stockMovements: stockMovementsForBackup, users, cashLogs, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers };
     const payload = {};
     const counts = {};
     BACKUP_FIELDS.forEach(f => {
@@ -10377,6 +10430,7 @@ function SmartBusinessMgmt() {
 
   const addTxn = useCallback((customerId, type, amount, balanceAfter, invoiceId = null, note = "", paymentInvoiceId = null, source = "collection") => {
     const entry = { id: uid(), customerId, type, amount, balanceAfter, invoiceId, paymentInvoiceId, note, source, date: todayStr(), dateKey: todayEn(), time: nowStr() };
+    if (FSS.isReady()) FSS.setRecord("txns", entry.id, withTs(entry));
     setTxns(prev => [entry, ...prev]);
     return entry;
   }, []);
@@ -11079,7 +11133,8 @@ function SmartBusinessMgmt() {
         {showDetail && (
           <ErrorBoundary T={T}>
             <CustomerDetail T={T} S={S}
-              customer={detailCust} txns={txns.filter(t => t.customerId === detailCId)}
+              customer={detailCust}
+              txns={(customerTxnsFull.customerId === detailCId && customerTxnsFull.rows) ? customerTxnsFull.rows : txns.filter(t => t.customerId === detailCId)}
               invoices={invoices} customers={customers} paymentInvoices={paymentInvoices.filter(p => p.customerId === detailCId)}
               shopName={shopName}
               onGoToInvoice={(c, type) => { setPreselectedCust(c); setPreselectedType(type || null); setTab("invoice"); setDetailCId(null); }}
