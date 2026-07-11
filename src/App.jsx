@@ -10678,13 +10678,16 @@ function SmartBusinessMgmt() {
       { id: "invoice",   label: "ইনভয়েস",  icon: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6" },
       { id: "products",  label: "পণ্য",     icon: "M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4zM3 6h18" },
       { id: "expense",  label: "খরচ",      icon: "M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" },
-      { id: "returns",  label: "ফেরত",     icon: "M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM9 22V12h6v10" },
+      { id: "returns",  label: "ইনভয়েস হিস্ট্রি", icon: "M3 3v5h5M3.05 13A9 9 0 1 0 6 5.3L3 8M12 7v5l4 2" },
       { id: "supplier",  label: "সাপ্লায়ার", icon: "M19 21V5a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v16m14 0h2m-2 0H5m14 0a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2m14 0V5M5 21V5m0 0a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2M9 7h6M9 11h6m-6 4h6" },
       { id: "ai",       label: "AI",       icon: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM8 11a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm8 0a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm-4 6c-2.5 0-4.7-1.3-6-3.3h12c-1.3 2-3.5 3.3-6 3.3z" },
+      { id: "dailySummary", label: "দৈনিক সারসংক্ষেপ", icon: "M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0" },
+      { id: "auditTrail",   label: "অডিট ট্রেইল",       icon: "M9 12h6m-6 4h6m2 5H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5.586a1 1 0 0 1 .707.293l5.414 5.414a1 1 0 0 1 .293.707V19a2 2 0 0 1-2 2z" },
+      { id: "staffMgmt",    label: "স্টাফ ব্যবস্থাপনা", icon: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" },
       { id: "settings",  label: "সেটিং",   icon: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" },
     ];
-    // Staff cannot see sms or ai nav items (settings এখন দেখবে — শুধু theme+font)
-    return isStaff ? all.filter(n => !["sms", "ai"].includes(n.id)) : all;
+    // Staff cannot see sms/ai/দৈনিক সারসংক্ষেপ/অডিট ট্রেইল/স্টাফ ব্যবস্থাপনা (settings এখন দেখবে — শুধু theme+font)
+    return isStaff ? all.filter(n => !["sms", "ai", "dailySummary", "auditTrail", "staffMgmt"].includes(n.id)) : all;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStaff]);
 
@@ -11386,6 +11389,39 @@ function SmartBusinessMgmt() {
               purchaseOrders={purchaseOrders}
             />
             </React.Suspense>
+          </ErrorBoundary>
+        )}
+        {tab === "dailySummary" && (
+          <ErrorBoundary T={T}>
+            <DailySummaryModule T={T} S={S}
+              currentUser={currentUser}
+              shopName={shopName}
+              showToast={showToast}
+              customers={customers}
+              invoices={invoices}
+              txns={txns}
+              cashLogs={cashLogs}
+              products={products}
+              purchaseOrders={purchaseOrders}
+            />
+          </ErrorBoundary>
+        )}
+        {tab === "auditTrail" && (
+          <ErrorBoundary T={T}>
+            <AuditTrailModule T={T} S={S}
+              currentUser={currentUser}
+              auditLogs={auditLogs}
+            />
+          </ErrorBoundary>
+        )}
+        {tab === "staffMgmt" && (
+          <ErrorBoundary T={T}>
+            <StaffMgmtModule T={T} S={S}
+              currentUser={currentUser}
+              users={users}
+              setUsers={setUsers}
+              showToast={showToast}
+            />
           </ErrorBoundary>
         )}
       </main>
@@ -21066,6 +21102,45 @@ function ReturnModule({ T, S, invoices, products, customers, returns = [], setRe
   const prodMap = React.useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
   const custMap = React.useMemo(() => new Map(customers.map(c => [c.id, c])), [customers]);
 
+  // ── 📜 ইনভয়েস হিস্ট্রি — Master Sync & Backup কার্ড থেকে এই ট্যাবে সরিয়ে
+  // আনা হয়েছে (আগে "ফেরত"), যাতে ফেরত দেওয়ার সময়ও ৩০ দিনের বাইরের পুরনো
+  // ইনভয়েস একই স্ক্রিন থেকে খুঁজে পাওয়া যায় — Firestore থেকে সরাসরি
+  // dateKey (desc) + createdAt (desc) অনুযায়ী পাতায়-পাতায় (৩০টা করে)
+  // cursor pagination দিয়ে। ────────────────────────────────────────────────
+  const [showInvHist,   setShowInvHist]   = React.useState(false);
+  const [invHistRows,   setInvHistRows]   = React.useState([]);
+  const [invHistLoading, setInvHistLoading] = React.useState(false);
+  const [invHistDone,   setInvHistDone]   = React.useState(false);
+  const [invHistError,  setInvHistError]  = React.useState(null);
+  const invHistCursorRef = React.useRef(null);
+  const INV_HIST_PAGE_SIZE = 30;
+  const loadInvHistPage = React.useCallback(async (reset = false) => {
+    if (!FSS.isReady()) { setInvHistError("Firestore প্রস্তুত না — ইন্টারনেট/কনফিগ চেক করুন"); return; }
+    setInvHistLoading(true); setInvHistError(null);
+    try {
+      const colRef = collection(FSS._db, "invoices");
+      const cursor = reset ? null : invHistCursorRef.current;
+      const q = cursor
+        ? query(colRef, orderBy("dateKey", "desc"), orderBy("createdAt", "desc"), startAfter(cursor), limit(INV_HIST_PAGE_SIZE))
+        : query(colRef, orderBy("dateKey", "desc"), orderBy("createdAt", "desc"), limit(INV_HIST_PAGE_SIZE));
+      const snap = await getDocs(q);
+      const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      invHistCursorRef.current = snap.docs.length ? snap.docs[snap.docs.length - 1] : cursor;
+      setInvHistDone(snap.docs.length < INV_HIST_PAGE_SIZE);
+      setInvHistRows(prev => reset ? rows : [...prev, ...rows]);
+    } catch (err) {
+      setInvHistError(err?.code || err?.message || "লোড ব্যর্থ হয়েছে — Firestore index লাগতে পারে");
+    } finally {
+      setInvHistLoading(false);
+    }
+  }, []);
+  const openInvHist = () => {
+    invHistCursorRef.current = null;
+    setInvHistRows([]); setInvHistDone(false); setInvHistError(null);
+    setShowInvHist(true);
+    loadInvHistPage(true);
+  };
+
   // ── Search invoice ─────────────────────────────────────────────────────────
   const searchInvoice = React.useCallback(() => {
     const q = invSearch.trim().toUpperCase();
@@ -21218,7 +21293,7 @@ function ReturnModule({ T, S, invoices, products, customers, returns = [], setRe
       <div style={{ ...S.header, marginBottom: 0 }}>
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
           <div style={{ width:4, height:22, borderRadius:2, background:"linear-gradient(180deg,#6366f1,#8b5cf6)" }} />
-          <span style={{ ...S.headerTitle, fontSize:17 }}>🔄 পণ্য ফেরত</span>
+          <span style={{ ...S.headerTitle, fontSize:17 }}>📜 ইনভয়েস হিস্ট্রি ও ফেরত</span>
         </div>
         {step > 1 && (
           <button onClick={() => { setStep(1); setFoundInv(null); setReturnItems([]); }}
@@ -21247,6 +21322,70 @@ function ReturnModule({ T, S, invoices, products, customers, returns = [], setRe
             <div style={{ color:T.sub, fontSize:11, marginTop:8 }}>
               💡 ইনভয়েস নম্বরের শেষ কয়েকটি অক্ষর দিয়েও খুঁজতে পারবেন
             </div>
+          </div>
+
+          {/* ══ 📜 ইনভয়েস হিস্ট্রি — ৩০ দিনের বাইরের পুরনো ইনভয়েস খুঁজুন ══ */}
+          <div className="qc-gradient-card" style={{ ...S.card, padding:"14px 14px", marginBottom:14 }}>
+            <div onClick={() => { if (!showInvHist) openInvHist(); else setShowInvHist(false); }}
+              style={{ display:"flex", justifyContent:"space-between", alignItems:"center", cursor:"pointer", userSelect:"none" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                <span style={{ fontSize:16 }}>📜</span>
+                <div>
+                  <div style={{ color:T.text, fontWeight:900, fontSize:14 }}>ইনভয়েস হিস্ট্রি</div>
+                  <div style={{ color:T.sub, fontSize:11, marginTop:1 }}>৩০ দিনের বেশি পুরনো ইনভয়েস খুঁজুন</div>
+                </div>
+              </div>
+              <span style={{ color:T.sub, fontSize:12 }}>{showInvHist ? "▲" : "▼"}</span>
+            </div>
+
+            {showInvHist && (() => {
+              const custMap2 = custMap;
+              return (
+                <div style={{ marginTop:12 }}>
+                  {invHistError && (
+                    <div style={{ background:"#ef444422", border:"1px solid #ef444455", borderRadius:12, padding:"10px 12px", color:"#fca5a5", fontSize:11.5, marginBottom:12 }}>
+                      ⚠️ {invHistError}
+                    </div>
+                  )}
+                  <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                    {invHistRows.map((inv, i) => {
+                      const cust = custMap2.get(inv.customerId);
+                      const badge = inv.payType === "baki" ? { label:"বাকি", color:"#ef4444" } : inv.payType === "partial" ? { label:"আংশিক", color:"#f59e0b" } : { label:"নগদ", color:"#22c55e" };
+                      return (
+                        <div key={inv.id || i} style={{ background: T.bg, border:`1px solid ${T.border}`, borderRadius:12, padding:"11px 13px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
+                          <div style={{ minWidth:0 }}>
+                            <div style={{ color:T.text, fontWeight:800, fontSize:13, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{cust?.name || inv.customerName || "ওয়াক-ইন"}</div>
+                            <div style={{ color:T.sub, fontSize:10.5, marginTop:2 }}>{inv.date || inv.dateKey || "—"} · {inv.invoiceNo || inv.id}</div>
+                          </div>
+                          <div style={{ textAlign:"right", flexShrink:0 }}>
+                            <div style={{ color:T.text, fontWeight:900, fontSize:13 }}>৳{fmt(inv.total || 0)}</div>
+                            <div style={{ color: badge.color, fontSize:9.5, fontWeight:800, marginTop:2 }}>{badge.label}</div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {invHistRows.length === 0 && !invHistLoading && !invHistError && (
+                    <div style={{ textAlign:"center", color:T.sub, fontSize:12, marginTop:16 }}>কোনো ইনভয়েস পাওয়া যায়নি</div>
+                  )}
+
+                  <div style={{ marginTop:14, textAlign:"center" }}>
+                    {!invHistDone ? (
+                      <button
+                        onClick={() => loadInvHistPage(false)}
+                        disabled={invHistLoading}
+                        style={{ background:"rgba(167,139,250,0.12)", border:"1px solid rgba(167,139,250,0.35)", borderRadius:12, padding:"11px 20px", color:"#ddd6fe", fontWeight:800, fontSize:12.5, cursor: invHistLoading ? "not-allowed" : "pointer", fontFamily:"inherit", opacity: invHistLoading ? 0.6 : 1 }}
+                      >
+                        {invHistLoading ? "⏳ লোড হচ্ছে..." : "আরও লোড করুন ↓"}
+                      </button>
+                    ) : invHistRows.length > 0 ? (
+                      <div style={{ color:T.sub, fontSize:11 }}>— সব ইনভয়েস দেখানো হয়েছে —</div>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
 
           {/* Summary stats */}
@@ -22557,63 +22696,365 @@ function StaffCustomTimePicker({ T, staffName, onGrant }) {
   );
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// 📊 দৈনিক সারসংক্ষেপ — Settings থেকে সরিয়ে আলাদা মডিউল হিসেবে
+// ══════════════════════════════════════════════════════════════════════════
+function DailySummaryModule({ T, S, currentUser, shopName, showToast, customers = [], invoices = [], txns = [], cashLogs = [], products = [], purchaseOrders = [] }) {
+  const [showDailyCard, setShowDailyCard] = useState(true);
+
+  if (currentUser?.role === "staff") {
+    return (
+      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"60vh", gap:12 }}>
+        <div style={{ fontSize:44 }}>🔒</div>
+        <div style={{ color: T.text, fontWeight:800, fontSize:16 }}>এডমিন অ্যাক্সেস প্রয়োজন</div>
+        <div style={{ color: T.sub, fontSize:13, textAlign:"center" }}>এই মডিউল শুধুমাত্র এডমিন দেখতে পারবেন</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ ...S.page, paddingBottom: 100 }}>
+      <div style={{ ...S.header, marginBottom: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ width: 4, height: 22, borderRadius: 2, background: "linear-gradient(180deg,#8b5cf6,#6366f1)" }} />
+          <span style={{ ...S.headerTitle, fontSize: 17 }}>📊 দৈনিক সারসংক্ষেপ</span>
+        </div>
+      </div>
+
+      <div className="qc-gradient-card" style={{ ...S.card, marginTop: 14 }}>
+        <div onClick={() => setShowDailyCard(v => !v)} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", cursor:"pointer", userSelect:"none" }}>
+          <div>
+            <div style={{ color: T.text, fontWeight: 700, fontSize: 14, display:"flex", alignItems:"center", gap:8 }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+              দৈনিক সারসংক্ষেপ
+            </div>
+            <div style={{ color: T.sub, fontSize: 11, marginTop: 2 }}>নোটিফিকেশন সময়সূচি</div>
+          </div>
+          <span style={{ color: T.sub, fontSize: 12 }}>{showDailyCard ? "▲" : "▼"}</span>
+        </div>
+        {showDailyCard && (
+          <div style={{ marginTop: 14 }}>
+            <DailyNotifCard S={S} T={T} shopName={shopName} showToast={showToast} customers={customers} invoices={invoices} txns={txns} cashLogs={cashLogs} products={products} purchaseOrders={purchaseOrders} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// 📋 অডিট ট্রেইল — Settings থেকে সরিয়ে আলাদা মডিউল হিসেবে
+// ══════════════════════════════════════════════════════════════════════════
+function AuditTrailModule({ T, S, currentUser, auditLogs = [] }) {
+  const [showAudit, setShowAudit] = useState(true);
+  const [auditFilter, setAuditFilter] = useState("all");
+
+  if (currentUser?.role === "staff") {
+    return (
+      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"60vh", gap:12 }}>
+        <div style={{ fontSize:44 }}>🔒</div>
+        <div style={{ color: T.text, fontWeight:800, fontSize:16 }}>এডমিন অ্যাক্সেস প্রয়োজন</div>
+        <div style={{ color: T.sub, fontSize:13, textAlign:"center" }}>এই মডিউল শুধুমাত্র এডমিন দেখতে পারবেন</div>
+      </div>
+    );
+  }
+
+  const ACTION_LABELS = {
+    INVOICE_VOID:          { icon: "🗑️", label: "ইনভয়েস ভয়েড", color: "#ef4444" },
+    PRODUCT_PRICE_CHANGE:  { icon: "💰", label: "দাম পরিবর্তন", color: "#f59e0b" },
+    STOCK_ADJUST:          { icon: "📦", label: "স্টক সংশোধন", color: "#6366f1" },
+    PRODUCT_DELETE:        { icon: "❌", label: "পণ্য মুছে ফেলা", color: "#ef4444" },
+    CUSTOMER_DELETE:       { icon: "👤", label: "কাস্টমার মুছে ফেলা", color: "#ef4444" },
+    LARGE_BAKI_ADD:        { icon: "📈", label: "বড় বাকি যোগ", color: "#f59e0b" },
+    LARGE_JOMA_COLLECT:    { icon: "💵", label: "বড় জমা আদায়", color: "#22c55e" },
+  };
+
+  const filtered = auditFilter === "all"
+    ? auditLogs
+    : auditLogs.filter(a => a.action === auditFilter);
+
+  return (
+    <div style={{ ...S.page, paddingBottom: 100 }}>
+      <div style={{ ...S.header, marginBottom: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ width: 4, height: 22, borderRadius: 2, background: "linear-gradient(180deg,#6366f1,#4338ca)" }} />
+          <span style={{ ...S.headerTitle, fontSize: 17 }}>📋 অডিট ট্রেইল</span>
+        </div>
+      </div>
+
+      <div className="qc-gradient-card" style={{ ...S.card, padding: "14px 16px", marginTop: 14 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: showAudit?12:0 }}
+          onClick={() => setShowAudit(v => !v)}>
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <span style={{ fontSize:18 }}>📋</span>
+            <div>
+              <div style={{ color:T.text, fontWeight:900, fontSize:14 }}>অডিট ট্রেইল</div>
+              <div style={{ color:T.sub, fontSize:11, marginTop:1 }}>কে কখন কী করলো — {auditLogs.length}টি লগ</div>
+            </div>
+          </div>
+          <span style={{ color:T.sub, fontSize:14 }}>{showAudit ? "▲" : "▼"}</span>
+        </div>
+
+        {showAudit && (
+          <div>
+            {/* Filter chips */}
+            <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:10 }}>
+              <button onClick={() => setAuditFilter("all")}
+                style={{ padding:"4px 10px", borderRadius:14,
+                  border:`1px solid ${auditFilter==="all"?T.accent:T.border}`,
+                  background: auditFilter==="all"?T.accent+"22":"transparent",
+                  color: auditFilter==="all"?T.accent:T.sub, fontSize:11, fontWeight:700,
+                  cursor:"pointer", fontFamily:"inherit" }}>
+                সব
+              </button>
+              {Object.entries(ACTION_LABELS).map(([key, info]) => (
+                <button key={key} onClick={() => setAuditFilter(key)}
+                  style={{ padding:"4px 10px", borderRadius:14,
+                    border:`1px solid ${auditFilter===key?info.color:T.border}`,
+                    background: auditFilter===key?info.color+"22":"transparent",
+                    color: auditFilter===key?info.color:T.sub, fontSize:11, fontWeight:700,
+                    cursor:"pointer", fontFamily:"inherit" }}>
+                  {info.icon} {info.label}
+                </button>
+              ))}
+            </div>
+
+            {filtered.length === 0 ? (
+              <div style={{ textAlign:"center", padding:"20px 0", color:T.sub, fontSize:12 }}>
+                কোনো লগ নেই
+              </div>
+            ) : (
+              <Virtuoso
+                style={{ height: Math.min(filtered.length * 70, 360) }}
+                data={filtered}
+                itemContent={(_, log) => {
+                  const info = ACTION_LABELS[log.action] || { icon:"📝", label:log.action, color:"#94a3b8" };
+                  return (
+                    <div style={{ padding:"8px 0", borderBottom:`1px solid ${T.border}` }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                        <div style={{ flex:1 }}>
+                          <div style={{ color:info.color, fontWeight:800, fontSize:12 }}>
+                            {info.icon} {info.label}
+                          </div>
+                          <div style={{ color:T.sub, fontSize:11, marginTop:2 }}>
+                            {log.userName} ({log.role}) · {log.date} {log.time}
+                          </div>
+                          {/* details সংক্ষেপে দেখাই */}
+                          {log.details && (
+                            <div style={{ color:T.sub, fontSize:10, marginTop:3 }}>
+                              {log.details.productName && <span>{log.details.productName} · </span>}
+                              {log.details.customerName && <span>{log.details.customerName} · </span>}
+                              {log.details.oldPrice !== undefined && <span>৳{log.details.oldPrice} → ৳{log.details.newPrice} · </span>}
+                              {log.details.oldStock !== undefined && <span>স্টক {log.details.oldStock} → {log.details.newStock} · </span>}
+                              {log.details.amount !== undefined && <span>৳{Number(log.details.amount).toLocaleString("en-US")} · </span>}
+                              {log.details.invoiceNo && <span>#{log.details.invoiceNo} · </span>}
+                              {log.details.reason && <span>কারণ: {log.details.reason}</span>}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }}
+              />
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// 👥 স্টাফ/সেলসবয় ব্যবস্থাপনা — Settings থেকে সরিয়ে আলাদা মডিউল হিসেবে
+// ══════════════════════════════════════════════════════════════════════════
+function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast }) {
+  const [showStaffExpanded, setShowStaffExpanded] = useState(true);
+  const [showNewUser, setShowNewUser] = useState(false);
+  const [userForm, setUserForm] = useState({ name: "", username: "", password: "", pin: "" });
+
+  if (currentUser?.role === "staff") {
+    return (
+      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"60vh", gap:12 }}>
+        <div style={{ fontSize:44 }}>🔒</div>
+        <div style={{ color: T.text, fontWeight:800, fontSize:16 }}>এডমিন অ্যাক্সেস প্রয়োজন</div>
+        <div style={{ color: T.sub, fontSize:13, textAlign:"center" }}>এই মডিউল শুধুমাত্র এডমিন দেখতে পারবেন</div>
+      </div>
+    );
+  }
+
+  const addUser = async () => {
+    if (!userForm.name || !userForm.username || !userForm.password) { showToast("সব তথ্য দিন", "#ef4444"); return; }
+    const uname = userForm.username.trim().toLowerCase();
+    if (users.some(u => (u.username || "").toLowerCase() === uname)) {
+      showToast("এই ইউজারনেম আগে থেকেই আছে", "#ef4444"); return;
+    }
+    const hashed = await hashPassword(userForm.password);
+    const hashedPin = userForm.pin ? await hashPassword(userForm.pin) : "";
+    setUsers(prev => [...prev, { id: uid(), name: userForm.name, username: uname, password: hashed, pin: hashedPin, role: "staff" }]);
+    setUserForm({ name: "", username: "", password: "", pin: "" });
+    setShowNewUser(false);
+    showToast("নতুন স্টাফ অ্যাকাউন্ট যোগ হয়েছে");
+  };
+
+  const deleteUser = (id) => {
+    setUsers(prev => prev.filter(u => u.id !== id));
+    showToast("স্টাফ অ্যাকাউন্ট মুছে ফেলা হয়েছে");
+  };
+
+  return (
+    <div style={{ ...S.page, paddingBottom: 100 }}>
+      <div style={{ ...S.header, marginBottom: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ width: 4, height: 22, borderRadius: 2, background: "linear-gradient(180deg,#6366f1,#4338ca)" }} />
+          <span style={{ ...S.headerTitle, fontSize: 17 }}>👥 স্টাফ/সেলসবয় ব্যবস্থাপনা</span>
+        </div>
+      </div>
+
+      <div className="qc-gradient-card" style={{ ...S.card, marginTop: 14 }}>
+        <div onClick={() => setShowStaffExpanded(v => !v)} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", cursor:"pointer", userSelect:"none" }}>
+          <div>
+            <div style={{ color: T.text, fontWeight: 700, fontSize: 14, display:"flex", alignItems:"center", gap:8 }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
+              স্টাফ/সেলসবয় ব্যবস্থাপনা
+            </div>
+            <div style={{ color: T.text, fontSize: 11, marginTop: 2, opacity: 0.65 }}>সেলস বয়ের জন্য আলাদা লগইন তৈরি করুন</div>
+          </div>
+          <span style={{ color: T.sub, fontSize: 12 }}>{showStaffExpanded ? "▲" : "▼"}</span>
+        </div>
+
+        {showStaffExpanded && (<>
+        <div style={{ marginTop: 12, display:"flex", justifyContent:"flex-end" }}>
+          <button style={S.linkBtn} onClick={() => { setShowNewUser(v => !v); setUserForm({ name: "", username: "", password: "", pin: "" }); }}>
+            {showNewUser ? "Cancel" : "+ যোগ করুন"}
+          </button>
+        </div>
+        {showNewUser && (
+          <div style={{ marginTop: 14, background: T.bg, borderRadius: 10, padding: 12, border: `1px solid #6366f133` }}>
+            <label style={S.label}>নাম</label>
+            <input style={S.input} type="text" placeholder="যেমন: রহিম" value={userForm.name}
+              onChange={e => setUserForm(f => ({ ...f, name: e.target.value }))} />
+            <label style={S.label}>ইউজারনেম</label>
+            <input style={S.input} type="text" placeholder="যেমন: rahim123" value={userForm.username}
+              onChange={e => setUserForm(f => ({ ...f, username: e.target.value.replace(/\s/g,"") }))} />
+            <label style={S.label}>পাসওয়ার্ড</label>
+            <input style={S.input} type="text" placeholder="পাসওয়ার্ড দিন" value={userForm.password}
+              onChange={e => setUserForm(f => ({ ...f, password: e.target.value }))} />
+            <label style={S.label}>PIN (ঐচ্ছিক)</label>
+            <input style={{ ...S.input, textAlign:"center", letterSpacing:6, fontSize:18, fontWeight:800 }}
+              type="tel" inputMode="numeric" pattern="[0-9]*" maxLength={6} placeholder="৪-৬ সংখ্যা (ঐচ্ছিক)"
+              value={userForm.pin}
+              onChange={e => setUserForm(f => ({ ...f, pin: e.target.value.replace(/[^0-9]/g,"") }))} />
+            <button style={{ ...S.saveBtn, width:"100%", marginTop: 6 }} onClick={addUser}>
+              ✓ স্টাফ অ্যাকাউন্ট তৈরি করুন
+            </button>
+          </div>
+        )}
+
+        <div style={{ marginTop: 14 }}>
+          {users.filter(u => u.role === "staff").length === 0 ? (
+            <div style={{ color: T.sub, fontSize: 12, textAlign: "center", padding: "12px 0" }}>
+              কোনো স্টাফ অ্যাকাউন্ট নেই
+            </div>
+          ) : users.filter(u => u.role === "staff").map(u => {
+            const activePurchasePerm = (u.tempPermissions || []).find(
+              p => p.key === "purchase_entry" && new Date(p.expiresAt) > new Date()
+            );
+            return (
+            <div key={u.id} style={{ background: T.bg, borderRadius: 10, border: "1px solid #6366f133", marginBottom: 8, overflow:"hidden" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px" }}>
+                <div style={{ width: 32, height: 32, borderRadius: 8, background: "linear-gradient(135deg,#4338ca22,#6366f122)", border: "1px solid #6366f133", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, flexShrink: 0 }}>👤</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ color: T.text, fontWeight: 700, fontSize: 12 }}>{u.name}</div>
+                  <div style={{ color: T.sub, fontSize: 10 }}>ইউজারনেম: {u.username}</div>
+                  {activePurchasePerm && (
+                    <div style={{ color:"#a78bfa", fontSize:10, fontWeight:700, marginTop:2 }}>
+                      🔑 ক্রয় এন্ট্রি — {new Date(activePurchasePerm.expiresAt).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})} পর্যন্ত
+                    </div>
+                  )}
+                </div>
+                <button style={{ background: "#ef444415", border: "1px solid #ef444433", color: "#ef4444", borderRadius: 7, padding: "4px 9px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}
+                  onClick={() => { if (window.confirm(`${u.name} (${u.username}) অ্যাকাউন্ট মুছবেন?`)) deleteUser(u.id); }}>
+                  🗑️
+                </button>
+              </div>
+              {/* Temporary Permission Section */}
+              <div style={{ borderTop:"1px solid #6366f122", padding:"8px 10px", background:"#6366f108" }}>
+                <div style={{ color:T.sub, fontSize:10, fontWeight:700, marginBottom:5 }}>🔑 সাময়িক অনুমতি</div>
+                <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                  {activePurchasePerm ? (
+                    <button style={{ background:"#ef444415", border:"1px solid #ef444433", color:"#ef4444", borderRadius:7, padding:"4px 10px", fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}
+                      onClick={() => {
+                        setUsers(prev => prev.map(x => x.id === u.id ? {
+                          ...x,
+                          tempPermissions: (x.tempPermissions||[]).filter(p => p.key !== "purchase_entry")
+                        } : x));
+                        showToast(`${u.name}-এর ক্রয় এন্ট্রি অনুমতি বাতিল হয়েছে`, "#ef4444");
+                      }}>
+                      ✕ ক্রয় এন্ট্রি বাতিল
+                    </button>
+                  ) : (
+                    <StaffCustomTimePicker
+                      T={T} staffName={u.name}
+                      onGrant={(expiresAt, label) => {
+                        setUsers(prev => prev.map(x => x.id === u.id ? {
+                          ...x,
+                          tempPermissions: [
+                            ...((x.tempPermissions||[]).filter(p => p.key !== "purchase_entry")),
+                            { key:"purchase_entry", expiresAt }
+                          ]
+                        } : x));
+                        showToast(`${u.name}-কে ${label} ক্রয় এন্ট্রির অনুমতি দেওয়া হয়েছে`, "#22c55e");
+                      }}
+                    />
+                  )}
+                </div>
+              </div>
+              {/* স্থায়ী অনুমতি: পণ্য যোগ (এডিট নয়) */}
+              <div style={{ borderTop:"1px solid #6366f122", padding:"8px 10px", background:"#6366f108" }}>
+                <div style={{ color:T.sub, fontSize:10, fontWeight:700, marginBottom:5 }}>📦 পণ্য অনুমতি</div>
+                <button
+                  style={{
+                    background: u.canAddProduct ? "#ef444415" : "#22c55e15",
+                    border: `1px solid ${u.canAddProduct ? "#ef444433" : "#22c55e33"}`,
+                    color: u.canAddProduct ? "#ef4444" : "#22c55e",
+                    borderRadius:7, padding:"4px 10px", fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit",
+                  }}
+                  onClick={() => {
+                    const next = !u.canAddProduct;
+                    setUsers(prev => prev.map(x => x.id === u.id ? { ...x, canAddProduct: next } : x));
+                    showToast(next ? `${u.name}-কে নতুন পণ্য যোগের অনুমতি দেওয়া হয়েছে` : `${u.name}-এর পণ্য যোগের অনুমতি বাতিল হয়েছে`, next ? "#22c55e" : "#ef4444");
+                  }}>
+                  {u.canAddProduct ? "✕ পণ্য যোগ অনুমতি বাতিল করুন" : "✓ নতুন পণ্য যোগের অনুমতি দিন"}
+                </button>
+                <div style={{ color:T.sub, fontSize:9, marginTop:4, opacity:0.7 }}>স্টাফ শুধু নতুন পণ্য যোগ করতে পারবে, বিদ্যমান পণ্য এডিট করতে পারবে না।</div>
+              </div>
+            </div>
+          );})}
+        </div>
+        <div style={{ color: T.sub, fontSize: 11, marginTop: 10, lineHeight:1.5 }}>
+          স্টাফ লগইন স্ক্রিনে "👤 স্টাফ" ট্যাবে গিয়ে এই ইউজারনেম/পাসওয়ার্ড দিয়ে লগইন করতে পারবে। স্টাফ Settings ও SMS দেখতে পারবে না।
+        </div>
+        </>)}
+      </div>
+    </div>
+  );
+}
+
 function Settings_({ T, S, shopName,
  setShopName, users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, driveStatus, backupNeeded, backupFailStreak, lastBackupError, restoreTestAt, restoreTestOk, restoreTestDetail, restoreTestFailStreak, onRunRestoreTest, performDriveBackup, buildBackupData, buildManualBackupData, manualBackupSetters, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, setGoogleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, auditLogs = [], setAuditLogs, hasPerm, fssReady = false, pendingConflicts = [] }) {
   const [editName,    setEditName]    = useState(false);
   const [nameInput,   setNameInput]   = useState(shopName);
-  const [showNewUser, setShowNewUser] = useState(false);
-  const [showStaffExpanded, setShowStaffExpanded] = useState(false);
   const [showRecoveryExpanded, setShowRecoveryExpanded] = useState(false);
-  const [userForm,    setUserForm]    = useState({ name: "", username: "", password: "", pin: "" });
   const [showGateway, setShowGateway] = useState(false);
-  const [showDailyCard, setShowDailyCard] = useState(false); // 🔴 ফিক্স: আগে IIFE-এর ভেতরে conditionally declare করা ছিল
-  const [showAudit, setShowAudit] = useState(false);         // 🔴 ফিক্স: আগে IIFE-এর ভেতরে conditionally declare করা ছিল
-  const [auditFilter, setAuditFilter] = useState("all");     // 🔴 ফিক্স: আগে IIFE-এর ভেতরে conditionally declare করা ছিল
   const [showKey, setShowKey] = useState(false);             // 🔴 ফিক্স: আগে Claude AI কার্ডের IIFE-এর ভেতরে declare করা ছিল
   const [keyInput, setKeyInput] = useState(anthropicKey || "");
   const [saved, setSaved] = useState(false);
   const [gwForm,      setGwForm]      = useState(smsGateway || { provider: "ssl", username: "", apiKey: "", senderId: "", accountSid: "" });
 
-  // ── 📜 Invoice History — Phase 2 cursor pagination —────────────────────────
-  // ৩০ দিনের windowed local invoices state-এর বাইরে পুরনো ইনভয়েস দেখার UI path
-  // আগে ছিল না (কোডে শুধু "Phase 2" কমেন্ট আর ব্যবহার-না-হওয়া startAfter import
-  // ছিল)। এখন সরাসরি Firestore থেকে dateKey (desc) + createdAt (desc) অনুযায়ী
-  // পাতায়-পাতায় (৩০টা করে) cursor pagination দিয়ে আনা হয় — লোকাল array-নির্ভর না,
-  // তাই ১ বছর/যত পুরনোই হোক খুঁজে বের করা যায়। Firestore index লাগবে:
-  // invoices → dateKey (desc) + createdAt (desc), কম্পোজিট।
-  const [invHistOpen,    setInvHistOpen]    = useState(false);
-  const [invHistRows,    setInvHistRows]    = useState([]);
-  const [invHistLoading, setInvHistLoading] = useState(false);
-  const [invHistDone,    setInvHistDone]    = useState(false);
-  const [invHistError,   setInvHistError]   = useState(null);
-  const invHistCursorRef = useRef(null);
-  const INV_HIST_PAGE_SIZE = 30;
-  const loadInvHistPage = useCallback(async (reset = false) => {
-    if (!fssReady || !FSS._db) { setInvHistError("Firestore প্রস্তুত না — ইন্টারনেট/কনফিগ চেক করুন"); return; }
-    setInvHistLoading(true); setInvHistError(null);
-    try {
-      const colRef = collection(FSS._db, "invoices");
-      const cursor = reset ? null : invHistCursorRef.current;
-      const q = cursor
-        ? query(colRef, orderBy("dateKey", "desc"), orderBy("createdAt", "desc"), startAfter(cursor), limit(INV_HIST_PAGE_SIZE))
-        : query(colRef, orderBy("dateKey", "desc"), orderBy("createdAt", "desc"), limit(INV_HIST_PAGE_SIZE));
-      const snap = await getDocs(q);
-      const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      invHistCursorRef.current = snap.docs.length ? snap.docs[snap.docs.length - 1] : cursor;
-      setInvHistDone(snap.docs.length < INV_HIST_PAGE_SIZE);
-      setInvHistRows(prev => reset ? rows : [...prev, ...rows]);
-    } catch (err) {
-      setInvHistError(err?.code || err?.message || "লোড ব্যর্থ হয়েছে — Firestore index লাগতে পারে");
-    } finally {
-      setInvHistLoading(false);
-    }
-  }, [fssReady]);
-  const openInvHist = () => {
-    invHistCursorRef.current = null;
-    setInvHistRows([]); setInvHistDone(false); setInvHistError(null);
-    setInvHistOpen(true);
-    loadInvHistPage(true);
-  };
+  // ── 📜 Invoice History — এখন "ইনভয়েস হিস্ট্রি" ট্যাবে (আগে ফেরত) সরিয়ে
+  // নেওয়া হয়েছে, Master Sync & Backup কার্ড থেকে বের করে। ReturnModule
+  // দেখুন — একই cursor pagination লজিক ওখানে আছে। ──────────────────────────
 
   // 📤 ১ ক্লিকে বাকি রিমাইন্ডার SMS
   const [bulkSmsSending, setBulkSmsSending] = useState(false);
@@ -23055,25 +23496,6 @@ function Settings_({ T, S, shopName,
     }
   };
 
-  const addUser = async () => {
-    if (!userForm.name || !userForm.username || !userForm.password) { showToast("সব তথ্য দিন", "#ef4444"); return; }
-    const uname = userForm.username.trim().toLowerCase();
-    if (users.some(u => (u.username || "").toLowerCase() === uname)) {
-      showToast("এই ইউজারনেম আগে থেকেই আছে", "#ef4444"); return;
-    }
-    const hashed = await hashPassword(userForm.password);
-    const hashedPin = userForm.pin ? await hashPassword(userForm.pin) : "";
-    setUsers(prev => [...prev, { id: uid(), name: userForm.name, username: uname, password: hashed, pin: hashedPin, role: "staff" }]);
-    setUserForm({ name: "", username: "", password: "", pin: "" });
-    setShowNewUser(false);
-    showToast("নতুন স্টাফ অ্যাকাউন্ট যোগ হয়েছে");
-  };
-
-  const deleteUser = (id) => {
-    setUsers(prev => prev.filter(u => u.id !== id));
-    showToast("স্টাফ অ্যাকাউন্ট মুছে ফেলা হয়েছে");
-  };
-
   const handleImport = (e) => {
     const file = e.target.files[0]; if (!file) return;
     const reader = new FileReader();
@@ -23087,68 +23509,6 @@ function Settings_({ T, S, shopName,
     };
     reader.readAsText(file);
   };
-
-  // ══ 📜 Invoice History — ফুলস্ক্রিন পেজ (Phase 2 cursor pagination) ══
-  // 🔴 ফিক্স: এই early-return আগে সব hook declare হওয়ার আগে ছিল (উপরে,
-  // loadInvHistPage/openInvHist-এর ঠিক পরে) — invHistOpen true হলে নিচের ৩০+
-  // hook (bulkSmsSending, tplForm, quotaInfo, syncDiag, fbForm, delBk*, ইত্যাদি)
-  // আর isStaffUser early-return কল-ই হতো না, ফলে React "Rendered fewer hooks
-  // than during the previous render" (minified error #300) ক্র্যাশ করত।
-  // এখন এটাকে সব hook declaration-এর পরে, isStaffUser চেকের ঠিক আগে আনা হলো —
-  // যাতে প্রতিটা render-এ hook-এর সংখ্যা/অর্ডার সবসময় একই থাকে।
-  if (invHistOpen) {
-    const custMap = new Map((customers || []).map(c => [c.id, c]));
-    return (
-      <div style={{ minHeight:"100vh", background: T.bg, padding:"16px 14px 32px" }}>
-        <button style={S.textBtn} onClick={() => setInvHistOpen(false)}>← সেটিংসে ফিরুন</button>
-        <div style={{ color:"#f1edff", fontWeight:900, fontSize:18, margin:"10px 0 4px" }}>📜 ইনভয়েস হিস্ট্রি (পুরনো)</div>
-        <div style={{ color:"#94a3b8", fontSize:11.5, marginBottom:14 }}>নতুন থেকে পুরনো ক্রমে, ৩০টা করে লোড হয় — সরাসরি Firestore থেকে, লোকাল ৩০-দিনের সীমার বাইরের যেকোনো ইনভয়েস এখানে খুঁজে পাওয়া যাবে।</div>
-
-        {invHistError && (
-          <div style={{ background:"#ef444422", border:"1px solid #ef444455", borderRadius:12, padding:"10px 12px", color:"#fca5a5", fontSize:11.5, marginBottom:12 }}>
-            ⚠️ {invHistError}
-          </div>
-        )}
-
-        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-          {invHistRows.map((inv, i) => {
-            const cust = custMap.get(inv.customerId);
-            const badge = inv.payType === "baki" ? { label:"বাকি", color:"#ef4444" } : inv.payType === "partial" ? { label:"আংশিক", color:"#f59e0b" } : { label:"নগদ", color:"#22c55e" };
-            return (
-              <div key={inv.id || i} style={{ background:"rgba(255,255,255,0.03)", border:"1px solid rgba(255,255,255,0.07)", borderRadius:12, padding:"11px 13px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
-                <div style={{ minWidth:0 }}>
-                  <div style={{ color:"#f1edff", fontWeight:800, fontSize:13, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{cust?.name || inv.customerName || "ওয়াক-ইন"}</div>
-                  <div style={{ color:"#94a3b8", fontSize:10.5, marginTop:2 }}>{inv.date || inv.dateKey || "—"}</div>
-                </div>
-                <div style={{ textAlign:"right", flexShrink:0 }}>
-                  <div style={{ color:"#f1edff", fontWeight:900, fontSize:13 }}>৳{fmt(inv.total || 0)}</div>
-                  <div style={{ color: badge.color, fontSize:9.5, fontWeight:800, marginTop:2 }}>{badge.label}</div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {invHistRows.length === 0 && !invHistLoading && !invHistError && (
-          <div style={{ textAlign:"center", color:"#64748b", fontSize:12, marginTop:30 }}>কোনো ইনভয়েস পাওয়া যায়নি</div>
-        )}
-
-        <div style={{ marginTop:16, textAlign:"center" }}>
-          {!invHistDone ? (
-            <button
-              onClick={() => loadInvHistPage(false)}
-              disabled={invHistLoading}
-              style={{ background:"rgba(167,139,250,0.12)", border:"1px solid rgba(167,139,250,0.35)", borderRadius:12, padding:"11px 20px", color:"#ddd6fe", fontWeight:800, fontSize:12.5, cursor: invHistLoading ? "not-allowed" : "pointer", fontFamily:"inherit", opacity: invHistLoading ? 0.6 : 1 }}
-            >
-              {invHistLoading ? "⏳ লোড হচ্ছে..." : "আরও লোড করুন ↓"}
-            </button>
-          ) : invHistRows.length > 0 ? (
-            <div style={{ color:"#64748b", fontSize:11 }}>— সব ইনভয়েস দেখানো হয়েছে —</div>
-          ) : null}
-        </div>
-      </div>
-    );
-  }
 
   // ── Staff early return: শুধু Theme + Font Card ──────────────────────────────
   const isStaffUser = currentUser?.role === "staff";
@@ -23461,33 +23821,6 @@ function Settings_({ T, S, shopName,
           </div>
         )}
       </div>
-
-      {/* 🔔 Daily Summary Notification — শুধু Admin/Owner দেখবে */}
-      {/* 🔴 ফিক্স: আগে এই কার্ডটা একটা conditionally-invoked IIFE-এর ভেতরে useState
-          ব্যবহার করত — currentUser.role অনুযায়ী hook-টা কখনো কল হতো, কখনো হতো না,
-          এবং হুক নিজেই কম্পোনেন্টের বাইরে (IIFE-তে) declare করা ছিল — "Invalid hook
-          call" / hook-order ক্র্যাশের ঝুঁকি ছিল। এখন state Settings_-এর নিজের
-          top-level hook হিসেবে (showDailyCard/setShowDailyCard) unconditionally
-          declare করা হয়েছে, শুধু JSX-টুকু conditionally রেন্ডার হচ্ছে। */}
-      {currentUser?.role !== "staff" && (
-          <div className="qc-gradient-card" style={{ ...S.card }}>
-            <div onClick={() => setShowDailyCard(v => !v)} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", cursor:"pointer", userSelect:"none" }}>
-              <div>
-                <div style={{ color: T.text, fontWeight: 700, fontSize: 14, display:"flex", alignItems:"center", gap:8 }}>
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-                  দৈনিক সারসংক্ষেপ
-                </div>
-                <div style={{ color: T.sub, fontSize: 11, marginTop: 2 }}>নোটিফিকেশন সময়সূচি</div>
-              </div>
-              <span style={{ color: T.sub, fontSize: 12 }}>{showDailyCard ? "▲" : "▼"}</span>
-            </div>
-            {showDailyCard && (
-              <div style={{ marginTop: 14 }}>
-                <DailyNotifCard S={S} T={T} shopName={shopName} showToast={showToast} customers={customers} invoices={invoices} txns={txns} cashLogs={cashLogs} products={products} purchaseOrders={purchaseOrders} />
-              </div>
-            )}
-          </div>
-      )}
 
       {/* ⑦ Bluetooth Printer */}
       <div className="qc-gradient-card" style={{ ...S.card }}>
@@ -23835,21 +24168,12 @@ function Settings_({ T, S, shopName,
                 );
               })()}
 
-              {/* ── 📜 Invoice History — Phase 2 cursor pagination দিয়ে পুরনো ইনভয়েস খোঁজা ── */}
-              <div style={{ marginBottom:10, borderRadius:10, border:"1px solid #a78bfa44", background:"#a78bfa0f", padding:"10px 11px", display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
-                <div style={{ display:"flex", alignItems:"center", gap:6, minWidth:0 }}>
-                  <span style={{ fontSize:13 }}>📜</span>
-                  <div style={{ minWidth:0 }}>
-                    <div style={{ color:"#c4b5fd", fontWeight:800, fontSize:10.5 }}>ইনভয়েস হিস্ট্রি</div>
-                    <div style={{ color:"#94a3b8", fontSize:8.5 }}>৩০ দিনের বেশি পুরনো ইনভয়েস খুঁজুন</div>
-                  </div>
-                </div>
-                <button
-                  onClick={openInvHist}
-                  style={{ background:"#a78bfa22", border:"1px solid #a78bfa55", borderRadius:7, padding:"5px 11px", color:"#c4b5fd", fontSize:9.5, fontWeight:800, cursor:"pointer", fontFamily:"inherit", flexShrink:0 }}
-                >
-                  দেখুন →
-                </button>
+              {/* ── 📜 Invoice History — এখন নিচের "ইনভয়েস হিস্ট্রি" ট্যাবে (আগে
+                  "ফেরত") সরিয়ে নেওয়া হয়েছে, যাতে ফেরত দেওয়ার সময়ও পুরনো
+                  ইনভয়েস একই স্ক্রিন থেকে খোঁজা যায়। ── */}
+              <div style={{ marginBottom:10, borderRadius:10, border:"1px solid #a78bfa33", background:"#a78bfa08", padding:"9px 11px", display:"flex", alignItems:"center", gap:6 }}>
+                <span style={{ fontSize:13 }}>📜</span>
+                <div style={{ color:"#94a3b8", fontSize:9.5 }}>ইনভয়েস হিস্ট্রি এখন নিচের <span style={{color:"#c4b5fd", fontWeight:800}}>"ইনভয়েস হিস্ট্রি"</span> ট্যাবে পাবেন</div>
               </div>
 
               {/* ── 🩺 Sync Diagnostics — ৪টা windowing ফিচার (stockMovements/txns/
@@ -25165,135 +25489,6 @@ onChange={()=>{}} />
         )}
       </div>
 
-      {/* ⑩.৫ স্টাফ/সেলসবয় ব্যবস্থাপনা — শুধু Owner দেখবে */}
-      {currentUser?.role !== "staff" && (
-      <div className="qc-gradient-card" style={{ ...S.card }}>
-        <div onClick={() => setShowStaffExpanded(v => !v)} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", cursor:"pointer", userSelect:"none" }}>
-          <div>
-            <div style={{ color: T.text, fontWeight: 700, fontSize: 14, display:"flex", alignItems:"center", gap:8 }}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
-              স্টাফ/সেলসবয় ব্যবস্থাপনা
-            </div>
-            <div style={{ color: T.text, fontSize: 11, marginTop: 2, opacity: 0.65 }}>সেলস বয়ের জন্য আলাদা লগইন তৈরি করুন</div>
-          </div>
-          <span style={{ color: T.sub, fontSize: 12 }}>{showStaffExpanded ? "▲" : "▼"}</span>
-        </div>
-
-        {showStaffExpanded && (<>
-        <div style={{ marginTop: 12, display:"flex", justifyContent:"flex-end" }}>
-          <button style={S.linkBtn} onClick={() => { setShowNewUser(v => !v); setUserForm({ name: "", username: "", password: "", pin: "" }); }}>
-            {showNewUser ? "Cancel" : "+ যোগ করুন"}
-          </button>
-        </div>
-        {showNewUser && (
-          <div style={{ marginTop: 14, background: T.bg, borderRadius: 10, padding: 12, border: `1px solid #6366f133` }}>
-            <label style={S.label}>নাম</label>
-            <input style={S.input} type="text" placeholder="যেমন: রহিম" value={userForm.name}
-              onChange={e => setUserForm(f => ({ ...f, name: e.target.value }))} />
-            <label style={S.label}>ইউজারনেম</label>
-            <input style={S.input} type="text" placeholder="যেমন: rahim123" value={userForm.username}
-              onChange={e => setUserForm(f => ({ ...f, username: e.target.value.replace(/\s/g,"") }))} />
-            <label style={S.label}>পাসওয়ার্ড</label>
-            <input style={S.input} type="text" placeholder="পাসওয়ার্ড দিন" value={userForm.password}
-              onChange={e => setUserForm(f => ({ ...f, password: e.target.value }))} />
-            <label style={S.label}>PIN (ঐচ্ছিক)</label>
-            <input style={{ ...S.input, textAlign:"center", letterSpacing:6, fontSize:18, fontWeight:800 }}
-              type="tel" inputMode="numeric" pattern="[0-9]*" maxLength={6} placeholder="৪-৬ সংখ্যা (ঐচ্ছিক)"
-              value={userForm.pin}
-              onChange={e => setUserForm(f => ({ ...f, pin: e.target.value.replace(/[^0-9]/g,"") }))} />
-            <button style={{ ...S.saveBtn, width:"100%", marginTop: 6 }} onClick={addUser}>
-              ✓ স্টাফ অ্যাকাউন্ট তৈরি করুন
-            </button>
-          </div>
-        )}
-
-        <div style={{ marginTop: 14 }}>
-          {users.filter(u => u.role === "staff").length === 0 ? (
-            <div style={{ color: T.sub, fontSize: 12, textAlign: "center", padding: "12px 0" }}>
-              কোনো স্টাফ অ্যাকাউন্ট নেই
-            </div>
-          ) : users.filter(u => u.role === "staff").map(u => {
-            const activePurchasePerm = (u.tempPermissions || []).find(
-              p => p.key === "purchase_entry" && new Date(p.expiresAt) > new Date()
-            );
-            return (
-            <div key={u.id} style={{ background: T.bg, borderRadius: 10, border: "1px solid #6366f133", marginBottom: 8, overflow:"hidden" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px" }}>
-                <div style={{ width: 32, height: 32, borderRadius: 8, background: "linear-gradient(135deg,#4338ca22,#6366f122)", border: "1px solid #6366f133", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, flexShrink: 0 }}>👤</div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ color: T.text, fontWeight: 700, fontSize: 12 }}>{u.name}</div>
-                  <div style={{ color: T.sub, fontSize: 10 }}>ইউজারনেম: {u.username}</div>
-                  {activePurchasePerm && (
-                    <div style={{ color:"#a78bfa", fontSize:10, fontWeight:700, marginTop:2 }}>
-                      🔑 ক্রয় এন্ট্রি — {new Date(activePurchasePerm.expiresAt).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})} পর্যন্ত
-                    </div>
-                  )}
-                </div>
-                <button style={{ background: "#ef444415", border: "1px solid #ef444433", color: "#ef4444", borderRadius: 7, padding: "4px 9px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}
-                  onClick={() => { if (window.confirm(`${u.name} (${u.username}) অ্যাকাউন্ট মুছবেন?`)) deleteUser(u.id); }}>
-                  🗑️
-                </button>
-              </div>
-              {/* Temporary Permission Section */}
-              <div style={{ borderTop:"1px solid #6366f122", padding:"8px 10px", background:"#6366f108" }}>
-                <div style={{ color:T.sub, fontSize:10, fontWeight:700, marginBottom:5 }}>🔑 সাময়িক অনুমতি</div>
-                <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                  {activePurchasePerm ? (
-                    <button style={{ background:"#ef444415", border:"1px solid #ef444433", color:"#ef4444", borderRadius:7, padding:"4px 10px", fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}
-                      onClick={() => {
-                        setUsers(prev => prev.map(x => x.id === u.id ? {
-                          ...x,
-                          tempPermissions: (x.tempPermissions||[]).filter(p => p.key !== "purchase_entry")
-                        } : x));
-                        showToast(`${u.name}-এর ক্রয় এন্ট্রি অনুমতি বাতিল হয়েছে`, "#ef4444");
-                      }}>
-                      ✕ ক্রয় এন্ট্রি বাতিল
-                    </button>
-                  ) : (
-                    <StaffCustomTimePicker
-                      T={T} staffName={u.name}
-                      onGrant={(expiresAt, label) => {
-                        setUsers(prev => prev.map(x => x.id === u.id ? {
-                          ...x,
-                          tempPermissions: [
-                            ...((x.tempPermissions||[]).filter(p => p.key !== "purchase_entry")),
-                            { key:"purchase_entry", expiresAt }
-                          ]
-                        } : x));
-                        showToast(`${u.name}-কে ${label} ক্রয় এন্ট্রির অনুমতি দেওয়া হয়েছে`, "#22c55e");
-                      }}
-                    />
-                  )}
-                </div>
-              </div>
-              {/* স্থায়ী অনুমতি: পণ্য যোগ (এডিট নয়) */}
-              <div style={{ borderTop:"1px solid #6366f122", padding:"8px 10px", background:"#6366f108" }}>
-                <div style={{ color:T.sub, fontSize:10, fontWeight:700, marginBottom:5 }}>📦 পণ্য অনুমতি</div>
-                <button
-                  style={{
-                    background: u.canAddProduct ? "#ef444415" : "#22c55e15",
-                    border: `1px solid ${u.canAddProduct ? "#ef444433" : "#22c55e33"}`,
-                    color: u.canAddProduct ? "#ef4444" : "#22c55e",
-                    borderRadius:7, padding:"4px 10px", fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit",
-                  }}
-                  onClick={() => {
-                    const next = !u.canAddProduct;
-                    setUsers(prev => prev.map(x => x.id === u.id ? { ...x, canAddProduct: next } : x));
-                    showToast(next ? `${u.name}-কে নতুন পণ্য যোগের অনুমতি দেওয়া হয়েছে` : `${u.name}-এর পণ্য যোগের অনুমতি বাতিল হয়েছে`, next ? "#22c55e" : "#ef4444");
-                  }}>
-                  {u.canAddProduct ? "✕ পণ্য যোগ অনুমতি বাতিল করুন" : "✓ নতুন পণ্য যোগের অনুমতি দিন"}
-                </button>
-                <div style={{ color:T.sub, fontSize:9, marginTop:4, opacity:0.7 }}>স্টাফ শুধু নতুন পণ্য যোগ করতে পারবে, বিদ্যমান পণ্য এডিট করতে পারবে না।</div>
-              </div>
-            </div>
-          );})}
-        </div>
-        <div style={{ color: T.sub, fontSize: 11, marginTop: 10, lineHeight:1.5 }}>
-          স্টাফ লগইন স্ক্রিনে "👤 স্টাফ" ট্যাবে গিয়ে এই ইউজারনেম/পাসওয়ার্ড দিয়ে লগইন করতে পারবে। স্টাফ Settings ও SMS দেখতে পারবে না।
-        </div>
-        </>)}
-      </div>
-      )}
 
       {/* 🔐 Recovery Setup Card — মালিক ছাড়া কেউ দেখতে পারবে না (নিরাপত্তা) */}
       {currentUser?.role !== "staff" && (
@@ -25338,104 +25533,6 @@ onChange={()=>{}} />
         </div>
       </div>
 
-      {/* ══ 📋 Audit Log Viewer (শুধু Owner/Admin) ══ */}
-      {currentUser?.role !== "staff" && (() => {
-        const ACTION_LABELS = {
-          INVOICE_VOID:          { icon: "🗑️", label: "ইনভয়েস ভয়েড", color: "#ef4444" },
-          PRODUCT_PRICE_CHANGE:  { icon: "💰", label: "দাম পরিবর্তন", color: "#f59e0b" },
-          STOCK_ADJUST:          { icon: "📦", label: "স্টক সংশোধন", color: "#6366f1" },
-          PRODUCT_DELETE:        { icon: "❌", label: "পণ্য মুছে ফেলা", color: "#ef4444" },
-          CUSTOMER_DELETE:       { icon: "👤", label: "কাস্টমার মুছে ফেলা", color: "#ef4444" },
-          LARGE_BAKI_ADD:        { icon: "📈", label: "বড় বাকি যোগ", color: "#f59e0b" },
-          LARGE_JOMA_COLLECT:    { icon: "💵", label: "বড় জমা আদায়", color: "#22c55e" },
-        };
-
-        const filtered = auditFilter === "all"
-          ? auditLogs
-          : auditLogs.filter(a => a.action === auditFilter);
-
-        return (
-          <div className="qc-gradient-card" style={{ ...S.card, padding: "14px 16px" }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: showAudit?12:0 }}
-              onClick={() => setShowAudit(v => !v)}>
-              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                <span style={{ fontSize:18 }}>📋</span>
-                <div>
-                  <div style={{ color:T.text, fontWeight:900, fontSize:14 }}>অডিট ট্রেইল</div>
-                  <div style={{ color:T.sub, fontSize:11, marginTop:1 }}>কে কখন কী করলো — {auditLogs.length}টি লগ</div>
-                </div>
-              </div>
-              <span style={{ color:T.sub, fontSize:14 }}>{showAudit ? "▲" : "▼"}</span>
-            </div>
-
-            {showAudit && (
-              <div>
-                {/* Filter chips */}
-                <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:10 }}>
-                  <button onClick={() => setAuditFilter("all")}
-                    style={{ padding:"4px 10px", borderRadius:14,
-                      border:`1px solid ${auditFilter==="all"?T.accent:T.border}`,
-                      background: auditFilter==="all"?T.accent+"22":"transparent",
-                      color: auditFilter==="all"?T.accent:T.sub, fontSize:11, fontWeight:700,
-                      cursor:"pointer", fontFamily:"inherit" }}>
-                    সব
-                  </button>
-                  {Object.entries(ACTION_LABELS).map(([key, info]) => (
-                    <button key={key} onClick={() => setAuditFilter(key)}
-                      style={{ padding:"4px 10px", borderRadius:14,
-                        border:`1px solid ${auditFilter===key?info.color:T.border}`,
-                        background: auditFilter===key?info.color+"22":"transparent",
-                        color: auditFilter===key?info.color:T.sub, fontSize:11, fontWeight:700,
-                        cursor:"pointer", fontFamily:"inherit" }}>
-                      {info.icon} {info.label}
-                    </button>
-                  ))}
-                </div>
-
-                {filtered.length === 0 ? (
-                  <div style={{ textAlign:"center", padding:"20px 0", color:T.sub, fontSize:12 }}>
-                    কোনো লগ নেই
-                  </div>
-                ) : (
-                  <Virtuoso
-                    style={{ height: Math.min(filtered.length * 70, 360) }}
-                    data={filtered}
-                    itemContent={(_, log) => {
-                      const info = ACTION_LABELS[log.action] || { icon:"📝", label:log.action, color:"#94a3b8" };
-                      return (
-                        <div style={{ padding:"8px 0", borderBottom:`1px solid ${T.border}` }}>
-                          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
-                            <div style={{ flex:1 }}>
-                              <div style={{ color:info.color, fontWeight:800, fontSize:12 }}>
-                                {info.icon} {info.label}
-                              </div>
-                              <div style={{ color:T.sub, fontSize:11, marginTop:2 }}>
-                                {log.userName} ({log.role}) · {log.date} {log.time}
-                              </div>
-                              {/* details সংক্ষেপে দেখাই */}
-                              {log.details && (
-                                <div style={{ color:T.sub, fontSize:10, marginTop:3 }}>
-                                  {log.details.productName && <span>{log.details.productName} · </span>}
-                                  {log.details.customerName && <span>{log.details.customerName} · </span>}
-                                  {log.details.oldPrice !== undefined && <span>৳{log.details.oldPrice} → ৳{log.details.newPrice} · </span>}
-                                  {log.details.oldStock !== undefined && <span>স্টক {log.details.oldStock} → {log.details.newStock} · </span>}
-                                  {log.details.amount !== undefined && <span>৳{Number(log.details.amount).toLocaleString("en-US")} · </span>}
-                                  {log.details.invoiceNo && <span>#{log.details.invoiceNo} · </span>}
-                                  {log.details.reason && <span>কারণ: {log.details.reason}</span>}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    }}
-                  />
-                )}
-              </div>
-            )}
-          </div>
-        );
-      })()}
 
       <button style={{ ...S.cancelBtn, width: "100%", padding: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
         onClick={() => { setCurrentUser(null); }}>
