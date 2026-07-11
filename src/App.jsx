@@ -15499,6 +15499,15 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
   // ক্যাশ হিস্ট্রি Print/WhatsApp বাটনের busy-state — আগে cashModal==="history" ব্লকের ভিতরে conditionally call হতো যা Rules of Hooks ভঙ্গ করে React error #310 (Rendered more hooks than during the previous render) সৃষ্টি করছিল
   const [cashHistBusy, setCashHistBusy] = React.useState(false);
 
+  const CASH_TYPE_META = {
+    owner:    { label: "মালিক নিয়েছেন",     icon: "👤", color: "#ef4444" },
+    supplier: { label: "সাপ্লায়ারকে দেওয়া",   icon: "🏭", color: "#f59e0b" },
+    expense:  { label: "বাজার/খরচ",          icon: "🛒", color: "#a855f7" },
+    other:    { label: "অন্যান্য",           icon: "📋", color: "#64748b" },
+  };
+
+  const todayKeyStr = todayEn();
+
   // ── 💰 cashLogs windowing — লোকাল cashLogs state এখন Firestore-এ শুধু ৩৫ দিনের
   // windowed real-time sync (দেখুন উপরের useEffect)। History রিপোর্টে
   // week/month/year/কাস্টম-রেঞ্জ period সিলেক্ট করলে windowed লোকাল ডেটা যথেষ্ট
@@ -15551,15 +15560,6 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     return () => { cancelled = true; };
   }, [cashModal, cashHistKeyStr, fssReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
-
-  const CASH_TYPE_META = {
-    owner:    { label: "মালিক নিয়েছেন",     icon: "👤", color: "#ef4444" },
-    supplier: { label: "সাপ্লায়ারকে দেওয়া",   icon: "🏭", color: "#f59e0b" },
-    expense:  { label: "বাজার/খরচ",          icon: "🛒", color: "#a855f7" },
-    other:    { label: "অন্যান্য",           icon: "📋", color: "#64748b" },
-  };
-
-  const todayKeyStr = todayEn();
   // ── bakiCustomers: বাকি আছে এমন কাস্টমার (Dashboard-wide) ──────────────────
   const bakiCustomers = useMemo(() => customers.filter(c => (c.balance || 0) > 0), [customers]);
   // 🔴 পারফরম্যান্স ফিক্স: নিচে "বাকি আছে এমন কাস্টমার" ব্রেকডাউন মোডালে আগে প্রতি
