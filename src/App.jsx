@@ -22327,6 +22327,29 @@ function DailyNotifCard({ S, T = {}, shopName, showToast, customers = [], invoic
     } catch(e) { /* silent */ }
   };
 
+  // 🔴 ফিক্স: UI-তে "চালু" (notifEnabled=true) দেখানো মানেই যে OS-এ আসলে
+  // alarm শিডিউল করা আছে, তা নিশ্চিত ছিল না — এই টগল শুধু ক্লিক করলে বা সময়
+  // বদলালে rescheduleAll() চলত। ফ্রেশ ইনস্টল/অ্যাপ ডেটা ক্লিয়ার/নতুন ডিভাইসে
+  // localStorage-এ "notif_enabled" key না থাকলে ডিফল্ট true ধরে নেয়, ফলে UI
+  // "চালু ✨" দেখাত কিন্তু app চালু হওয়ার পর কখনোই native schedule() কল হতো
+  // না — user টোগল বন্ধ-চালু না করা পর্যন্ত কোনো notification আসতই না।
+  // এখন app/tab খোলার সময় একবার pending schedule চেক করে, না থাকলে (বা
+  // সংখ্যা না মিললে) নিঃশব্দে reschedule করে দেয় — UI আর বাস্তব অবস্থা সবসময় মিলবে।
+  React.useEffect(() => {
+    if (!notifEnabled) return;
+    if (!window.Capacitor?.isNativePlatform()) return;
+    (async () => {
+      try {
+        const pending = await Notif.getPending();
+        const found = pending.filter(n => n.id >= NOTIF_ID_BASE && n.id < NOTIF_ID_BASE + NOTIF_MAX_TIMES);
+        if (found.length !== notifTimes.length) {
+          await rescheduleAll(notifTimes);
+        }
+      } catch(e) { /* silent */ }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleTimeChange = (idx, val) => {
     const [hh, mm] = val.split(":").map(Number);
     if (isNaN(hh) || isNaN(mm)) return;
@@ -22355,9 +22378,17 @@ function DailyNotifCard({ S, T = {}, shopName, showToast, customers = [], invoic
     if (notifEnabled) rescheduleAll(newTimes);
   };
 
+  // 🔴 ডিবাগ হেল্পার — native plugin call কখনো hang করলে (কখনো resolve/reject
+  // না হলে) বাটন চাপ দেওয়ার পরেও কিছুই দেখা যায় না, একদম silent থেকে যায়।
+  // এই টাইমআউট-রেস দিয়ে তা ধরা পড়বে ও alert-এ জানা যাবে।
+  const withTimeout = (promise, ms, label) => Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} — ${ms/1000}s এর মধ্যে সাড়া দেয়নি (plugin hang)`)), ms)),
+  ]);
+
   const sendTestNotif = async () => {
     try {
-      const granted = await Notif.requestPermission();
+      const granted = await withTimeout(Notif.requestPermission(), 6000, "Permission check");
       setPermStatus(granted);
       if (!granted) {
         showToast("⚠️ নোটিফিকেশন Permission নেই — Settings থেকে Allow করুন", "#ef4444");
@@ -22365,16 +22396,20 @@ function DailyNotifCard({ S, T = {}, shopName, showToast, customers = [], invoic
       }
       const sum = buildSummary();
       const { body, largeBody } = buildNotifContent(sum, "\n\n(টেস্ট)");
-      await Notif.send({
+      await withTimeout(Notif.send({
         id: 9999,
         title: `✨ ${shopName} — আজকের সারসংক্ষেপ`,
         iconColor: "#8b5cf6",
         body,
         largeBody,
         summaryText: `${shopName} • দৈনিক রিপোর্ট ✨`,
-      });
+      }), 6000, "Notification send");
       showToast("🔔 টেস্ট নোটিফিকেশন পাঠানো হয়েছে");
-    } catch(e) { showToast("নোটিফিকেশন পাঠানো যায়নি: " + e.message, "#ef4444"); }
+    } catch(e) {
+      // 🔴 ডিবাগ ফলব্যাক — showToast নিজেই ব্যর্থ/অদৃশ্য হলেও যেন কারণটা চোখে পড়ে
+      try { showToast("নোটিফিকেশন পাঠানো যায়নি: " + e.message, "#ef4444"); } catch {}
+      try { window.alert("টেস্ট নোটিফিকেশন এরর: " + (e?.message || e)); } catch {}
+    }
   };
 
   return (
@@ -22507,6 +22542,13 @@ function DailyNotifCard({ S, T = {}, shopName, showToast, customers = [], invoic
             style={{ width:"100%", background:"linear-gradient(135deg,#8b5cf6,#6d28d9,#4f46e5)", color:"#fff", border:"none", borderRadius:12, padding:"10px 0", fontWeight:900, fontSize:13, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:7, boxShadow:"0 4px 16px #7c3aed55" }}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
             টেস্ট নোটিফিকেশন পাঠান
+          </button>
+          {/* 🔴 সাময়িক ডিবাগ বাটন — কোনো async/native কল নেই, শুধু sync alert().
+              এটাতে চাপ দিলে যদি popup না আসে, বুঝতে হবে সমস্যা touch/rendering
+              লেভেলে (JS logic-এর সমস্যা না) — সমাধান হলে এই বাটন সরিয়ে দেওয়া যাবে। */}
+          <button onClick={() => window.alert("✅ বাটন কাজ করছে — touch ঠিক আছে")}
+            style={{ width:"100%", marginTop:8, background:"#22c55e22", color:"#86efac", border:"1px dashed #22c55e66", borderRadius:12, padding:"8px 0", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
+            🔧 ডিবাগ: বাটন কাজ করছে কিনা টেস্ট করুন
           </button>
           <button onClick={async () => {
               const pending = await Notif.getPending();
