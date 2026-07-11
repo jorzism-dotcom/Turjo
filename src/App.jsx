@@ -10318,7 +10318,25 @@ function SmartBusinessMgmt() {
           const fresh = tk?.token && tk?.savedAt && (Date.now() - tk.savedAt) < 68 * 60 * 1000;
           token = fresh ? tk.token : null;
         }
-        if (!token) return; // token নেই/expired — এই cycle skip, পরের cycle-এ আবার চেষ্টা
+        if (!token) {
+          // 🔴 ফিক্স (silent ব্যর্থতা দৃশ্যমান করা): আগে token না পেলে এখানেই
+          // চুপচাপ return হতো — কখনো connect করা refresh_token dead হয়ে
+          // গেলেও (৭ দিন পর Google-এর unverified-app expiry, বা user Google
+          // থেকে access revoke করলে) কোনো চিহ্ন থাকত না, প্রতি cycle-এ
+          // চিরকাল নিঃশব্দে ব্যর্থ হতো। এখন যদি admin ডিভাইস আগে কখনো Drive
+          // connect করে থাকে (refresh token আছে) কিন্তু silent refresh
+          // পরপর ৩ বার ব্যর্থ হয়, একটা "পুনরায় সংযোগ দরকার" ফ্ল্যাগ সেট হয় —
+          // Backup Health কার্ডে banner হিসেবে দেখানো হয় (নিচে দেখুন)।
+          if (!isStaffDevice && localStorage.getItem("sbm_gd_refresh_token")) {
+            const fails = (parseInt(localStorage.getItem("sbm_gd_auto_fail_count") || "0", 10) || 0) + 1;
+            localStorage.setItem("sbm_gd_auto_fail_count", String(fails));
+            if (fails >= 3) {
+              localStorage.setItem("sbm_gd_needs_reconnect", "1");
+              try { SyncLog.add("error", "Google Drive silent token refresh পরপর " + fails + " বার ব্যর্থ — পুনরায় সংযোগ দরকার"); } catch {}
+            }
+          }
+          return; // token নেই/expired — এই cycle skip, পরের cycle-এ আবার চেষ্টা
+        }
         const data = await buildBackupData();
         // #৪ ডেল্টা সিঙ্ক — "drive" checkpoint GoogleDriveSection-এর নিজস্ব
         // silentBackup timer-এর সাথেও শেয়ার করা (একই Drive ফাইল, তাই দুটো
@@ -10327,7 +10345,22 @@ function SmartBusinessMgmt() {
         if (await DeltaSync.shouldSkip("drive", newHashes)) return;
         await withRetry(() => GDrive.uploadBackup(token, { ...data, _autoBackup: true, _savedAt: new Date().toISOString() }), { retries: 2 }); // #৫
         await DeltaSync.markSynced("drive", newHashes);
-      } catch {}
+        // 🔴 ফিক্স (মূল সমস্যা — "অটো ব্যাকআপ হচ্ছে না মনে হয়"): এই safety-net
+        // timer সফলভাবে Drive-এ আপলোড করলেও আগে কখনো sbm_gd_last_sync লিখত
+        // না — শুধু GoogleDriveSection-এর নিজস্ব timer/বাটন আর Master Sync
+        // এই key লিখত। ফলে এই timer একাই backup চালিয়ে যাচ্ছিল ঠিকই, কিন্তু
+        // Backup Health কার্ডে সেটার কোনো প্রমাণ দেখা যেত না — "কখনো না"/পুরনো
+        // timestamp দেখাত, মনে হতো ব্যাকআপ আদৌ হচ্ছে না। এখন সফল হলেই লেখা হয়।
+        localStorage.setItem("sbm_gd_last_sync", new Date().toISOString());
+        localStorage.setItem("sbm_gd_auto_fail_count", "0");
+        try { localStorage.removeItem("sbm_gd_needs_reconnect"); } catch {}
+      } catch (e) {
+        if (!isStaffDevice) {
+          const fails = (parseInt(localStorage.getItem("sbm_gd_auto_fail_count") || "0", 10) || 0) + 1;
+          localStorage.setItem("sbm_gd_auto_fail_count", String(fails));
+        }
+        try { SyncLog.add("error", "Auto Drive ব্যাকআপ ব্যর্থ: " + (e?.message || String(e))); } catch {}
+      }
     };
 
     const cycle = () => {
@@ -24204,6 +24237,8 @@ function Settings_({ T, S, shopName,
                 };
                 let driveLastSync = null;
                 try { driveLastSync = localStorage.getItem("sbm_gd_last_sync"); } catch {}
+                let driveNeedsReconnect = false;
+                try { driveNeedsReconnect = localStorage.getItem("sbm_gd_needs_reconnect") === "1"; } catch {}
                 const localLastSync = [lastAutoBackup, lastLocalBackup]
                   .filter(Boolean).sort((a, b) => new Date(b) - new Date(a))[0] || null;
                 const rows = [
@@ -24231,6 +24266,11 @@ function Settings_({ T, S, shopName,
                     {restoreTestOk === false && (
                       <div style={{ fontSize:8.5, color:"#ef4444", marginTop:2 }}>
                         {restoreTestDetail}{restoreTestFailStreak > 1 ? ` (পরপর ${restoreTestFailStreak} বার)` : ""}
+                      </div>
+                    )}
+                    {driveNeedsReconnect && (
+                      <div style={{ fontSize:9, color:"#fca5a5", background:"#ef44441a", border:"1px solid #ef444444", borderRadius:6, padding:"5px 8px", marginTop:2, fontWeight:700 }}>
+                        ⚠️ Google Drive-এর সংযোগ মেয়াদোত্তীর্ণ — অটো ব্যাকআপ বন্ধ হয়ে আছে। নিচের "Manage" থেকে আবার সংযোগ করুন।
                       </div>
                     )}
                     {onRunRestoreTest && (
@@ -25719,6 +25759,10 @@ function GoogleDriveSection({ data, setters, showToast, T, S, googleDriveToken }
       setStatus("success"); setStatusMsg("Google Drive সংযুক্ত হয়েছে ✓");
       setNeedAuth(false);
       showToast("☁️ Google Drive Connected!");
+      // 🔴 ফিক্স: নতুন করে connect হলে আগের "পুনরায় সংযোগ দরকার" banner ও
+      // fail-count মুছে ফেলা হয় — নাহলে reconnect করার পরও পুরনো banner
+      // দেখাতেই থাকত পরের সফল auto-cycle না চলা পর্যন্ত।
+      try { localStorage.removeItem("sbm_gd_needs_reconnect"); localStorage.setItem("sbm_gd_auto_fail_count", "0"); } catch {}
       try {
         const info = await GDrive.getBackupInfo(token);
         setBackupInfo(info);
