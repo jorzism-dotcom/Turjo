@@ -5982,15 +5982,19 @@ function buildEscPosBuffer(inv, shopName) {
   (inv.items || []).forEach(item => {
     const name  = (item.name || "").slice(0, 16).padEnd(17);
     const qty   = String(item.qty).padEnd(6);
-    const total = "৳" + (item.qty * item.price);
+    const gross = item.qty * item.price;
+    const disc  = Math.min(Math.max(parseFloat(item.itemDiscount) || 0, 0), gross);
+    const total = "৳" + (gross - disc);
     write(name + qty + total); nl();
+    if (disc > 0) { write("   (ছাড় -৳" + disc + ")"); nl(); }
   });
 
   // ── Totals ──
   write("--------------------------------"); nl();
-  if ((inv.discount||0) > 0 || (inv.extraCharge||0) > 0) {
+  if ((inv.discount||0) > 0 || (inv.itemDiscount||0) > 0 || (inv.extraCharge||0) > 0) {
     align(2);
     write("সর্বমোট: ৳" + (inv.subtotal || inv.total)); nl();
+    if ((inv.itemDiscount||0) > 0) { write("পণ্য ছাড়: -৳" + inv.itemDiscount); nl(); }
     if ((inv.discount||0) > 0) { write("ডিসকাউন্ট: -৳" + inv.discount); nl(); }
     if ((inv.extraCharge||0) > 0) { write("অতিরিক্ত চার্জ: +৳" + inv.extraCharge); nl(); }
   }
@@ -13319,7 +13323,10 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     if (!printInv) { showToast("প্রিন্টের জন্য ইনভয়েস নেই", "#ef4444"); return; }
     const inv = printInv;
     const css = `body{font-family:'Noto Sans Bengali','Hind Siliguri',sans-serif;background:#fff;color:#000;padding:16px;font-size:13px;max-width:400px;margin:0 auto;}.center{text-align:center;}.bold{font-weight:700;}.line{border-top:1px dashed #999;margin:8px 0;}table{width:100%;border-collapse:collapse;}th,td{padding:4px 2px;font-size:12px;}th{text-align:left;border-bottom:1px solid #ccc;}.right{text-align:right;}.total{font-size:15px;font-weight:800;color:#16a34a;}`;
-    const rows = (inv.items||[]).map(it => `<tr><td>${it.name}</td><td class="right">${it.qty}</td><td class="right">৳${it.price}</td><td class="right">৳${it.qty*it.price}</td></tr>`).join("");
+    const rows = (inv.items||[]).map(it => {
+      const _g = it.qty*it.price, _d = Math.min(Math.max(parseFloat(it.itemDiscount)||0,0), _g);
+      return `<tr><td>${it.name}</td><td class="right">${it.qty}</td><td class="right">৳${it.price}</td><td class="right" style="color:#16a34a">${_d>0?`–৳${_d}`:"—"}</td><td class="right">৳${_g-_d}</td></tr>`;
+    }).join("");
     const payLabel = inv.payType==="baki"?"বাকি":inv.payType==="partial"?"আংশিক":"নগদ";
     const html = `<html><head><title>Invoice</title><style>${css}</style></head><body>
       <div class="center bold" style="font-size:16px">${inv.shopName||"SBM"}</div>
@@ -13328,7 +13335,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       <div><span class="bold">কাস্টমার:</span> ${inv.customerName}</div>
       ${inv.customerMobile ? `<div style="font-size:12px;color:#555">📞 ${inv.customerMobile}</div>` : ""}
       <div class="line"></div>
-      <table><thead><tr><th>পণ্য</th><th class="right">পরিমাণ</th><th class="right">একক</th><th class="right">মোট</th></tr></thead>
+      <table><thead><tr><th>পণ্য</th><th class="right">পরিমাণ</th><th class="right">একক</th><th class="right">ছাড়</th><th class="right">মোট</th></tr></thead>
       <tbody>${rows}</tbody></table>
       <div class="line"></div>
       <div style="display:flex;justify-content:space-between"><span class="bold">মোট</span><span class="total bold">৳${inv.total}</span></div>
@@ -13774,15 +13781,22 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                 </div>
                 {/* Double column cart items — scrollable */}
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "3px 6px", maxHeight: 110, overflowY: "auto", overflowX: "hidden" }}>
-                {items.map(item => (
-                  <div key={item.productId} style={{ display: "flex", gap: 3, alignItems: "center", background: "linear-gradient(135deg,rgba(245,158,11,0.1),rgba(0,0,0,0.3))", border: "1px solid #f59e0b22", borderRadius: 7, padding: "3px 5px", minWidth: 0 }}>
+                {items.map((item, _i) => {
+                  const _palette2 = ["#f59e0b", "#22c55e", "#38bdf8", "#a78bfa", "#ec4899", "#fb7185"];
+                  const cAccent = _palette2[_i % _palette2.length];
+                  const cSub = item.price * item.qty;
+                  const cDisc = Math.min(Math.max(parseFloat(item.itemDiscount) || 0, 0), cSub);
+                  const cNet = cSub - cDisc;
+                  return (
+                  <div key={item.productId} style={{ display: "flex", gap: 3, alignItems: "center", background: `linear-gradient(135deg, ${cAccent}1a, rgba(0,0,0,0.3))`, border: `1px solid ${cAccent}55`, borderLeft: `2.5px solid ${cAccent}`, borderRadius: 7, padding: "3px 5px", minWidth: 0 }}>
                     <div style={{ flex: 1, color: "#fde68a", fontSize: 11, fontWeight: 800, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", minWidth: 0 }}>{item.name}{item.unit ? <span style={{ color:"#f59e0b88", fontSize:9, marginLeft:2 }}>/{item.unit}</span> : null}</div>
-                    <span style={{ background:"rgba(0,0,0,0.4)", border:"1px solid #f59e0b55", color:"#fde68a", borderRadius:5, padding:"2px 5px", fontSize:11, fontWeight:800, flexShrink:0, whiteSpace:"nowrap" }}>{item.qty}</span>
-                    <span style={{ background:"rgba(0,0,0,0.4)", border:"1px solid #f59e0b55", color:"#fbbf24", borderRadius:5, padding:"2px 5px", fontSize:11, fontWeight:800, flexShrink:0, whiteSpace:"nowrap" }}>৳{fmt(item.price)}</span>
+                    <span style={{ background:"rgba(0,0,0,0.4)", border:`1px solid ${cAccent}66`, color:"#fde68a", borderRadius:5, padding:"2px 5px", fontSize:10.5, fontWeight:800, flexShrink:0, whiteSpace:"nowrap" }}>{item.qty}×৳{fmt(item.price)}</span>
+                    <span style={{ background:"rgba(0,0,0,0.4)", border:`1px solid ${cAccent}66`, color: cDisc > 0 ? "#22c55e" : "#fbbf24", borderRadius:5, padding:"2px 5px", fontSize:11, fontWeight:800, flexShrink:0, whiteSpace:"nowrap" }}>৳{fmt(cNet)}{cDisc > 0 ? " 🏷️" : ""}</span>
                     <button style={{ background: "#ef444422", color: "#ef4444", border: "1px solid #ef444433", borderRadius: 5, width: 18, height: 18, cursor: "pointer", flexShrink: 0, fontSize: 9, display:"flex", alignItems:"center", justifyContent:"center" }}
                       onClick={() => setItems(prev => prev.filter(i => i.productId !== item.productId))}>✕</button>
                   </div>
-                ))}
+                  );
+                })}
                 </div>
               </div>
             </div>,
@@ -14063,30 +14077,36 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                 const hiddenCount = cartItems.length - visibleItems.length;
                 return (
                   <>
-                    <div style={{ maxHeight: showAllSummaryItems ? 260 : "none", overflowY: showAllSummaryItems ? "auto" : "visible" }}>
+                    <div style={{ maxHeight: showAllSummaryItems ? 260 : "none", overflowY: showAllSummaryItems ? "auto" : "visible", display: "flex", flexDirection: "column", gap: 8 }}>
                       {visibleItems.map((item, _idx) => {
                         const batch = productBatchMap[item.productId];
                         const batchLabel = batch?.batch ? String(batch.batch).replace(/^ব্যাচ-/i, "") : "";
                         const lineSubtotal = item.price * item.qty;
                         const lineDisc = Math.min(Math.max(parseFloat(item.itemDiscount) || 0, 0), lineSubtotal);
+                        const lineNet = lineSubtotal - lineDisc;
                         const mode = itemDiscMode[item.productId] || "pct";
                         const pctDisplay = lineSubtotal > 0 ? Math.round((lineDisc / lineSubtotal) * 10000) / 100 : 0;
+                        const _palette = ["#22c55e", "#38bdf8", "#a78bfa", "#f59e0b", "#ec4899", "#fb7185", "#06b6d4"];
+                        const accent = _palette[_idx % _palette.length];
                         return (
                           <div key={item.productId} style={{
                             display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8,
-                            padding: "10px 8px",
-                            margin: "0 -8px",
-                            borderRadius: 8,
-                            background: _idx % 2 === 1 ? T.cardAlt : "transparent",
-                            borderBottom: _idx < visibleItems.length - 1 ? `2px solid ${T.border}` : "none",
+                            padding: "10px 10px 10px 12px",
+                            borderRadius: 12,
+                            background: `linear-gradient(120deg, ${accent}16, ${T.cardAlt} 65%)`,
+                            border: `1px solid ${accent}40`,
+                            borderLeft: `3px solid ${accent}`,
+                            boxShadow: `0 1px 6px ${accent}14`,
                           }}>
                             <div style={{ minWidth: 0, flex: 1 }}>
                               <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                                <span style={{ color: T.text, fontSize: 12, fontWeight: 600 }}>{item.name}</span>
-                                <span style={{ background: T.border + "55", color: T.text, fontSize: 10, fontWeight: 700, borderRadius: 10, padding: "1px 7px", flexShrink: 0 }}>× {item.qty}</span>
+                                <span style={{ color: T.text, fontSize: 12, fontWeight: 700 }}>{item.name}</span>
+                                <span style={{ background: accent + "22", border: `1px solid ${accent}55`, color: accent, fontSize: 10, fontWeight: 800, borderRadius: 10, padding: "1px 7px", flexShrink: 0, whiteSpace: "nowrap" }}>
+                                  × {item.qty} @৳{fmt(item.price)}
+                                </span>
                               </div>
                               {batchLabel && (
-                                <div style={{ fontSize: 9.5, color: T.sub, marginTop: 2, display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+                                <div style={{ fontSize: 9.5, color: T.sub, marginTop: 3, display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
                                   <span>ব্যাচ: {batchLabel}</span>
                                   {batch?.expiryDate && (
                                     <span style={{ color: batch.daysLeft < 0 ? "#ef4444" : batch.expWarn ? "#f59e0b" : T.sub, fontWeight: 700 }}>
@@ -14096,7 +14116,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                                 </div>
                               )}
                               {/* 🆕 এই পণ্যের নিজস্ব ডিসকাউন্ট — ৳/% টগল করা যায় */}
-                              <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4 }} onClick={e => e.stopPropagation()}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 5 }} onClick={e => e.stopPropagation()}>
                                 <span style={{ color: "#22c55e", fontSize: 9.5, fontWeight: 700 }}>এই পণ্যে ছাড়:</span>
                                 <button
                                   type="button"
@@ -14120,10 +14140,16 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                               </div>
                             </div>
                             <div style={{ textAlign: "right", flexShrink: 0 }}>
-                              <div style={{ color: T.text, fontSize: 12, fontWeight: 700 }}>৳{fmt(lineSubtotal)}</div>
-                              <div style={{ color: T.sub, fontSize: 9.5 }}>@৳{fmt(item.price)}</div>
-                              {lineDisc > 0 && (
-                                <div style={{ color: "#22c55e", fontSize: 9.5, fontWeight: 700 }}>− ৳{fmt(lineDisc)}{pctDisplay > 0 ? ` (${pctDisplay}%)` : ""}</div>
+                              {lineDisc > 0 ? (
+                                <>
+                                  <div style={{ color: T.sub, fontSize: 10, textDecoration: "line-through" }}>৳{fmt(lineSubtotal)}</div>
+                                  <div style={{ color: T.text, fontSize: 13.5, fontWeight: 900 }}>৳{fmt(lineNet)}</div>
+                                  <div style={{ color: "#22c55e", fontSize: 9.5, fontWeight: 800, background: "#22c55e1f", borderRadius: 6, padding: "1px 6px", marginTop: 3, display: "inline-block", whiteSpace: "nowrap" }}>
+                                    − ৳{fmt(lineDisc)}{pctDisplay > 0 ? ` (${pctDisplay}%)` : ""}
+                                  </div>
+                                </>
+                              ) : (
+                                <div style={{ color: T.text, fontSize: 13.5, fontWeight: 900 }}>৳{fmt(lineSubtotal)}</div>
                               )}
                             </div>
                           </div>
@@ -18849,9 +18875,10 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
   const isBuyer = type === "buyer";
   const handleShare = () => {
     const shopName = inv.shopName || "SBM";
-    const itemRows = (inv.items||[]).map((item,i) =>
-      `<tr><td class="serial">${i+1}</td><td>${item.name}</td><td class="num">${item.qty}</td><td class="num">৳${item.price}</td><td class="amount">৳${(item.qty*item.price).toLocaleString("en-US")}</td></tr>`
-    ).join("");
+    const itemRows = (inv.items||[]).map((item,i) => {
+      const _g = item.qty*item.price, _d = Math.min(Math.max(parseFloat(item.itemDiscount)||0,0), _g);
+      return `<tr><td class="serial">${i+1}</td><td>${item.name}</td><td class="num">${item.qty}</td><td class="num">৳${item.price}</td><td class="num" style="color:#16a34a;">${_d>0?`–৳${_d.toLocaleString("en-US")}`:"—"}</td><td class="amount">৳${(_g-_d).toLocaleString("en-US")}</td></tr>`;
+    }).join("");
     const content = `
       <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
         <div style="flex:1;background:#0369a115;border-radius:10px;padding:10px 14px;">
@@ -18867,9 +18894,10 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
           <div style="color:#666;font-size:11px;">${isBuyer?"ক্রেতার কপি":"বিক্রেতার কপি"}</div>
         </div>
       </div>
-      <table><thead><tr><th class="serial">#</th><th>পণ্য</th><th class="num">পরিমাণ</th><th class="num">দাম</th><th class="num">মোট</th></tr></thead><tbody>${itemRows}</tbody></table>
+      <table><thead><tr><th class="serial">#</th><th>পণ্য</th><th class="num">পরিমাণ</th><th class="num">দাম</th><th class="num">ছাড়</th><th class="num">মোট</th></tr></thead><tbody>${itemRows}</tbody></table>
       <div style="margin-top:14px;background:#0369a115;border-radius:10px;padding:12px 16px;">
         <div class="info-row"><span class="info-label">সর্বমোট:</span><span class="info-val">৳${(inv.subtotal||inv.total||0).toLocaleString("en-US")}</span></div>
+        ${(inv.itemDiscount||0) > 0 ? `<div class="info-row"><span class="info-label" style="color:#22c55e;">পণ্যভিত্তিক ডিসকাউন্ট:</span><span class="info-val" style="color:#22c55e;">– ৳${(inv.itemDiscount||0).toLocaleString("en-US")}</span></div>` : ""}
         ${(inv.discount||0) > 0 ? `<div class="info-row"><span class="info-label" style="color:#22c55e;">ডিসকাউন্ট:</span><span class="info-val" style="color:#22c55e;">– ৳${(inv.discount||0).toLocaleString("en-US")}</span></div>` : ""}
         ${(inv.extraCharge||0) > 0 ? `<div class="info-row"><span class="info-label" style="color:#f59e0b;">অতিরিক্ত চার্জ:</span><span class="info-val" style="color:#f59e0b;">+ ৳${(inv.extraCharge||0).toLocaleString("en-US")}</span></div>` : ""}
         <div class="info-row"><span class="info-label">মোট খরচ:</span><span class="info-val" style="font-size:18px;font-weight:800;">৳${(inv.total||0).toLocaleString("en-US")}</span></div>
@@ -18891,9 +18919,10 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
   };
   const handlePrint = () => {
     const shopName = inv.shopName || "SBM";
-    const itemRows = (inv.items||[]).map((item,i) =>
-      `<tr><td class="serial">${i+1}</td><td>${item.name}</td><td class="num">${item.qty}</td><td class="amount">৳${item.price}</td><td class="amount">৳${(item.qty*item.price).toLocaleString("en-US")}</td></tr>`
-    ).join("");
+    const itemRows = (inv.items||[]).map((item,i) => {
+      const _g = item.qty*item.price, _d = Math.min(Math.max(parseFloat(item.itemDiscount)||0,0), _g);
+      return `<tr><td class="serial">${i+1}</td><td>${item.name}</td><td class="num">${item.qty}</td><td class="amount">৳${item.price}</td><td class="num" style="color:#16a34a;">${_d>0?`–৳${_d.toLocaleString("en-US")}`:"—"}</td><td class="amount">৳${(_g-_d).toLocaleString("en-US")}</td></tr>`;
+    }).join("");
     const content = `
       <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
         <div style="flex:1;background:#0369a115;border-radius:10px;padding:10px 14px;">
@@ -18906,9 +18935,10 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
           <div style="color:#666;font-size:11px;">তারিখ: ${inv.date||""}</div>
         </div>
       </div>
-      <table><thead><tr><th class="serial">#</th><th>পণ্য</th><th class="num">পরিমাণ</th><th class="num">দাম</th><th class="num">মোট</th></tr></thead><tbody>${itemRows}</tbody></table>
+      <table><thead><tr><th class="serial">#</th><th>পণ্য</th><th class="num">পরিমাণ</th><th class="num">দাম</th><th class="num">ছাড়</th><th class="num">মোট</th></tr></thead><tbody>${itemRows}</tbody></table>
       <div style="margin-top:14px;padding:12px 0;">
         <div class="info-row"><span>সর্বমোট:</span><span>৳${(inv.subtotal||inv.total||0).toLocaleString("en-US")}</span></div>
+        ${(inv.itemDiscount||0) > 0 ? `<div class="info-row"><span style="color:#22c55e;">পণ্যভিত্তিক ডিসকাউন্ট:</span><span style="color:#22c55e;">– ৳${(inv.itemDiscount||0).toLocaleString("en-US")}</span></div>` : ""}
         ${(inv.discount||0) > 0 ? `<div class="info-row"><span style="color:#22c55e;">ডিসকাউন্ট:</span><span style="color:#22c55e;">– ৳${(inv.discount||0).toLocaleString("en-US")}</span></div>` : ""}
         ${(inv.extraCharge||0) > 0 ? `<div class="info-row"><span style="color:#f59e0b;">অতিরিক্ত চার্জ:</span><span style="color:#f59e0b;">+ ৳${(inv.extraCharge||0).toLocaleString("en-US")}</span></div>` : ""}
         <div class="info-row"><span>মোট খরচ:</span><span style="font-weight:800;font-size:18px;">৳${(inv.total||0).toLocaleString("en-US")}</span></div>
@@ -18943,34 +18973,56 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
           {customer?.address && <div><b style={{ color: T.text }}>ঠিকানা:</b> {customer.address}</div>}
         </div>
         <div style={S.dashed} />
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr>
-              <th style={{ color: T.sub, fontSize: 11, textAlign: "left", paddingBottom: 8, width: 24 }}>#</th>
-              <th style={{ color: T.sub, fontSize: 11, textAlign: "left", paddingBottom: 8 }}>পণ্য</th>
-              <th style={{ color: T.sub, fontSize: 11, textAlign: "right", paddingBottom: 8 }}>পরিমাণ</th>
-              <th style={{ color: T.sub, fontSize: 11, textAlign: "right", paddingBottom: 8 }}>দাম</th>
-              <th style={{ color: T.sub, fontSize: 11, textAlign: "right", paddingBottom: 8 }}>মোট</th>
-            </tr>
-          </thead>
-          <tbody>
-            {inv.items.map((item, idx) => (
-              <tr key={item.productId || item.id}>
-                <td style={{ color: T.sub, fontSize: 11, padding: "5px 0", borderBottom: `1px solid ${T.border}33` }}>{idx+1}</td>
-                <td style={{ color: T.text, fontSize: 12, padding: "5px 0", borderBottom: `1px solid ${T.border}33` }}>{item.name}</td>
-                <td style={{ color: T.text, fontSize: 12, padding: "5px 0", borderBottom: `1px solid ${T.border}33`, textAlign: "right" }}>{item.qty}</td>
-                <td style={{ color: T.text, fontSize: 12, padding: "5px 0", borderBottom: `1px solid ${T.border}33`, textAlign: "right" }}>৳{item.price}</td>
-                <td style={{ color: T.text, fontSize: 12, padding: "5px 0", borderBottom: `1px solid ${T.border}33`, textAlign: "right" }}>৳{fmt(item.qty * item.price)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "0 2px 4px", color: T.sub, fontSize: 10.5, fontWeight: 700 }}>
+          <span>#  পণ্য</span><span>পরিমাণ · দাম · ছাড় · মোট</span>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {inv.items.map((item, idx) => {
+            const _pal = ["#22c55e", "#38bdf8", "#a78bfa", "#f59e0b", "#ec4899", "#fb7185", "#06b6d4"];
+            const _ac = _pal[idx % _pal.length];
+            const _gross = item.qty * item.price;
+            const _disc = Math.min(Math.max(parseFloat(item.itemDiscount) || 0, 0), _gross);
+            const _net = _gross - _disc;
+            return (
+              <div key={item.productId || item.id} style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8,
+                padding: "7px 10px",
+                borderRadius: 10,
+                background: `linear-gradient(120deg, ${_ac}14, transparent 70%)`,
+                border: `1px solid ${_ac}38`,
+                borderLeft: `3px solid ${_ac}`,
+              }}>
+                <div style={{ minWidth: 0, flex: 1, display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ color: T.sub, fontSize: 10.5, fontWeight: 700, flexShrink: 0 }}>{idx+1}.</span>
+                  <span style={{ color: T.text, fontSize: 12, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</span>
+                  <span style={{ background: _ac + "22", border: `1px solid ${_ac}55`, color: _ac, fontSize: 9.5, fontWeight: 800, borderRadius: 8, padding: "1px 6px", flexShrink: 0, whiteSpace: "nowrap" }}>×{item.qty} @৳{item.price}</span>
+                </div>
+                <div style={{ textAlign: "right", flexShrink: 0 }}>
+                  {_disc > 0 ? (
+                    <>
+                      <div style={{ color: T.sub, fontSize: 9.5, textDecoration: "line-through" }}>৳{fmt(_gross)}</div>
+                      <div style={{ color: T.text, fontSize: 12.5, fontWeight: 900 }}>৳{fmt(_net)}</div>
+                      <div style={{ color: "#22c55e", fontSize: 9, fontWeight: 800, background: "#22c55e1f", borderRadius: 5, padding: "0 5px", marginTop: 1, display: "inline-block" }}>−৳{fmt(_disc)}</div>
+                    </>
+                  ) : (
+                    <div style={{ color: T.text, fontSize: 12.5, fontWeight: 900 }}>৳{fmt(_gross)}</div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
         <div style={S.dashed} />
-        {((inv.discount||0) > 0 || (inv.extraCharge||0) > 0) && (
+        {((inv.discount||0) > 0 || (inv.itemDiscount||0) > 0 || (inv.extraCharge||0) > 0) && (
           <>
             <div style={{ display: "flex", justifyContent: "space-between", color: T.sub, fontSize: 12, marginBottom: 2 }}>
               <span>সর্বমোট</span><span>৳{fmt(inv.subtotal ?? (inv.total + (inv.discount||0) - (inv.extraCharge||0)))}</span>
             </div>
+            {(inv.itemDiscount||0) > 0 && (
+            <div style={{ display: "flex", justifyContent: "space-between", color: "#22c55e", fontSize: 12, marginBottom: 2 }}>
+              <span>পণ্যভিত্তিক ডিসকাউন্ট</span><span>– ৳{fmt(inv.itemDiscount)}</span>
+            </div>
+            )}
             {(inv.discount||0) > 0 && (
             <div style={{ display: "flex", justifyContent: "space-between", color: "#22c55e", fontSize: 12, marginBottom: 2 }}>
               <span>ডিসকাউন্ট</span><span>– ৳{fmt(inv.discount)}</span>
@@ -19037,9 +19089,10 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
           cursor:"pointer", fontFamily:"inherit", fontSize:14 }}
           onClick={() => {
             const shopName = inv.shopName || "SBM";
-            const itemRows = (inv.items||[]).map((item,i) =>
-              `<tr><td>${i+1}</td><td>${item.name}</td><td class="right">${item.qty}</td><td class="right">৳${item.price}</td><td class="right">৳${(item.qty*item.price).toLocaleString("en-US")}</td></tr>`
-            ).join("");
+            const itemRows = (inv.items||[]).map((item,i) => {
+              const _g = item.qty*item.price, _d = Math.min(Math.max(parseFloat(item.itemDiscount)||0,0), _g);
+              return `<tr><td>${i+1}</td><td>${item.name}${_d>0?` <span style="color:#16a34a;font-size:10px;">(–৳${_d})</span>`:""}</td><td class="right">${item.qty}</td><td class="right">৳${item.price}</td><td class="right">৳${(_g-_d).toLocaleString("en-US")}</td></tr>`;
+            }).join("");
             const content = `<div class="info"><span class="info-l">কাস্টমার:</span><span class="info-r">${inv.customerName}</span></div>
               <div class="info"><span class="info-l">ইনভয়েস:</span><span class="info-r">#${(inv.id||"").toUpperCase()}</span></div>
               <div class="info"><span class="info-l">তারিখ:</span><span class="info-r">${inv.date||""}</span></div>
@@ -19047,6 +19100,7 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
               <table><thead><tr><th>#</th><th>পণ্য</th><th class="right">পরি.</th><th class="right">দাম</th><th class="right">মোট</th></tr></thead><tbody>${itemRows}</tbody></table>
               <hr class="dashed">
               <div class="info"><span>সর্বমোট:</span><span>৳${(inv.subtotal||inv.total||0).toLocaleString("en-US")}</span></div>
+              ${(inv.itemDiscount||0) > 0 ? `<div class="info"><span>পণ্যভিত্তিক ডিসকাউন্ট:</span><span>– ৳${(inv.itemDiscount||0).toLocaleString("en-US")}</span></div>` : ""}
               ${(inv.discount||0) > 0 ? `<div class="info"><span>ডিসকাউন্ট:</span><span>– ৳${(inv.discount||0).toLocaleString("en-US")}</span></div>` : ""}
               <div class="info total"><span>মোট খরচ:</span><span>৳${(inv.total||0).toLocaleString("en-US")}</span></div>
               ${inv.payType==="baki"?`<div class="info"><span>পরিশোধ:</span><span>বাকি</span></div>`:""}
@@ -19083,18 +19137,27 @@ function InvoiceReceiptPrint({ inv, customer, type }) {
       {customer?.address && <div style={{ fontSize: 11 }}>ঠিকানা: {customer.address}</div>}
       <div className="line" />
       <table>
-        <thead><tr><th>#</th><th>পণ্য</th><th className="right">পরিমাণ</th><th className="right">দাম</th><th className="right">মোট</th></tr></thead>
+        <thead><tr><th>#</th><th>পণ্য</th><th className="right">পরিমাণ</th><th className="right">দাম</th><th className="right">ছাড়</th><th className="right">মোট</th></tr></thead>
         <tbody>
-          {inv.items.map((item, i) => (
-            <tr key={i}><td style={{ color: "#666", fontSize: 10 }}>{i+1}</td><td>{item.name}</td><td className="right">{item.qty}</td><td className="right">৳{item.price}</td><td className="right">৳{item.qty * item.price}</td></tr>
-          ))}
+          {inv.items.map((item, i) => {
+            const _g = item.qty * item.price;
+            const _d = Math.min(Math.max(parseFloat(item.itemDiscount)||0, 0), _g);
+            return (
+              <tr key={i}><td style={{ color: "#666", fontSize: 10 }}>{i+1}</td><td>{item.name}</td><td className="right">{item.qty}</td><td className="right">৳{item.price}</td><td className="right" style={{ color: "#16a34a" }}>{_d>0?`–৳${_d}`:"—"}</td><td className="right">৳{_g-_d}</td></tr>
+            );
+          })}
         </tbody>
       </table>
       <div className="line" />
-      {(inv.discount||0) > 0 && (
+      {((inv.discount||0) > 0 || (inv.itemDiscount||0) > 0) && (
         <>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}><span>সর্বমোট</span><span>৳{inv.subtotal ?? (inv.total + inv.discount)}</span></div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#22c55e" }}><span>ডিসকাউন্ট</span><span>– ৳{inv.discount}</span></div>
+          {(inv.itemDiscount||0) > 0 && (
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#22c55e" }}><span>পণ্যভিত্তিক ডিসকাউন্ট</span><span>– ৳{inv.itemDiscount}</span></div>
+          )}
+          {(inv.discount||0) > 0 && (
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#22c55e" }}><span>ডিসকাউন্ট</span><span>– ৳{inv.discount}</span></div>
+          )}
         </>
       )}
       <div style={{ display: "flex", justifyContent: "space-between" }} className="total"><span>মোট</span><span>৳{inv.total}</span></div>
