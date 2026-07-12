@@ -7777,7 +7777,7 @@ const MemoLoginScreen      = React.memo(LoginScreen);
 //  ✗ ভয়েস বাটন (ডেকোরেটিভ ছিল, কাজ করত না)
 // ════════════════════════════════════════════════════════════════════════════════
 
-function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, shopName, anthropicKey, expenses = [], cashLogs = [], purchaseOrders = [] }) {
+function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, shopName, anthropicKey, expenses = [], cashLogs = [], purchaseOrders = [], stockMovements = [] }) {
   const [aiTab, setAiTab] = React.useState("dashboard");
   const [chatMessages, setChatMessages] = React.useState([]);
   const [chatInput, setChatInput] = React.useState("");
@@ -7834,19 +7834,16 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
   const stockValue = prodAll.reduce((s, p) => s + (p.costPrice || p.price || 0) * (p.stock || 0), 0);
   const lowStockItems = prodAll.filter(p => (p.stock || 0) > 0 && (p.stock || 0) <= (p.minStockAlert || 5));
 
-  // ── 💊 এই মাসে মেয়াদোত্তীর্ণ ব্যাচের (এখনো স্টকে থাকা, qty>0) মোট মূল্য (costPrice ভিত্তিক) ──
-  const monthExpiredValue = prodAll.reduce((s, p) => {
-    const batches = p.batches && p.batches.length > 0
-      ? p.batches
-      : (p.expiryDate ? [{ expiryDate: p.expiryDate, qty: p.stock || 0, costPrice: p.costPrice }] : []);
-    return s + batches.reduce((bs, b) => {
-      if (!b.expiryDate || (b.qty || 0) <= 0) return bs;
-      const ek = String(b.expiryDate).slice(0, 7); // "YYYY-MM"
-      if (ek !== monthStartKey.slice(0, 7)) return bs;
-      const cp = b.costPrice ?? p.costPrice ?? p.price ?? 0;
-      return bs + cp * (b.qty || 0);
-    }, 0);
-  }, 0);
+  // ── 💊 এই মাসে "মেয়াদোত্তীর্ণ পণ্যের মাসিক হিসাব" পেজ থেকে দোকান+অ্যাপ থেকে
+  // সরানো ব্যাচগুলোর মূল্য/সংখ্যা — stockMovements(source==='expired_removal')
+  // থেকেই আসে, যাতে এই KPI আর ঐ পেজের হিসাব সবসময় একই সংখ্যা দেখায় (সিঙ্কড)।
+  const currentMonthKeyForExp = monthStartKey.slice(0, 7);
+  const monthExpiredRemovals = (stockMovements || []).filter(mv =>
+    mv.source === "expired_removal" &&
+    (mv.monthKey || (mv.dateKey ? mv.dateKey.slice(0, 7) : "")) === currentMonthKeyForExp
+  );
+  const monthExpiredValue = monthExpiredRemovals.reduce((s, r) => s + (r.value || 0), 0);
+  const monthExpiredCount = monthExpiredRemovals.length; // কতটি ব্যাচ সরানো হয়েছে
   const outOfStock = prodAll.filter(p => (p.stock || 0) === 0).length;
   const dailyAvg = monthSale / daysElapsedInMonth;
 
@@ -8278,7 +8275,7 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
               { icon: "📈", val: `৳${fmt(monthSale)}`, label: `এই মাসের বিক্রয় (${currentMonthNameEn})`, sub: growthPct !== null ? `${growthPct > 0 ? "▲" : "▼"} ${Math.abs(growthPct)}%` : currentMonthNameEn, color: "#3b82f6" },
               { icon: "💎", val: `৳${fmt(monthProfit)}`, label: `এই মাসে লাভ (${currentMonthNameEn})`, sub: `মার্জিন ${monthMargin}%`, color: monthMargin >= 15 ? "#22c55e" : monthMargin >= 8 ? "#f59e0b" : "#ef4444" },
               { icon: "📦", val: `৳${fmt(stockValue)}`, label: "স্টক মূল্য", sub: `কম স্টক ${lowStockItems.length}টি`, color: "#ec4899" },
-              { icon: "⏳", val: `৳${fmt(monthExpiredValue)}`, label: `এই মাসের মেয়াদোত্তীর্ণ পণ্যের মূল্য (${currentMonthNameEn})`, sub: `১–${daysElapsedInMonth} ${currentMonthNameEn}`, color: "#dc2626" },
+              { icon: "⏳", val: `৳${fmt(monthExpiredValue)}`, label: `এই মাসের মেয়াদোত্তীর্ণ পণ্যের মূল্য (${currentMonthNameEn})`, sub: `${monthExpiredCount}টি ব্যাচ সরানো হয়েছে`, color: "#dc2626" },
             ].map((item, i) => (
               <div key={i} style={{
                 background: `linear-gradient(160deg,${T.card},${item.color}0c)`, borderRadius: 8, padding: "5px 5px",
@@ -11643,6 +11640,7 @@ function SmartBusinessMgmt() {
               expenses={expenses}
               cashLogs={cashLogs}
               purchaseOrders={purchaseOrders}
+              stockMovements={stockMovements}
             />
             </React.Suspense>
           </ErrorBoundary>
@@ -14944,17 +14942,23 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
   const todayPurchases = useMemo(() => purchaseOrders.filter(p => p._type === "pe" && (p.dateKey === todayKey || (p.createdAt && p.createdAt.startsWith(todayKey)))), [purchaseOrders, todayKey]);
   const todayPurchaseTotal = useMemo(() => todayPurchases.reduce((s, p) => s + (p.totalCost || 0), 0), [todayPurchases]);
 
-  const { expiredProds, nearExpiryProds } = useMemo(() => {
+  const { expiredBatches, nearExpiryBatches } = useMemo(() => {
     const now = new Date();
     const threeMonthsLater = new Date(); threeMonthsLater.setMonth(now.getMonth() + 3);
-    return {
-      expiredProds: products.filter(p => p.expiryDate && new Date(p.expiryDate) < now),
-      nearExpiryProds: products.filter(p => {
-        if (!p.expiryDate) return false;
-        const exp = new Date(p.expiryDate);
-        return exp >= now && exp <= threeMonthsLater;
-      }),
-    };
+    const expired = [];
+    const near = [];
+    products.forEach(p => {
+      const batches = p.batches && p.batches.length > 0
+        ? p.batches
+        : (p.expiryDate ? [{ expiryDate: p.expiryDate, qty: p.stock || 0 }] : []);
+      batches.forEach(b => {
+        if (!b.expiryDate || (b.qty || 0) <= 0) return;
+        const exp = new Date(b.expiryDate);
+        if (exp < now) expired.push({ product: p, batch: b });
+        else if (exp <= threeMonthsLater) near.push({ product: p, batch: b });
+      });
+    });
+    return { expiredBatches: expired, nearExpiryBatches: near };
   }, [products]);
 
   const fmt = n => fmtMoney(n);
@@ -15085,46 +15089,46 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
             <div className="tap-card"
               style={{
                 background: expTint.bg, borderRadius:16, padding:"13px 12px",
-                border: expiredProds.length > 0 ? "2px solid #ef4444" : expTint.border,
+                border: expiredBatches.length > 0 ? "2px solid #ef4444" : expTint.border,
                 backdropFilter: DT.dark ? "blur(16px)" : "none",
-                animation: expiredProds.length > 0 ? "cardBlinkRed 0.85s ease-in-out infinite" : "fadeUp 0.3s ease both",
+                animation: expiredBatches.length > 0 ? "cardBlinkRed 0.85s ease-in-out infinite" : "fadeUp 0.3s ease both",
                 cursor:"pointer", position:"relative", overflow:"hidden",
               }}
-              onClick={() => expiredProds.length > 0 && setInvModal('expired')}>
+              onClick={() => expiredBatches.length > 0 && setInvModal('expired')}>
               <div style={{ position:"absolute", bottom:-20, right:-20, width:70, height:70, borderRadius:"50%", background: DT.dark ? "radial-gradient(circle,#ef44441a 0%,transparent 70%)" : "rgba(255,255,255,0.10)" }} />
               <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:8 }}>
                 <div style={{ background: DT.dark ? "#ef444418" : "rgba(255,255,255,0.22)", border: DT.dark ? "1px solid #ef444433" : "1px solid rgba(255,255,255,0.3)", borderRadius:9, padding:"5px 7px" }}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={DT.dark?"#fca5a5":"#fff"} strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
                 </div>
-                {expiredProds.length > 0 && (
+                {expiredBatches.length > 0 && (
                   <span style={{ background:"#ef4444", color:"#fff", fontWeight:900, fontSize:9.5, borderRadius:20, padding:"2px 7px" }}>EXPIRED</span>
                 )}
               </div>
-              <div style={{ color: DT.dark?"#fca5a5":"#fff", fontWeight:900, fontSize:22, letterSpacing:-0.5, marginBottom:3 }}>{expiredProds.length}<span style={{ fontSize:11, fontWeight:700, marginLeft:4 }}>টি</span></div>
+              <div style={{ color: DT.dark?"#fca5a5":"#fff", fontWeight:900, fontSize:22, letterSpacing:-0.5, marginBottom:3 }}>{expiredBatches.length}<span style={{ fontSize:11, fontWeight:700, marginLeft:4 }}>টি ব্যাচ</span></div>
               <div style={{ color: DT.dark?"#e2e8f0":"rgba(255,255,255,0.92)", fontWeight:800, fontSize:11.5, marginBottom:2 }}>মেয়াদোত্তীর্ণ</div>
-              <div style={{ color: DT.dark?"#64748b":"rgba(255,255,255,0.7)", fontSize:9.5 }}>{expiredProds.length>0?"ক্লিক করে দেখুন":"কোনো মেয়াদোত্তীর্ণ নেই"}</div>
+              <div style={{ color: DT.dark?"#64748b":"rgba(255,255,255,0.7)", fontSize:9.5 }}>{expiredBatches.length>0?"ক্লিক করে দেখুন":"কোনো মেয়াদোত্তীর্ণ নেই"}</div>
             </div>
 
             {/* মেয়াদ শেষের কাছাকাছি */}
             <div className="tap-card"
               style={{
                 background: nearTint.bg, borderRadius:16, padding:"13px 12px",
-                border: nearExpiryProds.length > 0 ? "2px solid #f59e0b" : nearTint.border,
+                border: nearExpiryBatches.length > 0 ? "2px solid #f59e0b" : nearTint.border,
                 backdropFilter: DT.dark ? "blur(16px)" : "none",
-                animation: nearExpiryProds.length > 0 ? "cardBlinkAmber 0.85s ease-in-out infinite" : "fadeUp 0.3s ease both",
+                animation: nearExpiryBatches.length > 0 ? "cardBlinkAmber 0.85s ease-in-out infinite" : "fadeUp 0.3s ease both",
                 cursor:"pointer", position:"relative", overflow:"hidden",
               }}
-              onClick={() => nearExpiryProds.length > 0 && setInvModal('near-expiry')}>
+              onClick={() => nearExpiryBatches.length > 0 && setInvModal('near-expiry')}>
               <div style={{ position:"absolute", bottom:-20, right:-20, width:70, height:70, borderRadius:"50%", background: DT.dark ? "radial-gradient(circle,#f59e0b1a 0%,transparent 70%)" : "rgba(255,255,255,0.10)" }} />
               <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:8 }}>
                 <div style={{ background: DT.dark ? "#f59e0b18" : "rgba(255,255,255,0.22)", border: DT.dark ? "1px solid #f59e0b33" : "1px solid rgba(255,255,255,0.3)", borderRadius:9, padding:"5px 7px" }}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={DT.dark?"#fde68a":"#fff"} strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                 </div>
-                {nearExpiryProds.length > 0 && (
+                {nearExpiryBatches.length > 0 && (
                   <span style={{ background:"#f59e0b", color:"#fff", fontWeight:900, fontSize:9.5, borderRadius:20, padding:"2px 7px" }}>NEAR</span>
                 )}
               </div>
-              <div style={{ color: DT.dark?"#fde68a":"#fff", fontWeight:900, fontSize:22, letterSpacing:-0.5, marginBottom:3 }}>{nearExpiryProds.length}<span style={{ fontSize:11, fontWeight:700, marginLeft:4 }}>টি</span></div>
+              <div style={{ color: DT.dark?"#fde68a":"#fff", fontWeight:900, fontSize:22, letterSpacing:-0.5, marginBottom:3 }}>{nearExpiryBatches.length}<span style={{ fontSize:11, fontWeight:700, marginLeft:4 }}>টি ব্যাচ</span></div>
               <div style={{ color: DT.dark?"#e2e8f0":"rgba(255,255,255,0.92)", fontWeight:800, fontSize:11.5, marginBottom:2 }}>মেয়াদ শেষের কাছে</div>
               <div style={{ color: DT.dark?"#64748b":"rgba(255,255,255,0.7)", fontSize:9.5 }}>৩ মাসের মধ্যে মেয়াদ শেষ</div>
             </div>
@@ -15780,7 +15784,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
       source: "expired_removal",
       costPrice: batch.costPrice || 0, qty, value, expiryDate: batch.expiryDate || "",
       batchNo: batch.batchNo || "", unit: product.unit || "", by: currentUser?.name || "এডমিন",
-      company: product.company || product.category || "অজ্ঞাত",
+      company: product.company || product.supplier || product.category || "অজ্ঞাত",
     };
     pushStockMovement(mv);
     setStockMovements(prev => [mv, ...(prev || [])]);
@@ -15967,6 +15971,23 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
       expiredList: products.filter(p => p.expiryDate && new Date(p.expiryDate) < now),
       nearExpiryList: products.filter(p => { if (!p.expiryDate) return false; const exp = new Date(p.expiryDate); return exp >= now && exp <= threeMonthsLater; }),
     };
+  }, [products]);
+  // ── 🧪 ব্যাচ-ভিত্তিক মেয়াদোত্তীর্ণ তালিকা — প্রতিটি এন্ট্রি একটি নির্দিষ্ট এক্সপায়ার্ড
+  // ব্যাচ (পণ্য নয়)। একই পণ্যের একাধিক ব্যাচ মেয়াদোত্তীর্ণ হলে প্রতিটি আলাদা রো হিসেবে
+  // আসবে; ব্যাচটি সরানো হলে শুধু সেই ব্যাচই বাদ যাবে, পণ্যের নতুন/অন্য ব্যাচ অক্ষত থাকবে।
+  const expiredBatchRows = React.useMemo(() => {
+    const now = new Date();
+    const rows = [];
+    products.forEach(p => {
+      getExpiredBatchesOf(p, now).forEach(b => {
+        rows.push({
+          rowId: `${p.id}::${b.batchNo || ""}::${b.expiryDate || ""}`,
+          product: p,
+          batch: b,
+        });
+      });
+    });
+    return rows.sort((a, b) => new Date(a.batch.expiryDate) - new Date(b.batch.expiryDate));
   }, [products]);
   // সাপ্লায়ার/কোম্পানি অনুযায়ী পণ্য গ্রুপ — supplier-detail পেজে প্রতিবার products.filter() না করে O(1) lookup
   const productsBySupplier = React.useMemo(() => {
@@ -16650,8 +16671,10 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     // রাখা হয়েছে। এই ব্লকটা baseInvKey==='expired' হলে বাকি সাপ্লায়ার-গ্রুপিং
     // লজিকে না গিয়েই সরাসরি রিটার্ন করে দেয়।
     if (baseInvKey === 'expired') {
-      const sortedItems = [...items].sort((a,b) => new Date(a.expiryDate) - new Date(b.expiryDate));
-      const suppliersInvolved = new Set(sortedItems.map(p => p.company || p.category || "অজ্ঞাত")).size;
+      // 🧪 প্রতিটি রো একটি নির্দিষ্ট এক্সপায়ার্ড ব্যাচ — পণ্য নয়। একই পণ্যের একাধিক
+      // ব্যাচ মেয়াদোত্তীর্ণ হলে একাধিক রো আসবে; সরালে শুধু সেই ব্যাচটিই বাদ যাবে।
+      const sortedRows = expiredBatchRows; // ইতিমধ্যে expiryDate অনুযায়ী সর্টেড
+      const suppliersInvolved = new Set(sortedRows.map(r => r.product.company || r.product.supplier || r.product.category || "অজ্ঞাত")).size;
 
       return (
         <div style={{ ...S.page, padding:"0 14px 16px" }}>
@@ -16662,7 +16685,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
             </div>
           )}
           <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:16, marginBottom:2 }}>{title}</div>
-          <div style={{ color:"#64748b", fontSize:12, marginBottom:10 }}>{sortedItems.length}টি পণ্য · {suppliersInvolved}টি সাপ্লায়ার</div>
+          <div style={{ color:"#64748b", fontSize:12, marginBottom:10 }}>{sortedRows.length}টি ব্যাচ · {suppliersInvolved}টি সাপ্লায়ার</div>
 
           {/* মাসিক মেয়াদোত্তীর্ণ হিসাব — শুধু এডমিন */}
           {currentUser?.role !== "staff" && (
@@ -16672,10 +16695,10 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
             </button>
           )}
 
-          {sortedItems.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>কোনো মেয়াদোত্তীর্ণ পণ্য নেই</div>}
+          {sortedRows.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>কোনো মেয়াদোত্তীর্ণ ব্যাচ নেই</div>}
 
           {/* ── প্রিন্ট কপির স্টাইলে টেবিল ── */}
-          {sortedItems.length > 0 && (
+          {sortedRows.length > 0 && (
             <div style={{ background:"#fff", borderRadius:14, overflow:"hidden", boxShadow:"0 1px 4px rgba(0,0,0,0.08)", marginBottom:14 }}>
               <table style={{ width:"100%", borderCollapse:"collapse", fontFamily:"inherit" }}>
                 <thead>
@@ -16689,29 +16712,26 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedItems.map((p, i) => {
-                    const expBatches = currentUser?.role !== "staff" ? getExpiredBatchesOf(p, now) : [];
+                  {sortedRows.map((row, i) => {
+                    const { product: p, batch: b } = row;
                     return (
-                    <tr key={p.id} style={{ background: i % 2 === 1 ? "#f8faff" : "#fff" }}>
+                    <tr key={row.rowId} style={{ background: i % 2 === 1 ? "#f8faff" : "#fff" }}>
                       <td style={{ padding:"9px 10px", fontSize:12, textAlign:"center", fontWeight:700, color:"#0369a1", borderBottom:"1px solid #f1f5f9" }}>{i+1}</td>
-                      <td style={{ padding:"9px 10px", fontSize:12.5, color:"#0f172a", borderBottom:"1px solid #f1f5f9" }}>{p.name}{p.unit ? <span style={{ color:"#94a3b8", fontSize:11 }}> ({p.unit})</span> : null}</td>
-                      <td style={{ padding:"9px 10px", fontSize:12, color:"#334155", borderBottom:"1px solid #f1f5f9" }}>{p.company || p.category || "অজ্ঞাত"}</td>
-                      <td style={{ padding:"9px 10px", fontSize:12.5, fontWeight:700, color:"#0f172a", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>{p.stock||0}</td>
-                      <td style={{ padding:"9px 10px", fontSize:12, fontWeight:700, color:"#dc2626", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>{fmtExpiryMonth(p.expiryDate)}</td>
+                      <td style={{ padding:"9px 10px", fontSize:12.5, color:"#0f172a", borderBottom:"1px solid #f1f5f9" }}>
+                        {p.name}{p.unit ? <span style={{ color:"#94a3b8", fontSize:11 }}> ({p.unit})</span> : null}
+                        {b.batchNo && <span style={{ color:"#94a3b8", fontSize:11 }}> — {b.batchNo}</span>}
+                      </td>
+                      <td style={{ padding:"9px 10px", fontSize:12, color:"#334155", borderBottom:"1px solid #f1f5f9" }}>{p.company || p.supplier || p.category || "অজ্ঞাত"}</td>
+                      <td style={{ padding:"9px 10px", fontSize:12.5, fontWeight:700, color:"#0f172a", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>{b.qty||0}</td>
+                      <td style={{ padding:"9px 10px", fontSize:12, fontWeight:700, color:"#dc2626", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>{fmtExpiryMonth(b.expiryDate)}</td>
                       {currentUser?.role !== "staff" && (
                         <td style={{ padding:"9px 6px", textAlign:"center", borderBottom:"1px solid #f1f5f9" }}>
-                          {expBatches.length > 0 && (
-                            <div style={{ display:"flex", flexDirection:"column", gap:3, alignItems:"center" }}>
-                              {expBatches.map((b, bi) => (
-                                <button key={bi}
-                                  onClick={() => setExpRemoveConfirm({ product: p, batch: b })}
-                                  title={`দোকান থেকে সরিয়ে ফেলেছেন? অ্যাপ থেকেও সরান ${b.batchNo ? `(${b.batchNo})` : ""}`}
-                                  style={{ display:"flex", alignItems:"center", justifyContent:"center", width:26, height:26, background:"#ef444414", border:"1px solid #ef444440", borderRadius:8, color:"#dc2626", fontSize:13, cursor:"pointer", fontFamily:"inherit" }}>
-                                  🗑️
-                                </button>
-                              ))}
-                            </div>
-                          )}
+                          <button
+                            onClick={() => setExpRemoveConfirm({ product: p, batch: b })}
+                            title={`দোকান থেকে সরিয়ে ফেলেছেন? অ্যাপ থেকেও সরান ${b.batchNo ? `(${b.batchNo})` : ""}`}
+                            style={{ display:"flex", alignItems:"center", justifyContent:"center", width:26, height:26, background:"#ef444414", border:"1px solid #ef444440", borderRadius:8, color:"#dc2626", fontSize:13, cursor:"pointer", fontFamily:"inherit" }}>
+                            🗑️
+                          </button>
                         </td>
                       )}
                     </tr>
@@ -16949,9 +16969,9 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     const m = byMonth[selMonthKey] || { key: selMonthKey, qty:0, value:0, rows:[] };
     const sortedRows = [...m.rows].sort((a,b) => (b.dateKey||"").localeCompare(a.dateKey||"") || (b.at||"").localeCompare(a.at||""));
     const waText = `*${shopName}*\nমেয়াদোত্তীর্ণ পণ্যের মাসিক হিসাব — ${monthLabel(selMonthKey)}\nমোট: ${m.qty}টি · মূল্য ৳${fmt(m.value)}\n\n` +
-      sortedRows.map((r,i) => `${i+1}. ${r.productName} (${r.company||"অজ্ঞাত"}) — ${r.qty}${r.unit||""} · ৳${fmt(r.value||0)} · ${r.dateKey}`).join("\n");
-    const pdfRows = sortedRows.map((r,i) => `<tr><td class="serial">${i+1}</td><td>${r.productName}</td><td>${r.company||"অজ্ঞাত"}</td><td class="num">${r.qty}${r.unit||""}</td><td class="num">৳${fmt(r.value||0)}</td><td class="num">${r.dateKey}</td></tr>`).join("");
-    const pdfHtml = buildPdfHtml(`<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্য</th><th>সাপ্লায়ার</th><th class="num">পরিমাণ</th><th class="num">মূল্য</th><th class="num">তারিখ</th></tr></thead><tbody>${pdfRows}</tbody></table></div>`, shopName, `মেয়াদোত্তীর্ণ পণ্যের হিসাব — ${monthLabel(selMonthKey)}`);
+      sortedRows.map((r,i) => `${i+1}. ${r.productName}${r.batchNo ? ` (${r.batchNo})` : ""} — ${r.company||r.supplier||"অজ্ঞাত"} — ${r.qty}${r.unit||""} · ৳${fmt(r.value||0)} · মেয়াদ: ${r.expiryDate ? fmtExpiryMonth(r.expiryDate) : "-"} · সরানো: ${r.dateKey}`).join("\n");
+    const pdfRows = sortedRows.map((r,i) => `<tr><td class="serial">${i+1}</td><td>${r.productName}${r.batchNo ? ` (${r.batchNo})` : ""}</td><td>${r.company||r.supplier||"অজ্ঞাত"}</td><td class="num">${r.qty}${r.unit||""}</td><td class="num">৳${fmt(r.value||0)}</td><td class="num">${r.expiryDate ? fmtExpiryMonth(r.expiryDate) : "-"}</td><td class="num">${r.dateKey}</td></tr>`).join("");
+    const pdfHtml = buildPdfHtml(`<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্য</th><th>সাপ্লায়ার</th><th class="num">পরিমাণ</th><th class="num">মূল্য</th><th class="num">মেয়াদ</th><th class="num">সরানো হয়েছে</th></tr></thead><tbody>${pdfRows}</tbody></table></div>`, shopName, `মেয়াদোত্তীর্ণ পণ্যের হিসাব — ${monthLabel(selMonthKey)}`);
     return (
       <div style={{ ...S.page, padding:"0 14px 16px" }}>
         <button style={S.textBtn} onClick={() => setInvModal('expired')}>← ড্যাশবোর্ডে ফিরুন</button>
@@ -16998,7 +17018,8 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
                   <th style={{ color:"#fff", padding:"9px 10px", fontSize:11.5, fontWeight:700, textAlign:"left" }}>সাপ্লায়ার</th>
                   <th style={{ color:"#fff", padding:"9px 10px", fontSize:11.5, fontWeight:700, textAlign:"right" }}>পরিমাণ</th>
                   <th style={{ color:"#fff", padding:"9px 10px", fontSize:11.5, fontWeight:700, textAlign:"right" }}>মূল্য</th>
-                  <th style={{ color:"#fff", padding:"9px 10px", fontSize:11.5, fontWeight:700, textAlign:"right" }}>তারিখ</th>
+                  <th style={{ color:"#fff", padding:"9px 10px", fontSize:11.5, fontWeight:700, textAlign:"right" }}>মেয়াদ</th>
+                  <th style={{ color:"#fff", padding:"9px 10px", fontSize:11.5, fontWeight:700, textAlign:"right" }}>সরানো হয়েছে</th>
                 </tr>
               </thead>
               <tbody>
@@ -17006,10 +17027,11 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
                   <tr key={r.id || i} style={{ background: i % 2 === 1 ? "#f8faff" : "#fff" }}>
                     <td style={{ padding:"9px 10px", fontSize:12, textAlign:"center", fontWeight:700, color:"#0369a1", borderBottom:"1px solid #f1f5f9" }}>{i+1}</td>
                     <td style={{ padding:"9px 10px", fontSize:12.5, color:"#0f172a", borderBottom:"1px solid #f1f5f9" }}>{r.productName}{r.batchNo ? <span style={{ color:"#94a3b8", fontSize:11 }}> ({r.batchNo})</span> : null}</td>
-                    <td style={{ padding:"9px 10px", fontSize:12, color:"#334155", borderBottom:"1px solid #f1f5f9" }}>{r.company || "অজ্ঞাত"}</td>
+                    <td style={{ padding:"9px 10px", fontSize:12, color:"#334155", borderBottom:"1px solid #f1f5f9" }}>{r.company || r.supplier || "অজ্ঞাত"}</td>
                     <td style={{ padding:"9px 10px", fontSize:12.5, color:"#334155", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>{r.qty}{r.unit||""}</td>
                     <td style={{ padding:"9px 10px", fontSize:12.5, fontWeight:700, color:"#0f172a", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>৳{fmt(r.value||0)}</td>
-                    <td style={{ padding:"9px 10px", fontSize:12, color:"#334155", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>{r.dateKey}</td>
+                    <td style={{ padding:"9px 10px", fontSize:12, fontWeight:700, color:"#dc2626", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>{r.expiryDate ? fmtExpiryMonth(r.expiryDate) : "-"}</td>
+                    <td style={{ padding:"9px 10px", fontSize:11.5, color:"#334155", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>{r.dateKey}</td>
                   </tr>
                 ))}
               </tbody>
