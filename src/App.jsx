@@ -2393,6 +2393,40 @@ function QRStaffScanner({ onResult, onManualFallback }) {
 }
 
 
+// ─── 🔎 Main-thread heartbeat detector ──────────────────────────────────────
+// প্রতি ৩০০ms-এ একবার টাইমস্ট্যাম্প রেকর্ড করে (নোটিফিকেশন সিস্টেম থেকে সম্পূর্ণ
+// স্বাধীন, অ্যাপ লোড হওয়ার সাথে সাথেই শুরু হয়)। যদি কোনো কারণে JS main thread
+// কয়েক সেকেন্ডের জন্য ব্যস্ত/ফ্রিজ হয়ে যায় (ভারী synchronous হিসাব, বড় রি-রেন্ডার
+// ইত্যাদির কারণে), তাহলে দুটো consecutive হার্টবিটের মধ্যে ফাঁক (gap) স্বাভাবিক
+// ৩০০ms-এর চেয়ে অনেক বেশি হয়ে যাবে — এটাই ফ্রিজ ধরার সবচেয়ে সহজ উপায়।
+if (typeof window !== "undefined" && !window.__heartbeatStarted) {
+  window.__heartbeatStarted = true;
+  window.__heartbeat = [];
+  setInterval(() => {
+    try {
+      window.__heartbeat.push(Date.now());
+      if (window.__heartbeat.length > 200) window.__heartbeat.shift();
+    } catch {}
+  }, 300);
+}
+const getHeartbeatReport = (windowMs = 15000) => {
+  try {
+    const hb = window.__heartbeat || [];
+    const cutoff = Date.now() - windowMs;
+    const recent = hb.filter(t => t >= cutoff);
+    if (recent.length < 2) return "হার্টবিট ডেটা অপ্রতুল";
+    let maxGap = 0, maxGapAt = null;
+    for (let i = 1; i < recent.length; i++) {
+      const gap = recent[i] - recent[i - 1];
+      if (gap > maxGap) { maxGap = gap; maxGapAt = recent[i - 1]; }
+    }
+    const now = Date.now();
+    return maxGap > 800
+      ? `⚠️ JS থ্রেড ফ্রিজ পাওয়া গেছে — সর্বোচ্চ ফাঁক ${maxGap}ms (${Math.round((now - maxGapAt) / 1000)}s আগে, স্বাভাবিক ৩০০ms-এর তুলনায়)`
+      : `✅ কোনো বড় ফ্রিজ পাওয়া যায়নি (সর্বোচ্চ ফাঁক ${maxGap}ms, স্বাভাবিক)`;
+  } catch (e) { return "হার্টবিট রিপোর্ট এরর: " + (e?.message || e); }
+};
+
 // ─── Notification System ─────────────────────────────────────────────────────
 const Notif = {
   _localNotif: null,
@@ -11283,9 +11317,6 @@ function SmartBusinessMgmt() {
               expenses={expenses}
               cashFlow={cashFlow}
               fssReady={fssReady}
-              suppliers={suppliers}
-              setSuppliers={setSuppliers}
-              showToast={showToast}
               onGoToPurchaseEntry={() => { setDashModal({ type: "purchase-entry" }); }}
             />
           </ErrorBoundary>
@@ -14099,15 +14130,14 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                         const lineDisc = Math.min(Math.max(parseFloat(item.itemDiscount) || 0, 0), lineSubtotal);
                         const mode = itemDiscMode[item.productId] || "pct";
                         const pctDisplay = lineSubtotal > 0 ? Math.round((lineDisc / lineSubtotal) * 10000) / 100 : 0;
-                        const lineNet = lineSubtotal - lineDisc;
                         return (
                           <div key={item.productId} style={{
                             display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8,
                             padding: "10px 8px",
-                            marginBottom: _idx < visibleItems.length - 1 ? 8 : 0,
+                            margin: "0 -8px",
                             borderRadius: 8,
                             background: _idx % 2 === 1 ? T.cardAlt : "transparent",
-                            border: `1.5px solid ${T.border}`,
+                            borderBottom: _idx < visibleItems.length - 1 ? `2px solid ${T.border}` : "none",
                           }}>
                             <div style={{ minWidth: 0, flex: 1 }}>
                               <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
@@ -14149,18 +14179,10 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                               </div>
                             </div>
                             <div style={{ textAlign: "right", flexShrink: 0 }}>
-                              {lineDisc > 0 ? (
-                                <>
-                                  <div style={{ color: T.sub, fontSize: 10.5, textDecoration: "line-through" }}>৳{fmt(lineSubtotal)}</div>
-                                  <div style={{ color: T.sub, fontSize: 9.5 }}>@৳{fmt(item.price)}</div>
-                                  <div style={{ color: "#22c55e", fontSize: 9.5, fontWeight: 700 }}>− ৳{fmt(lineDisc)}{pctDisplay > 0 ? ` (${pctDisplay}%)` : ""}</div>
-                                  <div style={{ color: "#22c55e", fontSize: 13, fontWeight: 900, marginTop: 1 }}>= ৳{fmt(lineNet)}</div>
-                                </>
-                              ) : (
-                                <>
-                                  <div style={{ color: T.text, fontSize: 12, fontWeight: 700 }}>৳{fmt(lineSubtotal)}</div>
-                                  <div style={{ color: T.sub, fontSize: 9.5 }}>@৳{fmt(item.price)}</div>
-                                </>
+                              <div style={{ color: T.text, fontSize: 12, fontWeight: 700 }}>৳{fmt(lineSubtotal)}</div>
+                              <div style={{ color: T.sub, fontSize: 9.5 }}>@৳{fmt(item.price)}</div>
+                              {lineDisc > 0 && (
+                                <div style={{ color: "#22c55e", fontSize: 9.5, fontWeight: 700 }}>− ৳{fmt(lineDisc)}{pctDisplay > 0 ? ` (${pctDisplay}%)` : ""}</div>
                               )}
                             </div>
                           </div>
@@ -15640,20 +15662,12 @@ function DashPurchaseEntryModal({ T, S, products, setProducts, setStockMovements
 }
 
 // ── Dashboard ──────────────────────────────────────────────────────────────────
-function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, currentUser, onGoToPurchaseEntry, setProducts, setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false, suppliers = [], setSuppliers = () => {}, showToast = () => {} }) {
+function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, currentUser, onGoToPurchaseEntry, setProducts, setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false }) {
   const [viewInv,    setViewInv]    = useState(null);
   const [viewPayInv, setViewPayInv] = useState(null);
   const [listDate,   setListDate]   = useState(() => todayEn()); // YYYY-MM-DD
   // invModal is lifted to parent (SmartBusinessMgmt) for back-button support
   const [orderQtys,  setOrderQtys]  = useState({});
-  const [orderCosts, setOrderCosts] = useState({});
-  const [supplierPhoneInput, setSupplierPhoneInput] = useState("");
-  const [showPhoneEdit, setShowPhoneEdit] = useState(false);
-  // 🆕 ক্রয় অর্ডার হাব — মাল্টি-সাপ্লায়ার সিলেকশন, হিস্ট্রি ফিল্টার, সার্চ
-  const [multiSupSel, setMultiSupSel] = useState([]);   // সাপ্লায়ার-ভিত্তিক হাবে মাল্টি-সিলেক্ট (নাম-এর তালিকা)
-  const [poHistDate, setPoHistDate] = useState("");      // "" = সব তারিখ, নইলে "YYYY-MM-DD"
-  const [orderSearch, setOrderSearch] = useState("");    // "সকল পণ্য" পেজের সার্চ
-  const [historyExpandId, setHistoryExpandId] = useState(null); // হিস্ট্রি পেজে কোন PO এক্সপান্ড করা আছে
   const [voidConfirm, setVoidConfirm] = useState(null);
   // product-profit-loss মডালের accordion state — Rules of Hooks: top-level এ রাখতে হবে
   const [expandedKeys, setExpandedKeys] = useState({});
@@ -15786,22 +15800,10 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
   };
 
 
-  // invModal 'order' পরিবারের বাইরে গেলে (ড্যাশবোর্ডে ফিরলে) সব অর্ডার-স্টেট রিসেট করো —
-  // 'order' দিয়ে শুরু যেকোনো সাব-পেজে (হাব/সকল পণ্য/সাপ্লায়ার/রিভিউ/হিস্ট্রি) মধ্যে চলাচল করলে সিলেকশন অক্ষত থাকবে
+  // invModal 'order' থেকে বের হলে orderQtys রিসেট করো
   React.useEffect(() => {
-    if (!invModal || !invModal.startsWith('order')) {
-      setOrderQtys({}); setOrderCosts({}); setMultiSupSel([]); setPoHistDate(""); setOrderSearch(""); setHistoryExpandId(null);
-    }
+    if (invModal !== 'order') setOrderQtys({});
   }, [invModal]);
-  // সাপ্লায়ার ডিটেইলে ঢুকলে সেই সাপ্লায়ারের সেভ করা ফোন নম্বর ইনপুটে বসিয়ে দাও
-  React.useEffect(() => {
-    if (invModal && invModal.startsWith('order:supplier:')) {
-      const supName = invModal.replace('order:supplier:', '');
-      const rec = suppliers.find(s => s.name === supName);
-      setSupplierPhoneInput(rec?.phone || "");
-      setShowPhoneEdit(false);
-    }
-  }, [invModal, suppliers]);
   // ড্যাশমোডাল বন্ধ হলে (ফিরুন বাটন/ফোনের ব্যাক/নেভিগেশন হোম) ভেতরের ইনভয়েস-ভিউও বন্ধ হবে
   React.useEffect(() => {
     if (!dashModal) {
@@ -16634,57 +16636,26 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     );
   }
 
-  if (invModal === 'order' || (invModal && invModal.startsWith('order'))) {
-    // ════════════════════════════════════════════════════════════════════
-    // 🆕 ক্রয় অর্ডার হাব — শেয়ার্ড ডেটা ও হেল্পার ফাংশন (নিচের সবগুলো সাব-পেজ এগুলো ব্যবহার করে)
-    // ════════════════════════════════════════════════════════════════════
-    const supplierOf = p => p.company || p.category || "অজ্ঞাত";
+  if (invModal === 'order' || (invModal && invModal.startsWith('order:supplier:'))) {
+    const isOrderSupplierDetail = invModal && invModal.startsWith('order:supplier:');
+    const selectedOrderSupplier = isOrderSupplierDetail ? invModal.replace('order:supplier:', '') : null;
 
-    // স্টক আউট → ক্রিটিক্যাল (কম থেকে বেশি) → বাকি সব (কম থেকে বেশি)
-    const criticalSorted  = [...criticalStock].sort((a,b)=>a.stock-b.stock);
-    const remainderSorted = allStock.filter(p=>!criticalStock.find(c=>c.id===p.id)).sort((a,b)=>a.stock-b.stock);
-    const allProductsSorted = [...stockOut, ...criticalSorted, ...remainderSorted];
+    const orderItems = [...stockOut, ...criticalStock, ...allStock.filter(p => !criticalStock.find(c=>c.id===p.id))];
+    const uniqueItems = orderItems.filter((p,i,a)=>a.findIndex(x=>x.id===p.id)===i);
 
-    // সাপ্লায়ার-ভিত্তিক গ্রুপিং (সব পণ্য থেকে)
-    const orderSupplierGroupsAll = {};
-    allProductsSorted.forEach(p => {
-      const key = supplierOf(p);
-      if (!orderSupplierGroupsAll[key]) orderSupplierGroupsAll[key] = { name:key, products:[] };
-      orderSupplierGroupsAll[key].products.push(p);
+    // সাপ্লায়ার গ্রুপিং
+    const orderSupplierGroups = {};
+    uniqueItems.forEach(p => {
+      const key = p.company || p.category || "অজ্ঞাত";
+      if (!orderSupplierGroups[key]) orderSupplierGroups[key] = { name: key, products: [] };
+      orderSupplierGroups[key].products.push(p);
     });
-    const orderSupplierList = Object.values(orderSupplierGroupsAll).sort((a,b) => {
+    const orderSupplierList = Object.values(orderSupplierGroups).sort((a,b) => {
+      // স্টক আউট/ক্রিটিক্যাল যেই সাপ্লায়ারের বেশি সেটা উপরে
       const urgA = a.products.filter(p=>(p.stock||0)===0||(p.stock||0)<=(p.minStockAlert||5)).length;
       const urgB = b.products.filter(p=>(p.stock||0)===0||(p.stock||0)<=(p.minStockAlert||5)).length;
       return urgB - urgA;
     });
-
-    // 🆕 বিক্রয় পরিমাণ (৩০ দিন) — "সাপ্লায়ার ভিত্তিক" হাব সাজানোর জন্য, কোন সাপ্লায়ারের পণ্য সবচেয়ে বেশি বিক্রি হয়
-    const soldQtyByProduct = {};
-    (invoices || []).forEach(inv => {
-      if (inv.status === "voided" || inv.isSelfUse) return;
-      (inv.items || []).forEach(it => { soldQtyByProduct[it.productId] = (soldQtyByProduct[it.productId]||0) + (it.qty||0); });
-    });
-    const supplierBySales = Object.values(orderSupplierGroupsAll)
-      .map(g => ({ ...g, soldQty: g.products.reduce((s,p)=> s + (soldQtyByProduct[p.id]||0), 0) }))
-      .sort((a,b) => b.soldQty - a.soldQty);
-
-    // সাপ্লায়ারের সেভ করা ফোন/WhatsApp নম্বর
-    const supplierPhone = (supName) => (suppliers.find(s => s.name === supName)?.phone || "").trim();
-    const saveSupplierPhone = (supName, phone) => {
-      const clean = (phone || "").trim();
-      setSuppliers(prev => {
-        const exists = prev.find(s => s.name === supName);
-        if (exists) return prev.map(s => s.name === supName ? { ...s, phone: clean } : s);
-        return [...prev, { id: "sup_" + Date.now(), name: supName, phone: clean, createdAt: new Date().toISOString() }];
-      });
-      showToast(clean ? "📞 ফোন নম্বর সেভ হয়েছে" : "ফোন নম্বর মুছে ফেলা হয়েছে", "#22c55e");
-      setShowPhoneEdit(false);
-    };
-
-    const pendingPOs = (purchaseOrders || []).filter(po => po._type === "po" && po.status === "sent")
-      .sort((a,b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
-    const historyPOs = (purchaseOrders || []).filter(po => po._type === "po")
-      .sort((a,b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
 
     const buildOrderHtml = (items, qtys, supName) => {
       const orderedItems = items.filter(p => (qtys[p.id]||0) > 0);
@@ -16692,393 +16663,21 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
       const rows = displayItems.map((p, i) => `<tr><td class="serial">${i+1}</td><td>${p.name}</td><td class="num">${p.stock||0}${p.unit||""}</td><td class="num">${qtys[p.id]||0}</td></tr>`).join('');
       return buildPdfHtml(`<div class="section">${supName?`<h2>সাপ্লায়ার: ${supName}</h2>`:""}<table><thead><tr><th class="serial">#</th><th>পণ্যের নাম</th><th class="num">বর্তমান স্টক</th><th class="num">অর্ডার পরিমাণ</th></tr></thead><tbody>${rows}</tbody><tfoot><tr class="total-row"><td class="serial"></td><td colspan="2"><b>মোট পণ্য</b></td><td class="num">${displayItems.length}</td></tr></tfoot></table></div>`, shopName, `ক্রয় অর্ডার${supName?` — ${supName}`:""} — ${new Date().toLocaleDateString('en-US')}`);
     };
-    const sendWhatsApp = (items, qtys, supName, phone) => {
-      const lines = items.filter(p=>(qtys[p.id]||0)>0).map((p,i) => `${i+1}. ${p.name} — অর্ডার: ${qtys[p.id]||0} (স্টক: ${p.stock||0})`).join('\n');
-      const target = (phone || "").replace(/[^0-9]/g, "");
-      const base = target ? `https://wa.me/${target}` : `https://wa.me/`;
-      window.open(`${base}?text=${encodeURIComponent(`ক্রয় অর্ডার${supName?` — ${supName}`:""}\n${shopName} · ${new Date().toLocaleDateString('en-US')}\n\n${lines}`)}`, '_blank');
+    const sendWhatsApp = (items, qtys, supName) => {
+      const lines = items.map((p,i) => `${i+1}. ${p.name} — অর্ডার: ${qtys[p.id]||0} (স্টক: ${p.stock||0})`).join('\n');
+      window.open(`https://wa.me/?text=${encodeURIComponent(`ক্রয় অর্ডার${supName?` — ${supName}`:""}\n${shopName} · ${new Date().toLocaleDateString('en-US')}\n\n${lines}`)}`, '_blank');
     };
 
-    // অর্ডার সেভ+ট্র্যাক — purchaseOrders-এ status:"sent" রেকর্ড তৈরি করে, ওই আইটেমগুলোর orderQtys রিসেট করে
-    const savePOEntry = (items, qtys, supName) => {
-      const orderedItems = items.filter(p => (qtys[p.id]||0) > 0);
-      if (orderedItems.length === 0) return null;
-      const now = new Date().toISOString();
-      const entry = {
-        id: "po_" + Date.now() + "_" + Math.random().toString(36).slice(2,7), _type: "po", status: "sent",
-        supplier: supName, supplierPhone: supplierPhone(supName),
-        items: orderedItems.map(p => ({
-          productId: p.id, name: p.name, qty: qtys[p.id], unit: p.unit || "",
-          stockAtOrder: p.stock || 0,
-          costPrice: parseFloat(orderCosts[p.id]) || p.costPrice || 0,
-        })),
-        totalQty: orderedItems.reduce((s,p) => s + (qtys[p.id]||0), 0),
-        createdAt: now, dateKey: now.split("T")[0], receivedAt: null,
-      };
-      setPurchaseOrders(prev => [entry, ...prev]);
-      setOrderQtys(q => { const n = { ...q }; orderedItems.forEach(p => delete n[p.id]); return n; });
-      setOrderCosts(c => { const n = { ...c }; orderedItems.forEach(p => delete n[p.id]); return n; });
-      return entry;
-    };
-
-    // রিসিভ করুন — PO-এর প্রতিটি আইটেমের জন্য batch/stock/stockMovement তৈরি করে
-    const receiveOrder = (po) => {
-      if (!window.confirm(`"${po.supplier}"-এর ${po.items.length}টি পণ্যের অর্ডার রিসিভ করলে স্টক ও ব্যাচ সয়ংক্রিয়ভাবে আপডেট হবে। নিশ্চিত?`)) return;
-      const now = new Date().toISOString();
-      const dateKey = now.split("T")[0];
-      const newPEEntries = [];
-      const movements = [];
-      setProducts(prevProducts => {
-        let updated = prevProducts;
-        po.items.forEach(item => {
-          const prod = updated.find(p => p.id === item.productId);
-          if (!prod) return;
-          const oldStock = prod.stock || 0;
-          const oldCost  = prod.costPrice || 0;
-          const unitCost = item.costPrice || oldCost || 0;
-          const qty = item.qty || 0;
-          const newStock = oldStock + qty;
-          const newCostPrice = oldStock + qty > 0 ? (oldStock*oldCost + qty*unitCost)/(oldStock+qty) : unitCost;
-          const batchNo = calcNextBatch(item.productId, updated, purchaseOrders);
-          const newBatch = { batchNo, qty, costPrice: unitCost, sellPrice: prod.price||0, expiryDate:"", supplier: po.supplier, note:`ক্রয় অর্ডার #${po.id.slice(-6)} থেকে রিসিভ`, at: now, isFreeStock:false };
-          updated = updated.map(p => p.id === item.productId
-            ? { ...p, stock:newStock, costPrice: Math.round(newCostPrice*10000)/10000, lastUpdated: now, batches:[...(p.batches||[]), newBatch] }
-            : p);
-          newPEEntries.push({
-            id: "pe_" + Date.now() + "_" + item.productId, _type: "pe",
-            productId: item.productId, productName: item.name,
-            qty, unitCost, unitSell: prod.price||0, totalCost: qty*unitCost,
-            expiryDate: "", batch: batchNo, supplier: po.supplier,
-            note: `ক্রয় অর্ডার #${po.id.slice(-6)} থেকে রিসিভ`, isFreeStock:false,
-            at: now, dateKey, unit: prod.unit || "",
-          });
-          movements.push(pushStockMovement({
-            id: "sm_" + Date.now() + "_" + item.productId, productId: item.productId,
-            productName: item.name, stock:newStock, prevStock:oldStock, delta:qty,
-            at: now, dateKey, source: "purchase",
-          }));
-        });
-        return updated;
-      });
-      setStockMovements(prev => [...movements, ...prev]);
-      setPurchaseOrders(prev => [...newPEEntries, ...prev.map(p => p.id === po.id ? { ...p, status: "received", receivedAt: now } : p)]);
-      showToast(`✅ "${po.supplier}"-এর অর্ডার রিসিভ হয়েছে, স্টক আপডেট হয়েছে`, "#22c55e");
-    };
-
-    // ছোট রিইউজেবল প্রোডাক্ট-কার্ড (প্রিসেট + কাস্টম কোয়ান্টিটি + ক্রয়মূল্য)
-    const renderOrderProductCard = (p, idx) => {
-      const isOut = (p.stock||0)===0;
-      const isCrit = !isOut && (p.stock||0)<=(p.minStockAlert||5);
-      const accentC = isOut ? "#ef4444" : isCrit ? "#f59e0b" : "#22c55e";
-      const accentGlow = isOut ? "#ef444433" : isCrit ? "#f59e0b33" : "#22c55e22";
-      const isUncommon = (p.demandType||"common") === "uncommon";
-      const isOrdered = (orderQtys[p.id]||0) > 0;
-      const qty = orderQtys[p.id]||0;
-      return (
-        <div key={p.id} style={{ position:"relative", background: isOrdered ? `linear-gradient(135deg,${accentGlow},#071a0f 60%)` : "linear-gradient(135deg,#0a1f12,#071a0f)", border:`1px solid ${isOrdered ? accentC+"66" : "#1a3a2488"}`, borderRadius:16, padding:"13px 14px", overflow:"hidden", boxShadow: isOrdered ? `0 0 18px ${accentC}18, 0 2px 8px #00000044` : "0 2px 8px #00000033", transition:"all 0.2s ease" }}>
-          <div style={{ position:"absolute", top:0, left:0, right:0, height:2, background: isOrdered ? `linear-gradient(90deg,transparent,${accentC}88,transparent)` : "linear-gradient(90deg,transparent,#1fd15e22,transparent)", borderRadius:"16px 16px 0 0" }}/>
-          <div style={{ position:"absolute", top:10, right:12, color:"#ffffff18", fontWeight:900, fontSize:22, fontFamily:"monospace", lineHeight:1, userSelect:"none" }}>{String(idx+1).padStart(2,"0")}</div>
-          <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap", marginBottom:6, paddingRight:36 }}>
-            <span style={{ color:"#f1f5f9", fontWeight:800, fontSize:14 }}>
-              {p.name}{p.unit && <span style={{ color:"#475569", fontSize:11, fontWeight:600 }}> ({p.unit})</span>}
-            </span>
-            <span style={{ background: isOut ? "#ef444420" : isCrit ? "#f59e0b20" : "#22c55e15", color: accentC, fontSize:10, fontWeight:800, borderRadius:6, padding:"2px 8px", border:`1px solid ${accentC}33` }}>
-              {isOut ? "● স্টক শেষ" : isCrit ? "⚠ ক্রিটিক্যাল" : `স্টক: ${p.stock}`}
-            </span>
-            <span style={{ background: isUncommon ? "#a78bfa22" : "#22c55e18", color: isUncommon ? "#a78bfa" : "#22c55e", fontSize:9.5, fontWeight:800, borderRadius:6, padding:"2px 7px", border:`1px solid ${isUncommon?"#a78bfa44":"#22c55e33"}` }}>
-              {isUncommon ? "আনকমন" : "কমন"}
-            </span>
-          </div>
-          <div style={{ color:"#64748b", fontSize:11, fontWeight:700, marginBottom:9, display:"flex", alignItems:"center", gap:4 }}>
-            🏭 {supplierOf(p)}
-          </div>
-          <div style={{ display:"flex", alignItems:"center", gap:7, flexWrap:"wrap" }}>
-            {[5,10,25,50,100].map(n => (
-              <button key={n} onClick={()=>setOrderQtys(q=>({...q,[p.id]:(q[p.id]||0)+n}))}
-                style={{ background: isOrdered ? `linear-gradient(135deg,${accentC}25,${accentC}12)` : "linear-gradient(135deg,#ffffff10,#ffffff06)", border:`1px solid ${isOrdered ? accentC+"55" : "#ffffff18"}`, borderRadius:10, color: isOrdered ? accentC : "#94a3b8", fontSize:12, fontWeight:800, padding:"6px 14px", cursor:"pointer", fontFamily:"inherit", letterSpacing:0.3, transition:"all 0.15s ease" }}>+{n}</button>
-            ))}
-            <input
-              type="number" inputMode="numeric" placeholder="ইচ্ছেমতো"
-              value={qty || ""}
-              onChange={e=>{ const v = parseInt(e.target.value)||0; setOrderQtys(q=>({...q,[p.id]: v>0 ? v : 0})); }}
-              style={{ width:64, background:"#0a1f12", border:`1px solid ${isOrdered?accentC+"55":"#ffffff18"}`, borderRadius:10, padding:"6px 8px", color:"#e2e8f0", fontSize:12.5, fontFamily:"inherit", textAlign:"center" }} />
-            {qty > 0 && (
-              <button onClick={()=>setOrderQtys(q=>({...q,[p.id]:0}))} style={{ background:"linear-gradient(135deg,#ef444420,#ef444410)", border:"1px solid #ef444444", borderRadius:10, color:"#ef4444", fontSize:12, fontWeight:800, padding:"6px 12px", cursor:"pointer", fontFamily:"inherit" }}>✕</button>
-            )}
-            {isOrdered && (
-              <div style={{ marginLeft:"auto", background:"linear-gradient(135deg,#7c3aed,#5b21b6)", border:"1px solid #a78bfa55", borderRadius:12, padding:"10px 18px", color:"#fff", fontWeight:900, fontSize:18, minWidth:60, textAlign:"center", boxShadow:"0 4px 16px #7c3aed55", letterSpacing:1, flexShrink:0, lineHeight:1 }}>{qty}</div>
-            )}
-          </div>
-          {isOrdered && (
-            <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:8 }} onClick={e=>e.stopPropagation()}>
-              <span style={{ color:"#64748b", fontSize:11, fontWeight:700 }}>ক্রয়মূল্য/একক:</span>
-              <span style={{ color:"#64748b", fontSize:12 }}>৳</span>
-              <input
-                type="number" inputMode="decimal" placeholder={String(p.costPrice||0)}
-                value={orderCosts[p.id] ?? ""}
-                onChange={e=>setOrderCosts(c=>({...c,[p.id]:e.target.value}))}
-                style={{ width:64, background:"#0a1f12", border:"1px solid #7c3aed44", borderRadius:6, padding:"3px 6px", color:"#e2e8f0", fontSize:12, fontFamily:"inherit" }} />
-            </div>
-          )}
-        </div>
-      );
-    };
-
-    // ══════════════════════════════════════════════════════════════════
-    // ১) হাব পেজ — ৪টি কার্ড
-    // ══════════════════════════════════════════════════════════════════
-    if (invModal === 'order') {
-      const urgentCount = stockOut.length + criticalStock.length;
-      const hubCards = [
-        { key:"all", icon:"📦", title:"সকল পণ্য থেকে ক্রয় অর্ডার তৈরি করুন", sub:"স্টক অনুযায়ী সাজানো — আগে স্টক-আউট, তারপর ক্রিটিক্যাল", accent:"#22c55e", badge: urgentCount>0 ? urgentCount : null, badgeColor:"#ef4444", onClick:()=>setInvModal('order:all') },
-        { key:"bysupplier", icon:"🏭", title:"সাপ্লায়ার ভিত্তিক ক্রয় অর্ডার তৈরি করুন", sub:"বিক্রি অনুযায়ী সাজানো সাপ্লায়ার — একাধিক সাপ্লায়ারের মাল্টি অর্ডার", accent:"#0ea5e9", badge:null, onClick:()=>setInvModal('order:by-supplier') },
-        { key:"pending", icon:"⏳", title:"পেন্ডিং ক্রয় অর্ডার", sub:"পাঠানো হয়েছে কিন্তু এখনো রিসিভ হয়নি", accent:"#f59e0b", badge: pendingPOs.length>0 ? pendingPOs.length : null, badgeColor:"#f59e0b", pulse: pendingPOs.length>0, onClick:()=>setInvModal('order:pending') },
-        { key:"history", icon:"🗂️", title:"ক্রয় অর্ডার হিস্ট্রি", sub:"যেকোনো দিনের ক্রয় অর্ডার দেখুন", accent:"#a78bfa", badge: historyPOs.length>0 ? historyPOs.length : null, badgeColor:"#a78bfa", onClick:()=>setInvModal('order:history') },
-      ];
-      return (
-        <div style={{ ...S.page, padding:"0 14px 16px" }}>
-          <button style={S.textBtn} onClick={() => setInvModal(null)}>← ড্যাশবোর্ডে ফিরুন</button>
-          <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:17, marginBottom:2 }}>ক্রয় অর্ডার</div>
-          <div style={{ color:"#64748b", fontSize:12, marginBottom:14 }}>স্টক ম্যানেজ করুন ও সাপ্লায়ারদের কাছে অর্ডার পাঠান</div>
-          <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-            {hubCards.map((c,i) => (
-              <div key={c.key} className="tap-card" onClick={c.onClick}
-                style={{ position:"relative", background:`linear-gradient(135deg,${c.accent}14,#071a0f)`, border:`1.5px solid ${c.accent}3d`, borderRadius:18, padding:"16px 16px", cursor:"pointer", overflow:"hidden", animation:`fadeUp 0.3s ease both`, animationDelay:`${i*40}ms` }}>
-                <div style={{ position:"absolute", bottom:-30, right:-30, width:100, height:100, borderRadius:"50%", background:`radial-gradient(circle,${c.accent}1a 0%,transparent 70%)` }} />
-                <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-                  <div style={{ width:48, height:48, borderRadius:14, background:`${c.accent}22`, border:`1px solid ${c.accent}44`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:22 }}>
-                    {c.icon}
-                  </div>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ color:"#f1f5f9", fontWeight:800, fontSize:14.5 }}>{c.title}</div>
-                    <div style={{ color:"#64748b", fontSize:11.5, marginTop:3, lineHeight:1.4 }}>{c.sub}</div>
-                  </div>
-                  {c.badge && (
-                    <div style={{ background:`linear-gradient(135deg,${c.badgeColor},${c.badgeColor}cc)`, color:"#fff", fontWeight:900, fontSize:13, borderRadius:20, minWidth:26, height:26, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 7px", flexShrink:0, animation: c.pulse ? "cardBlinkAmber 0.9s ease-in-out infinite" : "none" }}>
-                      {c.badge}
-                    </div>
-                  )}
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={c.accent} strokeWidth="2.5" strokeLinecap="round" style={{flexShrink:0}}><polyline points="9 18 15 12 9 6"/></svg>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      );
-    }
-
-    // ══════════════════════════════════════════════════════════════════
-    // ২) সকল পণ্য থেকে ক্রয় অর্ডার — ফ্ল্যাট তালিকা (স্টক-আউট → ক্রিটিক্যাল → বাকি)
-    // ══════════════════════════════════════════════════════════════════
-    if (invModal === 'order:all') {
-      const q = orderSearch.trim().toLowerCase();
-      const filteredProducts = q ? allProductsSorted.filter(p => (p.name||"").toLowerCase().includes(q) || supplierOf(p).toLowerCase().includes(q)) : allProductsSorted;
-      const selectedCount = Object.values(orderQtys).filter(v=>v>0).length;
-
-      // ⚡ স্মার্ট অর্ডার — স্টক-আউট/ক্রিটিক্যাল পণ্যের জন্য এক ট্যাপে পার-লেভেল অনুযায়ী পরিমাণ বসিয়ে দেয়
-      const smartFill = () => {
-        const urgentItems = [...stockOut, ...criticalStock];
-        if (urgentItems.length === 0) { showToast("কোনো স্টক-আউট/ক্রিটিক্যাল পণ্য নেই", "#f59e0b"); return; }
-        setOrderQtys(qy => {
-          const n = { ...qy };
-          urgentItems.forEach(p => {
-            const m = p.minStockAlert || 5;
-            const target = Math.max(m * 3 - (p.stock||0), m);
-            n[p.id] = target;
-          });
-          return n;
-        });
-        showToast(`⚡ ${urgentItems.length}টি পণ্যে স্মার্ট পরিমাণ বসানো হয়েছে`, "#a78bfa");
-      };
-
-      return (
-        <div style={{ ...S.page, padding:"0", display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
-          <div style={{ position:"sticky", top:0, zIndex:50, background:"linear-gradient(180deg,#020d06 0%,#041208 80%,#041208ee 100%)", borderBottom:"1px solid #1fd15e33", padding:"12px 14px 10px", backdropFilter:"blur(12px)" }}>
-            <button style={S.textBtn} onClick={() => setInvModal('order')}>← হাবে ফিরুন</button>
-            <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:16, marginTop:4 }}>সকল পণ্য থেকে ক্রয় অর্ডার</div>
-            <div style={{ color:"#64748b", fontSize:12, marginTop:2, marginBottom:8 }}>
-              <span style={{ color:"#1fd15e", fontWeight:700 }}>{allProductsSorted.length}</span>টি পণ্য
-              {selectedCount>0 && <span style={{ color:"#a78bfa", fontWeight:700, marginLeft:8 }}>· {selectedCount}টি সিলেক্ট</span>}
-            </div>
-            <div style={{ display:"flex", gap:8 }}>
-              <input
-                type="text" placeholder="🔎 পণ্য বা সাপ্লায়ার খুঁজুন..."
-                value={orderSearch} onChange={e=>setOrderSearch(e.target.value)}
-                style={{ flex:1, background:"#0a1f12", border:"1px solid #1fd15e33", borderRadius:10, padding:"8px 12px", color:"#e2e8f0", fontSize:13, fontFamily:"inherit" }} />
-              <button onClick={smartFill}
-                style={{ background:"linear-gradient(135deg,#7c3aed,#5b21b6)", border:"1px solid #a78bfa55", borderRadius:10, color:"#fff", fontWeight:800, fontSize:12, padding:"0 14px", cursor:"pointer", fontFamily:"inherit", whiteSpace:"nowrap", display:"flex", alignItems:"center", gap:5 }}>
-                ⚡ স্মার্ট অর্ডার
-              </button>
-            </div>
-          </div>
-
-          <div style={{ flex:1, overflowY:"auto", padding:"12px 14px 16px" }}>
-            {filteredProducts.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>কোনো পণ্য পাওয়া যায়নি</div>}
-            <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-              {filteredProducts.map((p, idx) => renderOrderProductCard(p, idx))}
-            </div>
-          </div>
-
-          {selectedCount > 0 && (
-            <div style={{ position:"sticky", bottom:0, zIndex:50, background:"linear-gradient(0deg,#020d06 70%,transparent)", padding:"10px 14px 14px" }}>
-              <button onClick={()=>setInvModal('order:all:review')}
-                style={{ width:"100%", background:"linear-gradient(135deg,#7c3aed,#5b21b6)", border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:15, padding:"14px 0", cursor:"pointer", fontFamily:"inherit", boxShadow:"0 4px 18px #7c3aed44" }}>
-                📋 চূড়ান্ত তালিকা দেখুন ও এডিট করুন ({selectedCount}টি পণ্য)
-              </button>
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    // ══════════════════════════════════════════════════════════════════
-    // ৩) চূড়ান্ত রিভিউ পেজ — সাপ্লায়ার অনুযায়ী গ্রুপ করা, এডিট/রিমুভ করা যাবে
-    // ══════════════════════════════════════════════════════════════════
-    if (invModal === 'order:all:review') {
-      const groups = orderSupplierList
-        .map(g => ({ ...g, ordered: g.products.filter(p => (orderQtys[p.id]||0) > 0) }))
-        .filter(g => g.ordered.length > 0);
-      const totalItems = groups.reduce((s,g)=>s+g.ordered.length, 0);
-
-      const saveAll = () => {
-        let savedSuppliers = 0;
-        groups.forEach(g => { const e = savePOEntry(g.ordered, orderQtys, g.name); if (e) savedSuppliers++; });
-        showToast(`✅ ${savedSuppliers}টি সাপ্লায়ারের অর্ডার সেভ হয়েছে`, "#a78bfa");
-        setInvModal('order:pending');
-      };
-
-      return (
-        <div style={{ ...S.page, padding:"0 14px 16px" }}>
-          <button style={S.textBtn} onClick={() => setInvModal('order:all')}>← তালিকায় ফিরুন</button>
-          <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:17, marginBottom:2 }}>চূড়ান্ত তালিকা — চেক ও এডিট করুন</div>
-          <div style={{ color:"#64748b", fontSize:12, marginBottom:14 }}>
-            <span style={{ color:"#1fd15e", fontWeight:700 }}>{groups.length}</span>টি সাপ্লায়ার · {totalItems}টি পণ্য
-          </div>
-
-          {totalItems === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>কোনো পণ্য সিলেক্ট করা হয়নি</div>}
-
-          <div style={{ display:"flex", flexDirection:"column", gap:16, marginBottom:16 }}>
-            {groups.map(g => (
-              <div key={g.name} style={{ background:"linear-gradient(135deg,#1fd15e0d,#071a0f)", border:"1px solid #1fd15e33", borderRadius:16, padding:"12px 14px" }}>
-                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                    <span style={{ fontSize:15 }}>🏭</span>
-                    <span style={{ color:"#e2e8f0", fontWeight:800, fontSize:14 }}>{g.name}</span>
-                    <span style={{ color:"#64748b", fontSize:11 }}>({g.ordered.length}টি পণ্য)</span>
-                  </div>
-                  <div style={{ display:"flex", gap:6 }}>
-                    <button onClick={()=>{ const html = buildOrderHtml(g.ordered, orderQtys, g.name); savePOEntry(g.ordered, orderQtys, g.name); openPrintWindow(html); }}
-                      style={{ background:"#0ea5e922", border:"1px solid #0ea5e955", borderRadius:8, color:"#0ea5e9", fontWeight:800, fontSize:11, padding:"5px 10px", cursor:"pointer", fontFamily:"inherit" }}>🖨️ প্রিন্ট</button>
-                    <button onClick={()=>{ const phone = supplierPhone(g.name); savePOEntry(g.ordered, orderQtys, g.name); sendWhatsApp(g.ordered, orderQtys, g.name, phone); }}
-                      style={{ background:"#22c55e22", border:"1px solid #22c55e55", borderRadius:8, color:"#22c55e", fontWeight:800, fontSize:11, padding:"5px 10px", cursor:"pointer", fontFamily:"inherit" }}>💬 পাঠান</button>
-                  </div>
-                </div>
-                <div style={{ display:"flex", flexDirection:"column", gap:7 }}>
-                  {g.ordered.map(p => (
-                    <div key={p.id} style={{ display:"flex", alignItems:"center", gap:8, background:"#0a1f1288", borderRadius:10, padding:"8px 10px" }}>
-                      <div style={{ flex:1, minWidth:0 }}>
-                        <div style={{ color:"#e2e8f0", fontWeight:700, fontSize:13 }}>{p.name}</div>
-                        <div style={{ color:"#64748b", fontSize:10.5, marginTop:1 }}>{g.name} · স্টক: {p.stock||0}{p.unit||""}</div>
-                      </div>
-                      <input
-                        type="number" inputMode="numeric"
-                        value={orderQtys[p.id]||0}
-                        onChange={e=>{ const v=parseInt(e.target.value)||0; setOrderQtys(q=>({...q,[p.id]: v>0?v:0})); }}
-                        style={{ width:56, background:"#0a1f12", border:"1px solid #1fd15e44", borderRadius:8, padding:"5px 6px", color:"#e2e8f0", fontSize:13, fontWeight:700, textAlign:"center", fontFamily:"inherit" }} />
-                      <button onClick={()=>setOrderQtys(q=>({...q,[p.id]:0}))}
-                        style={{ background:"#ef444422", border:"1px solid #ef444455", borderRadius:8, color:"#ef4444", fontWeight:800, fontSize:12, padding:"5px 9px", cursor:"pointer", fontFamily:"inherit" }}>✕</button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {totalItems > 0 && (
-            <div style={{ position:"sticky", bottom:0, zIndex:50, background:"linear-gradient(0deg,#020d06 70%,transparent)", padding:"10px 0 4px" }}>
-              <button onClick={saveAll}
-                style={{ width:"100%", background:"linear-gradient(135deg,#15803d,#22c55e)", border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:15, padding:"14px 0", cursor:"pointer", fontFamily:"inherit", boxShadow:"0 4px 18px #22c55e44" }}>
-                ✅ নিশ্চিত করুন — সব সাপ্লায়ারের অর্ডার সেভ করুন
-              </button>
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    // ══════════════════════════════════════════════════════════════════
-    // ৪) সাপ্লায়ার ভিত্তিক হাব — বিক্রি অনুযায়ী সাজানো, মাল্টি-সিলেক্ট
-    // ══════════════════════════════════════════════════════════════════
-    if (invModal === 'order:by-supplier') {
-      const toggleSup = (name) => setMultiSupSel(prev => prev.includes(name) ? prev.filter(n=>n!==name) : [...prev, name]);
-      return (
-        <div style={{ ...S.page, padding:"0 14px 16px" }}>
-          <button style={S.textBtn} onClick={() => { setInvModal('order'); setMultiSupSel([]); }}>← হাবে ফিরুন</button>
-          <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:17, marginBottom:2 }}>সাপ্লায়ার ভিত্তিক ক্রয় অর্ডার</div>
-          <div style={{ color:"#64748b", fontSize:12, marginBottom:14 }}>
-            <span style={{ color:"#1fd15e", fontWeight:700 }}>{supplierBySales.length}</span>টি সাপ্লায়ার · বিক্রি অনুযায়ী সাজানো
-          </div>
-
-          {supplierBySales.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>কোনো সাপ্লায়ার নেই</div>}
-
-          <div style={{ display:"flex", flexDirection:"column", gap:10, paddingBottom: multiSupSel.length>0 ? 70 : 0 }}>
-            {supplierBySales.map((sup, i) => {
-              const outCount = sup.products.filter(p=>(p.stock||0)===0).length;
-              const critCount = sup.products.filter(p=>(p.stock||0)>0&&(p.stock||0)<=(p.minStockAlert||5)).length;
-              const urgency = outCount > 0 ? "#ef4444" : critCount > 0 ? "#f59e0b" : "#1fd15e";
-              const checked = multiSupSel.includes(sup.name);
-              return (
-                <div key={sup.name} style={{ background:`linear-gradient(135deg,${urgency}0d,#071a0f)`, border:`1.5px solid ${checked?"#a78bfa66":urgency+"33"}`, borderRadius:16, padding:"12px 14px", position:"relative", display:"flex", alignItems:"center", gap:10 }}>
-                  <div onClick={()=>toggleSup(sup.name)} style={{ width:24, height:24, borderRadius:7, border:`2px solid ${checked?"#a78bfa":"#334155"}`, background: checked?"#7c3aed":"transparent", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, cursor:"pointer" }}>
-                    {checked && <span style={{ color:"#fff", fontSize:13, fontWeight:900 }}>✓</span>}
-                  </div>
-                  <div className="tap-card" onClick={()=>setInvModal(`order:supplier:${sup.name}`)} style={{ flex:1, minWidth:0, display:"flex", alignItems:"center", gap:12, cursor:"pointer" }}>
-                    <div style={{ width:42, height:42, borderRadius:12, background:`${urgency}22`, border:`1px solid ${urgency}44`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                      <span style={{ fontSize:19 }}>🏭</span>
-                    </div>
-                    <div style={{ flex:1, minWidth:0 }}>
-                      <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                        <span style={{ color:"#e2e8f0", fontWeight:800, fontSize:14 }}>{sup.name}</span>
-                        {i < 3 && sup.soldQty > 0 && <span style={{ background:"#ef444422", color:"#ef4444", fontSize:9.5, fontWeight:800, borderRadius:6, padding:"1px 6px" }}>🔥 বেশি বিক্রি</span>}
-                      </div>
-                      <div style={{ display:"flex", gap:8, marginTop:4, flexWrap:"wrap" }}>
-                        <span style={{ color:urgency, fontSize:11, fontWeight:700 }}>{sup.products.length}টি পণ্য</span>
-                        {sup.soldQty > 0 && <span style={{ color:"#64748b", fontSize:11, fontWeight:700 }}>· {sup.soldQty} বিক্রি</span>}
-                        {outCount > 0 && <span style={{ color:"#ef4444", fontSize:11, fontWeight:700 }}>🚫 {outCount}</span>}
-                        {critCount > 0 && <span style={{ color:"#f59e0b", fontSize:11, fontWeight:700 }}>⚠️ {critCount}</span>}
-                      </div>
-                    </div>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={urgency} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {multiSupSel.length > 0 && (
-            <div style={{ position:"fixed", left:14, right:14, bottom:16, zIndex:50 }}>
-              <button onClick={()=>setInvModal('order:by-supplier:multi')}
-                style={{ width:"100%", background:"linear-gradient(135deg,#0369a1,#0ea5e9)", border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:14.5, padding:"14px 0", cursor:"pointer", fontFamily:"inherit", boxShadow:"0 4px 18px #0ea5e944" }}>
-                🧾 মাল্টি অর্ডার তৈরি করুন ({multiSupSel.length}টি সাপ্লায়ার)
-              </button>
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    // ══════════════════════════════════════════════════════════════════
-    // ৫) সাপ্লায়ার ডিটেইল — একটি সাপ্লায়ারের জন্য ক্রয় অর্ডার তৈরি
-    // ══════════════════════════════════════════════════════════════════
-    if (invModal && invModal.startsWith('order:supplier:')) {
-      const selectedOrderSupplier = invModal.replace('order:supplier:', '');
-      const supProducts = (orderSupplierGroupsAll[selectedOrderSupplier]?.products) || [];
+    // ── সাপ্লায়ার ডিটেইল: ক্রয় অর্ডার তৈরি ──
+    if (isOrderSupplierDetail) {
+      const supProducts = uniqueItems.filter(p => (p.company || p.category || "অজ্ঞাত") === selectedOrderSupplier);
       const supOrderedCount = supProducts.filter(p=>(orderQtys[p.id]||0)>0).length;
 
       return (
         <div style={{ ...S.page, padding:"0", display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
-          <div style={{ position:"sticky", top:0, zIndex:50, background:"linear-gradient(180deg,#020d06 0%,#041208 80%,#041208ee 100%)", borderBottom:"1px solid #1fd15e33", padding:"12px 14px 10px", backdropFilter:"blur(12px)" }}>
-            <button style={S.textBtn} onClick={() => setInvModal('order:by-supplier')}>← সাপ্লায়ার তালিকায় ফিরুন</button>
+          {/* STICKY HEADER */}
+          <div style={{ position:"sticky", top:0, zIndex:50, background:"linear-gradient(180deg,#020d06 0%,#041208 80%,#041208ee 100%)", borderBottom:"1px solid #1fd15e33", padding:"12px 14px 10px", backdropFilter:"blur(12px)", WebkitBackdropFilter:"blur(12px)" }}>
+            <button style={S.textBtn} onClick={() => setInvModal('order')}>← সাপ্লায়ার তালিকায় ফিরুন</button>
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginTop:6 }}>
               <div>
                 <div style={{ display:"flex", alignItems:"center", gap:8 }}>
@@ -17090,54 +16689,66 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
                   {supOrderedCount > 0 && <span style={{ color:"#a78bfa", fontWeight:700, marginLeft:8 }}>· {supOrderedCount}টি অর্ডার করা হয়েছে</span>}
                 </div>
               </div>
-            </div>
-            <div style={{ marginTop:8 }}>
-              {showPhoneEdit ? (
-                <div style={{ display:"flex", gap:6 }}>
-                  <input
-                    type="tel" inputMode="tel" placeholder="যেমন: 01712345678"
-                    value={supplierPhoneInput} onChange={e=>setSupplierPhoneInput(e.target.value)}
-                    autoFocus
-                    style={{ flex:1, background:"#0a1f12", border:"1px solid #1fd15e44", borderRadius:8, padding:"6px 10px", color:"#e2e8f0", fontSize:12.5, fontFamily:"inherit" }} />
-                  <button onClick={()=>saveSupplierPhone(selectedOrderSupplier, supplierPhoneInput)}
-                    style={{ background:"#1fd15e", border:"none", borderRadius:8, color:"#04170b", fontWeight:800, fontSize:12, padding:"0 12px", cursor:"pointer", fontFamily:"inherit" }}>✓ সেভ</button>
-                  <button onClick={()=>setShowPhoneEdit(false)}
-                    style={{ background:"none", border:`1px solid ${T.border||"#334155"}`, borderRadius:8, color:"#64748b", fontSize:12, padding:"0 10px", cursor:"pointer", fontFamily:"inherit" }}>✕</button>
+              {supOrderedCount > 0 && (
+                <div style={{ background:"linear-gradient(135deg,#1fd15e22,#1fd15e11)", border:"1px solid #1fd15e44", borderRadius:10, padding:"4px 10px", color:"#1fd15e", fontWeight:800, fontSize:12 }}>
+                  {supOrderedCount}টি সিলেক্ট
                 </div>
-              ) : (
-                <button onClick={()=>setShowPhoneEdit(true)}
-                  style={{ background:"none", border:"none", color: supplierPhoneInput ? "#22c55e" : "#64748b", fontSize:12, fontWeight:700, padding:0, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", gap:5 }}>
-                  📞 {supplierPhoneInput || "ফোন/WhatsApp নম্বর যোগ করুন"}
-                </button>
               )}
             </div>
           </div>
 
+          {/* SCROLLABLE CARDS */}
           <div style={{ flex:1, overflowY:"auto", padding:"12px 14px 16px" }}>
             <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-              {supProducts.map((p, idx) => renderOrderProductCard(p, idx))}
+              {supProducts.map((p, idx) => {
+                const isOut = (p.stock||0)===0;
+                const isCrit = !isOut && (p.stock||0)<=(p.minStockAlert||5);
+                const accentC = isOut ? "#ef4444" : isCrit ? "#f59e0b" : "#22c55e";
+                const accentGlow = isOut ? "#ef444433" : isCrit ? "#f59e0b33" : "#22c55e22";
+                const isOrdered = (orderQtys[p.id]||0) > 0;
+                const qty = orderQtys[p.id]||0;
+                return (
+                  <div key={p.id} style={{ position:"relative", background: isOrdered ? `linear-gradient(135deg,${accentGlow},#071a0f 60%)` : "linear-gradient(135deg,#0a1f12,#071a0f)", border:`1px solid ${isOrdered ? accentC+"66" : "#1a3a2488"}`, borderRadius:16, padding:"13px 14px", overflow:"hidden", boxShadow: isOrdered ? `0 0 18px ${accentC}18, 0 2px 8px #00000044` : "0 2px 8px #00000033", transition:"all 0.2s ease" }}>
+                    <div style={{ position:"absolute", top:0, left:0, right:0, height:2, background: isOrdered ? `linear-gradient(90deg,transparent,${accentC}88,transparent)` : "linear-gradient(90deg,transparent,#1fd15e22,transparent)", borderRadius:"16px 16px 0 0" }}/>
+                    <div style={{ position:"absolute", top:10, right:12, color:"#ffffff18", fontWeight:900, fontSize:22, fontFamily:"monospace", lineHeight:1, userSelect:"none" }}>{String(idx+1).padStart(2,"0")}</div>
+                    <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:9, paddingRight:36 }}>
+                      <span style={{ color:"#f1f5f9", fontWeight:800, fontSize:14 }}>
+                        {p.name}{p.unit && <span style={{ color:"#475569", fontSize:11, fontWeight:600 }}> ({p.unit})</span>}
+                      </span>
+                      <span style={{ background: isOut ? "#ef444420" : isCrit ? "#f59e0b20" : "#22c55e15", color: accentC, fontSize:10, fontWeight:800, borderRadius:6, padding:"2px 8px", border:`1px solid ${accentC}33` }}>
+                        {isOut ? "● স্টক শেষ" : isCrit ? "⚠ ক্রিটিক্যাল" : `স্টক: ${p.stock}`}
+                      </span>
+                    </div>
+                    <div style={{ display:"flex", alignItems:"center", gap:7, flexWrap:"wrap" }}>
+                      {[5,10,25,50,100].map(n => (
+                        <button key={n} onClick={()=>setOrderQtys(q=>({...q,[p.id]:(q[p.id]||0)+n}))}
+                          style={{ background: isOrdered ? `linear-gradient(135deg,${accentC}25,${accentC}12)` : "linear-gradient(135deg,#ffffff10,#ffffff06)", border:`1px solid ${isOrdered ? accentC+"55" : "#ffffff18"}`, borderRadius:10, color: isOrdered ? accentC : "#94a3b8", fontSize:12, fontWeight:800, padding:"6px 14px", cursor:"pointer", fontFamily:"inherit", letterSpacing:0.3, transition:"all 0.15s ease" }}>+{n}</button>
+                      ))}
+                      {qty > 0 && (
+                        <button onClick={()=>setOrderQtys(q=>({...q,[p.id]:0}))} style={{ background:"linear-gradient(135deg,#ef444420,#ef444410)", border:"1px solid #ef444444", borderRadius:10, color:"#ef4444", fontSize:12, fontWeight:800, padding:"6px 12px", cursor:"pointer", fontFamily:"inherit" }}>✕ রিসেট</button>
+                      )}
+                      {isOrdered && (
+                        <div style={{ marginLeft:"auto", background:"linear-gradient(135deg,#7c3aed,#5b21b6)", border:"1px solid #a78bfa55", borderRadius:12, padding:"10px 22px", color:"#fff", fontWeight:900, fontSize:20, minWidth:72, textAlign:"center", boxShadow:"0 4px 16px #7c3aed55", letterSpacing:1, flexShrink:0, lineHeight:1 }}>{qty}</div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
+          {/* STICKY BOTTOM */}
           <div style={{ position:"sticky", bottom:0, zIndex:50, background:"linear-gradient(0deg,#020d06 70%,transparent)", padding:"10px 14px 14px" }}>
             <div style={{ display:"flex", gap:10 }}>
-              <button onClick={()=>{
-                  if (supOrderedCount === 0) { showToast("কমপক্ষে ১টি পণ্যে পরিমাণ দিন", "#ef4444"); return; }
-                  const html = buildOrderHtml(supProducts, orderQtys, selectedOrderSupplier);
-                  savePOEntry(supProducts, orderQtys, selectedOrderSupplier);
-                  openPrintWindow(html);
-                }}
+              <button onClick={()=>{ openPrintWindow(buildOrderHtml(supProducts, orderQtys, selectedOrderSupplier)); }}
                 style={{ flex:1, background:"linear-gradient(135deg,#0369a1,#0ea5e9)", border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:15, padding:"13px 0", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:8, fontFamily:"inherit", boxShadow:"0 2px 12px #0ea5e933" }}>
-                🖨️ প্রিন্ট
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                প্রিন্ট
               </button>
-              <button onClick={()=>{
-                  if (supOrderedCount === 0) { showToast("কমপক্ষে ১টি পণ্যে পরিমাণ দিন", "#ef4444"); return; }
-                  const phone = supplierPhone(selectedOrderSupplier);
-                  savePOEntry(supProducts, orderQtys, selectedOrderSupplier);
-                  sendWhatsApp(supProducts, orderQtys, selectedOrderSupplier, phone);
-                }}
+              <button onClick={()=>sendWhatsApp(supProducts, orderQtys, selectedOrderSupplier)}
                 style={{ flex:1, background:"linear-gradient(135deg,#15803d,#22c55e)", border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:15, padding:"13px 0", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:8, fontFamily:"inherit", boxShadow:"0 2px 12px #22c55e33" }}>
-                💬 WhatsApp
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413Z"/></svg>
+                WhatsApp
               </button>
             </div>
           </div>
@@ -17145,182 +16756,50 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
       );
     }
 
-    // ══════════════════════════════════════════════════════════════════
-    // ৬) মাল্টি-সাপ্লায়ার অর্ডার পেজ — একসাথে একাধিক সাপ্লায়ারের অর্ডার তৈরি
-    // ══════════════════════════════════════════════════════════════════
-    if (invModal === 'order:by-supplier:multi') {
-      const selGroups = multiSupSel.map(name => orderSupplierGroupsAll[name]).filter(Boolean);
-      const grandOrderedCount = selGroups.reduce((s,g)=> s + g.products.filter(p=>(orderQtys[p.id]||0)>0).length, 0);
-
-      const saveAllMulti = () => {
-        let saved = 0;
-        selGroups.forEach(g => { const e = savePOEntry(g.products, orderQtys, g.name); if (e) saved++; });
-        if (saved === 0) { showToast("কোনো পণ্যে পরিমাণ দেওয়া হয়নি", "#ef4444"); return; }
-        showToast(`✅ ${saved}টি সাপ্লায়ারের ফাইল সেভ হয়েছে`, "#a78bfa");
-        setMultiSupSel([]);
-        setInvModal('order:pending');
-      };
-
-      return (
-        <div style={{ ...S.page, padding:"0 14px 16px" }}>
-          <button style={S.textBtn} onClick={() => setInvModal('order:by-supplier')}>← সাপ্লায়ার তালিকায় ফিরুন</button>
-          <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:17, marginBottom:2 }}>মাল্টি ক্রয় অর্ডার</div>
-          <div style={{ color:"#64748b", fontSize:12, marginBottom:14 }}>
-            <span style={{ color:"#1fd15e", fontWeight:700 }}>{selGroups.length}</span>টি সাপ্লায়ার নিয়ে একসাথে অর্ডার তৈরি করুন
-          </div>
-
-          <div style={{ display:"flex", flexDirection:"column", gap:18, marginBottom:16 }}>
-            {selGroups.map(g => {
-              const orderedCount = g.products.filter(p=>(orderQtys[p.id]||0)>0).length;
-              return (
-                <div key={g.name} style={{ background:"linear-gradient(135deg,#0ea5e90d,#071a0f)", border:"1px solid #0ea5e933", borderRadius:16, padding:"12px 14px" }}>
-                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
-                    <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                      <span style={{ fontSize:15 }}>🏭</span>
-                      <span style={{ color:"#e2e8f0", fontWeight:800, fontSize:14 }}>{g.name}</span>
-                      {orderedCount>0 && <span style={{ color:"#a78bfa", fontSize:11, fontWeight:700 }}>· {orderedCount}টি সিলেক্ট</span>}
-                    </div>
-                    <div style={{ display:"flex", gap:6 }}>
-                      <button onClick={()=>{ const html = buildOrderHtml(g.products, orderQtys, g.name); savePOEntry(g.products, orderQtys, g.name); openPrintWindow(html); }}
-                        style={{ background:"#0ea5e922", border:"1px solid #0ea5e955", borderRadius:8, color:"#0ea5e9", fontWeight:800, fontSize:11, padding:"5px 10px", cursor:"pointer", fontFamily:"inherit" }}>🖨️</button>
-                      <button onClick={()=>{ const phone = supplierPhone(g.name); savePOEntry(g.products, orderQtys, g.name); sendWhatsApp(g.products, orderQtys, g.name, phone); }}
-                        style={{ background:"#22c55e22", border:"1px solid #22c55e55", borderRadius:8, color:"#22c55e", fontWeight:800, fontSize:11, padding:"5px 10px", cursor:"pointer", fontFamily:"inherit" }}>💬</button>
-                    </div>
-                  </div>
-                  <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-                    {g.products.map((p, idx) => renderOrderProductCard(p, idx))}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {grandOrderedCount > 0 && (
-            <div style={{ position:"sticky", bottom:0, zIndex:50, background:"linear-gradient(0deg,#020d06 70%,transparent)", padding:"10px 0 4px" }}>
-              <button onClick={saveAllMulti}
-                style={{ width:"100%", background:"linear-gradient(135deg,#15803d,#22c55e)", border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:15, padding:"14px 0", cursor:"pointer", fontFamily:"inherit", boxShadow:"0 4px 18px #22c55e44" }}>
-                ✅ সব সাপ্লায়ারের ফাইল সেভ করুন ({selGroups.length}টি)
-              </button>
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    // ══════════════════════════════════════════════════════════════════
-    // ৭) পেন্ডিং ক্রয় অর্ডার
-    // ══════════════════════════════════════════════════════════════════
-    if (invModal === 'order:pending') {
-      return (
-        <div style={{ ...S.page, padding:"0 14px 16px" }}>
-          <button style={S.textBtn} onClick={() => setInvModal('order')}>← হাবে ফিরুন</button>
-          <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:17, marginBottom:2 }}>⏳ পেন্ডিং ক্রয় অর্ডার</div>
-          <div style={{ color:"#64748b", fontSize:12, marginBottom:14 }}>
-            পাঠানো হয়েছে কিন্তু এখনো রিসিভ হয়নি এমন <span style={{ color:"#f59e0b", fontWeight:700 }}>{pendingPOs.length}</span>টি অর্ডার
-          </div>
-
-          {pendingPOs.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>কোনো পেন্ডিং অর্ডার নেই 🎉</div>}
-
-          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-            {pendingPOs.map(po => (
-              <div key={po.id} style={{ background:"linear-gradient(135deg,#f59e0b0d,#071a0f)", border:"1px solid #f59e0b33", borderRadius:14, padding:"12px 14px" }}>
-                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8 }}>
-                  <div>
-                    <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:13.5 }}>{po.supplier}</div>
-                    <div style={{ color:"#64748b", fontSize:11, marginTop:2 }}>
-                      {po.items.length}টি পণ্য · {po.totalQty}টি আইটেম · {new Date(po.createdAt).toLocaleDateString('en-US')}
-                    </div>
-                  </div>
-                  <button onClick={()=>receiveOrder(po)}
-                    style={{ background:"linear-gradient(135deg,#15803d,#22c55e)", border:"none", borderRadius:10, color:"#fff", fontWeight:800, fontSize:12, padding:"7px 14px", cursor:"pointer", fontFamily:"inherit", flexShrink:0, whiteSpace:"nowrap" }}>
-                    ✅ রিসিভ করুন
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      );
-    }
-
-    // ══════════════════════════════════════════════════════════════════
-    // ৮) ক্রয় অর্ডার হিস্ট্রি — তারিখ ফিল্টার সহ
-    // ══════════════════════════════════════════════════════════════════
-    if (invModal === 'order:history') {
-      const filtered = poHistDate ? historyPOs.filter(po => po.dateKey === poHistDate) : historyPOs;
-      // তারিখ অনুযায়ী গ্রুপ
-      const byDate = {};
-      filtered.forEach(po => { const k = po.dateKey || "অজ্ঞাত"; (byDate[k] = byDate[k] || []).push(po); });
-      const dateKeys = Object.keys(byDate).sort((a,b)=> b.localeCompare(a));
-
-      return (
-        <div style={{ ...S.page, padding:"0 14px 16px" }}>
-          <button style={S.textBtn} onClick={() => setInvModal('order')}>← হাবে ফিরুন</button>
-          <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:17, marginBottom:2 }}>🗂️ ক্রয় অর্ডার হিস্ট্রি</div>
-          <div style={{ color:"#64748b", fontSize:12, marginBottom:10 }}>
-            মোট <span style={{ color:"#a78bfa", fontWeight:700 }}>{historyPOs.length}</span>টি অর্ডার
-          </div>
-          <div style={{ display:"flex", gap:8, marginBottom:14 }}>
-            <input
-              type="date" value={poHistDate} onChange={e=>setPoHistDate(e.target.value)}
-              style={{ flex:1, background:"#0a1f12", border:"1px solid #a78bfa44", borderRadius:10, padding:"8px 10px", color:"#e2e8f0", fontSize:13, fontFamily:"inherit" }} />
-            {poHistDate && (
-              <button onClick={()=>setPoHistDate("")}
-                style={{ background:"#a78bfa22", border:"1px solid #a78bfa55", borderRadius:10, color:"#a78bfa", fontWeight:800, fontSize:12, padding:"0 14px", cursor:"pointer", fontFamily:"inherit" }}>সব দেখুন</button>
-            )}
-          </div>
-
-          {filtered.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>এই তারিখে কোনো ক্রয় অর্ডার নেই</div>}
-
-          <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
-            {dateKeys.map(dk => (
-              <div key={dk}>
-                <div style={{ color:"#64748b", fontWeight:800, fontSize:11.5, marginBottom:8, letterSpacing:0.5 }}>
-                  📅 {dk === "অজ্ঞাত" ? dk : new Date(dk).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' })}
-                </div>
-                <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-                  {byDate[dk].map(po => {
-                    const isExpanded = historyExpandId === po.id;
-                    const isReceived = po.status === "received";
-                    return (
-                      <div key={po.id} style={{ background: isReceived ? "linear-gradient(135deg,#22c55e0d,#071a0f)" : "linear-gradient(135deg,#f59e0b0d,#071a0f)", border:`1px solid ${isReceived?"#22c55e33":"#f59e0b33"}`, borderRadius:14, padding:"12px 14px", cursor:"pointer" }}
-                        onClick={()=>setHistoryExpandId(isExpanded ? null : po.id)}>
-                        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}>
-                          <div style={{ minWidth:0 }}>
-                            <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:13.5 }}>{po.supplier}</div>
-                            <div style={{ color:"#64748b", fontSize:11, marginTop:2 }}>
-                              {po.items.length}টি পণ্য · {po.totalQty}টি আইটেম · {new Date(po.createdAt).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})}
-                            </div>
-                          </div>
-                          <span style={{ background: isReceived?"#22c55e22":"#f59e0b22", color: isReceived?"#22c55e":"#f59e0b", fontSize:10.5, fontWeight:800, borderRadius:8, padding:"3px 9px", flexShrink:0, whiteSpace:"nowrap" }}>
-                            {isReceived ? "✅ রিসিভ হয়েছে" : "⏳ পাঠানো হয়েছে"}
-                          </span>
-                        </div>
-                        {isExpanded && (
-                          <div style={{ marginTop:10, paddingTop:10, borderTop:"1px solid #ffffff10", display:"flex", flexDirection:"column", gap:5 }}>
-                            {po.items.map((it,i) => (
-                              <div key={i} style={{ display:"flex", justifyContent:"space-between", fontSize:12 }}>
-                                <span style={{ color:"#cbd5e1" }}>{i+1}. {it.name}</span>
-                                <span style={{ color:"#94a3b8", fontWeight:700 }}>{it.qty}{it.unit||""}</span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      );
-    }
-
-    // অজানা সাব-পেজ হলে হাবে ফিরে যাওয়ার বাটন দেখাও
+    // ── সাপ্লায়ার তালিকা (order main page) ──
     return (
       <div style={{ ...S.page, padding:"0 14px 16px" }}>
-        <button style={S.textBtn} onClick={() => setInvModal('order')}>← হাবে ফিরুন</button>
+        <button style={S.textBtn} onClick={() => { setInvModal(null); setOrderQtys({}); }}>← ড্যাশবোর্ডে ফিরুন</button>
+        <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:17, marginBottom:2 }}>ক্রয় অর্ডার তৈরি করুন</div>
+        <div style={{ color:"#64748b", fontSize:12, marginBottom:14 }}>
+          <span style={{ color:"#1fd15e", fontWeight:700 }}>{orderSupplierList.length}</span>টি সাপ্লায়ার · {uniqueItems.length}টি পণ্য
+        </div>
+
+        {uniqueItems.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>কোনো পণ্য নেই</div>}
+
+        <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+          {orderSupplierList.map(sup => {
+            const supOrdered = sup.products.filter(p=>(orderQtys[p.id]||0)>0).length;
+            const outCount = sup.products.filter(p=>(p.stock||0)===0).length;
+            const critCount = sup.products.filter(p=>(p.stock||0)>0&&(p.stock||0)<=(p.minStockAlert||5)).length;
+            const urgency = outCount > 0 ? "#ef4444" : critCount > 0 ? "#f59e0b" : "#1fd15e";
+            return (
+              <div key={sup.name} className="tap-card"
+                onClick={() => setInvModal(`order:supplier:${sup.name}`)}
+                style={{ background:`linear-gradient(135deg,${urgency}0d,#071a0f)`, border:`1.5px solid ${supOrdered>0?"#a78bfa66":urgency+"33"}`, borderRadius:16, padding:"14px 16px", cursor:"pointer", position:"relative", transition:"all 0.2s" }}>
+                {supOrdered > 0 && (
+                  <div style={{ position:"absolute", top:10, right:12, background:"linear-gradient(135deg,#7c3aed,#5b21b6)", borderRadius:8, padding:"3px 10px", color:"#fff", fontWeight:800, fontSize:11 }}>
+                    {supOrdered}টি অর্ডার ✓
+                  </div>
+                )}
+                <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+                  <div style={{ width:42, height:42, borderRadius:12, background:`${urgency}22`, border:`1px solid ${urgency}44`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                    <span style={{ fontSize:19 }}>🏭</span>
+                  </div>
+                  <div style={{ flex:1, minWidth:0, paddingRight: supOrdered>0 ? 80 : 0 }}>
+                    <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:14 }}>{sup.name}</div>
+                    <div style={{ display:"flex", gap:8, marginTop:4, flexWrap:"wrap" }}>
+                      <span style={{ color:urgency, fontSize:11, fontWeight:700 }}>{sup.products.length}টি পণ্য</span>
+                      {outCount > 0 && <span style={{ color:"#ef4444", fontSize:11, fontWeight:700 }}>🚫 {outCount}টি স্টক শেষ</span>}
+                      {critCount > 0 && <span style={{ color:"#f59e0b", fontSize:11, fontWeight:700 }}>⚠️ {critCount}টি ক্রিটিক্যাল</span>}
+                    </div>
+                  </div>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={urgency} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
     );
   }
@@ -19523,27 +19002,28 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
           {customer?.address && <div><b style={{ color: T.text }}>ঠিকানা:</b> {customer.address}</div>}
         </div>
         <div style={S.dashed} />
-        <div style={{ display: "flex", fontSize: 11, color: T.sub, padding: "0 8px 6px" }}>
-          <div style={{ width: 20 }}>#</div>
-          <div style={{ flex: 1 }}>পণ্য</div>
-          <div style={{ width: 46, textAlign: "right" }}>পরিমাণ</div>
-          <div style={{ width: 54, textAlign: "right" }}>দাম</div>
-          <div style={{ width: 60, textAlign: "right" }}>মোট</div>
-        </div>
-        {inv.items.map((item, idx) => (
-          <div key={item.productId || item.id} style={{
-            display: "flex", alignItems: "center", padding: "7px 8px",
-            border: `1.5px solid ${T.border}`, borderRadius: 8,
-            marginBottom: idx < inv.items.length - 1 ? 6 : 0,
-            background: idx % 2 === 1 ? T.cardAlt : "transparent",
-          }}>
-            <div style={{ width: 20, color: T.sub, fontSize: 11 }}>{idx+1}</div>
-            <div style={{ flex: 1, color: T.text, fontSize: 12, paddingRight: 4 }}>{item.name}</div>
-            <div style={{ width: 46, color: T.text, fontSize: 12, textAlign: "right" }}>{item.qty}</div>
-            <div style={{ width: 54, color: T.text, fontSize: 12, textAlign: "right" }}>৳{item.price}</div>
-            <div style={{ width: 60, color: T.text, fontSize: 12, fontWeight: 700, textAlign: "right" }}>৳{fmt(item.qty * item.price)}</div>
-          </div>
-        ))}
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              <th style={{ color: T.sub, fontSize: 11, textAlign: "left", paddingBottom: 8, width: 24 }}>#</th>
+              <th style={{ color: T.sub, fontSize: 11, textAlign: "left", paddingBottom: 8 }}>পণ্য</th>
+              <th style={{ color: T.sub, fontSize: 11, textAlign: "right", paddingBottom: 8 }}>পরিমাণ</th>
+              <th style={{ color: T.sub, fontSize: 11, textAlign: "right", paddingBottom: 8 }}>দাম</th>
+              <th style={{ color: T.sub, fontSize: 11, textAlign: "right", paddingBottom: 8 }}>মোট</th>
+            </tr>
+          </thead>
+          <tbody>
+            {inv.items.map((item, idx) => (
+              <tr key={item.productId || item.id}>
+                <td style={{ color: T.sub, fontSize: 11, padding: "5px 0", borderBottom: `1px solid ${T.border}33` }}>{idx+1}</td>
+                <td style={{ color: T.text, fontSize: 12, padding: "5px 0", borderBottom: `1px solid ${T.border}33` }}>{item.name}</td>
+                <td style={{ color: T.text, fontSize: 12, padding: "5px 0", borderBottom: `1px solid ${T.border}33`, textAlign: "right" }}>{item.qty}</td>
+                <td style={{ color: T.text, fontSize: 12, padding: "5px 0", borderBottom: `1px solid ${T.border}33`, textAlign: "right" }}>৳{item.price}</td>
+                <td style={{ color: T.text, fontSize: 12, padding: "5px 0", borderBottom: `1px solid ${T.border}33`, textAlign: "right" }}>৳{fmt(item.qty * item.price)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
         <div style={S.dashed} />
         {((inv.discount||0) > 0 || (inv.extraCharge||0) > 0) && (
           <>
@@ -23069,8 +22549,9 @@ function DailyNotifCard({ S, T = {}, shopName, showToast, customers = [], invoic
     } catch (e) {
       console.warn("Notif send failed:", e?.message || e);
       const log = (window.__notifLog || []).join("\n") || "(কোনো log নেই — send() শুরুই হয়নি)";
+      const hbReport = getHeartbeatReport(15000);
       try { showToast("নোটিফিকেশন পাঠানো যায়নি: " + (e?.message || e), "#ef4444"); } catch {}
-      try { window.alert("টেস্ট নোটিফিকেশন এরর (id=" + freshId + "): " + (e?.message || e) + "\n\n📋 টাইমিং লগ:\n" + log); } catch {}
+      try { window.alert("টেস্ট নোটিফিকেশন এরর (id=" + freshId + "): " + (e?.message || e) + "\n\n💓 " + hbReport + "\n\n📋 টাইমিং লগ:\n" + log); } catch {}
     }
   };
 
