@@ -11268,6 +11268,7 @@ function SmartBusinessMgmt() {
               setProducts={setProducts}
               setStockMovements={setStockMovements}
               setPurchaseOrders={setPurchaseOrders}
+              stockMovements={stockMovements}
               cashLogs={cashLogs}
               setCashLogs={setCashLogs}
               reorderAlerts={reorderAlerts}
@@ -12854,7 +12855,6 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
   const [note,       setNote]       = useState("");
   const [discount,   setDiscount]   = useState(""); // টাকায় ডিসকাউন্ট
   const [discountPct, setDiscountPct] = useState(0); // % ডিসকাউন্ট (স্ট্যাকেবল)
-  const [redeemedPoints, setRedeemedPoints] = useState(0); // 🏆 loyalty point থেকে redeem করা amount
   const [extraCharge, setExtraCharge] = useState(""); // অতিরিক্ত চার্জ (৳)
   const [creating,   setCreating]   = useState(false);
   const [printInv,   setPrintInv]   = useState(null);
@@ -13148,24 +13148,6 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       selfUseCost,
     };
     setInvoices(prev => [inv, ...prev]);
-
-    // ── 🏆 Loyalty Points: earn (প্রতি ৳১০০-এ ১ পয়েন্ট) + redeem deduct একসাথে ──
-    // walk-in/self-use বাদে — শুধু নিবন্ধিত কাস্টমার পয়েন্ট পাবে/ব্যবহার করতে পারবে
-    if (!isWalkIn && !isSelfUse && selCust?.id) {
-      const earnedPoints = Math.floor((inv.total || 0) / 100);
-      if (earnedPoints > 0 || redeemedPoints > 0) {
-        setCustomers(prev => prev.map(c =>
-          c.id === selCust.id
-            ? { ...c, loyaltyPoints: Math.max(0, (c.loyaltyPoints || 0) - redeemedPoints + earnedPoints) }
-            : c
-        ));
-      }
-      if (redeemedPoints > 0) {
-        inv.redeemedPoints = redeemedPoints;
-        inv.redeemedValue  = Math.floor(redeemedPoints / 100) * 50;
-      }
-      if (earnedPoints > 0) inv.earnedPoints = earnedPoints;
-    }
 
     // ── 🔴 Invoice push fix — আগে invoice শুধু local array-তে থাকত, Firestore-এ
     // কখনো সরাসরি push হতো না (শুধু windowed listener ছিল, যেটা read-only)।
@@ -14209,60 +14191,6 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                 </>
               )}
             </div>
-
-            {/* 🏆 Loyalty Points Redeem — নিবন্ধিত কাস্টমারের জন্য */}
-            {!isSelfUse && !isWalkIn && selCust?.id && (selCust.loyaltyPoints || 0) >= 100 && (
-              <div className="qc-gradient-card" style={{ ...S.card, marginBottom:10, padding:"10px 14px",
-                border:"1.5px solid #fbbf2444", background:"linear-gradient(135deg,#78350f12,#fbbf2410)" }}>
-                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                    <span style={{ fontSize:18 }}>🏆</span>
-                    <div>
-                      <div style={{ color:"#fbbf24", fontWeight:800, fontSize:12 }}>
-                        {selCust.name}-এর পয়েন্ট: {selCust.loyaltyPoints || 0}
-                      </div>
-                      <div style={{ color:T.sub, fontSize:10, marginTop:1 }}>
-                        ১০০ পয়েন্ট = ৳৫০ ছাড় · ব্যবহারযোগ্য: ৳{Math.floor((selCust.loyaltyPoints||0)/100)*50}
-                      </div>
-                    </div>
-                  </div>
-                  {redeemedPoints === 0 ? (
-                    <button
-                      onClick={() => {
-                        const maxRedeemable = Math.floor((selCust.loyaltyPoints || 0) / 100) * 100;
-                        const redeemValue = Math.floor(maxRedeemable / 100) * 50; // ১০০pt = ৫০৳
-                        const finalRedeemValue = Math.min(redeemValue, subtotal); // discount subtotal-এর বেশি না হয়
-                        const finalRedeemPoints = Math.floor(finalRedeemValue / 50) * 100;
-                        setRedeemedPoints(finalRedeemPoints);
-                        setDiscountPct(0);
-                        setDiscount(prev => (parseFloat(prev)||0) + finalRedeemValue);
-                      }}
-                      style={{ background:"linear-gradient(135deg,#d97706,#fbbf24)", border:"none",
-                        borderRadius:10, padding:"7px 14px", color:"#fff", fontWeight:800, fontSize:11,
-                        cursor:"pointer", fontFamily:"inherit", flexShrink:0 }}>
-                      ব্যবহার করুন
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => {
-                        const redeemValue = Math.floor(redeemedPoints / 100) * 50;
-                        setDiscount(prev => Math.max(0, (parseFloat(prev)||0) - redeemValue));
-                        setRedeemedPoints(0);
-                      }}
-                      style={{ background:"#ef444422", border:"1px solid #ef444444",
-                        borderRadius:10, padding:"7px 14px", color:"#ef4444", fontWeight:800, fontSize:11,
-                        cursor:"pointer", fontFamily:"inherit", flexShrink:0 }}>
-                      ✕ বাতিল
-                    </button>
-                  )}
-                </div>
-                {redeemedPoints > 0 && (
-                  <div style={{ marginTop:6, color:"#22c55e", fontSize:11, fontWeight:700 }}>
-                    ✅ {redeemedPoints} পয়েন্ট ব্যবহার হয়েছে (৳{Math.floor(redeemedPoints/100)*50} ছাড়)
-                  </div>
-                )}
-              </div>
-            )}
 
             {/* Discount + Extra Charge — পাশাপাশি */}
             {!isSelfUse && (
@@ -15641,13 +15569,84 @@ function DashPurchaseEntryModal({ T, S, products, setProducts, setStockMovements
 }
 
 // ── Dashboard ──────────────────────────────────────────────────────────────────
-function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, currentUser, onGoToPurchaseEntry, setProducts, setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false }) {
+function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, currentUser, onGoToPurchaseEntry, setProducts, stockMovements = [], setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false }) {
   const [viewInv,    setViewInv]    = useState(null);
   const [viewPayInv, setViewPayInv] = useState(null);
   const [listDate,   setListDate]   = useState(() => todayEn()); // YYYY-MM-DD
   // invModal is lifted to parent (SmartBusinessMgmt) for back-button support
   const [orderQtys,  setOrderQtys]  = useState({});
   const [voidConfirm, setVoidConfirm] = useState(null);
+  // ── মেয়াদোত্তীর্ণ পণ্য → দোকান থেকে সরালে অ্যাপ থেকেও সরানোর ব্যবস্থা ──────────
+  const [expRemoveConfirm, setExpRemoveConfirm] = useState(null); // { product, batch }
+  const [expRemoveToast,   setExpRemoveToast]   = useState(null);
+  // মাসিক মেয়াদোত্তীর্ণ হিসাব — নির্দিষ্ট মাসের জন্য (Firestore থাকলে) সম্পূর্ণ ইতিহাস আনা হয়, নাহলে লোকাল stockMovements থেকে
+  const [expMonthlyFetch, setExpMonthlyFetch] = useState({ key: null, rows: null });
+
+  const showExpToast = (msg, color = "#ef4444") => { setExpRemoveToast({ msg, color }); setTimeout(() => setExpRemoveToast(null), 2600); };
+
+  // ব্যাচ-সচেতন: product.batches থাকলে batch-ভিত্তিক, না থাকলে পুরনো single-expiry ফিল্ড থেকে
+  const getExpiredBatchesOf = (product, now = new Date()) => {
+    if (product?.batches && product.batches.length > 0) {
+      return product.batches
+        .filter(b => (b.qty || 0) > 0 && b.expiryDate && new Date(b.expiryDate) < now)
+        .map(b => ({ batchNo: b.batchNo || "", qty: b.qty || 0, costPrice: (b.costPrice != null ? b.costPrice : product.costPrice) || 0, expiryDate: b.expiryDate }));
+    }
+    if (product?.expiryDate && (product.stock || 0) > 0 && new Date(product.expiryDate) < now) {
+      return [{ batchNo: "", qty: product.stock || 0, costPrice: product.costPrice || 0, expiryDate: product.expiryDate }];
+    }
+    return [];
+  };
+
+  // দোকান থেকে সরানো হয়েছে → অ্যাপ থেকেও ব্যাচ/স্টক সরানো + স্টক-মুভমেন্ট লগ (মাসিক হিসাবের উৎস)
+  const removeExpiredBatch = (product, batch) => {
+    const qty   = batch.qty || 0;
+    const value = Math.round(qty * (batch.costPrice || 0) * 100) / 100;
+    const dateKey = todayEn(); // GMT+6 (BD) অনুযায়ী আজকের dateKey
+    const nowIso  = new Date().toISOString();
+    setProducts(prev => prev.map(p => {
+      if (p.id !== product.id) return p;
+      if (p.batches && p.batches.length > 0) {
+        const remainingBatches = p.batches.filter(b => !(((b.batchNo || "") === (batch.batchNo || "")) && b.expiryDate === batch.expiryDate));
+        const newStock = remainingBatches.reduce((s, b) => s + (b.qty || 0), 0);
+        return { ...p, batches: remainingBatches, stock: newStock, lastUpdated: nowIso };
+      }
+      return { ...p, stock: 0, expiryDate: "", lastUpdated: nowIso }; // legacy single-batch পণ্য
+    }));
+    const mv = {
+      id: "sm_exp_" + uid(), productId: product.id, productName: product.name,
+      stock: 0, prevStock: product.stock || 0, delta: -qty,
+      at: nowIso, dateKey, monthKey: dateKey.slice(0, 7),
+      source: "expired_removal",
+      costPrice: batch.costPrice || 0, qty, value, expiryDate: batch.expiryDate || "",
+      batchNo: batch.batchNo || "", unit: product.unit || "", by: currentUser?.name || "এডমিন",
+    };
+    pushStockMovement(mv);
+    setStockMovements(prev => [mv, ...(prev || [])]);
+    setExpRemoveConfirm(null);
+    showExpToast(`✅ ${product.name} — মেয়াদোত্তীর্ণ ব্যাচ (${qty}${product.unit || ""}) দোকান ও অ্যাপ থেকে সরানো হয়েছে`, "#22c55e");
+  };
+
+  // মাসিক মেয়াদোত্তীর্ণ হিসাব পেজ খোলা হলে — লোকাল stockMovements windowed (৩০ দিন) হতে পারে,
+  // তাই Firebase থাকলে সম্পূর্ণ ইতিহাস (source == "expired_removal") on-demand আনা হয় (cashHistFull-এর মতো প্যাটার্ন)
+  React.useEffect(() => {
+    if (!(invModal === 'expired-monthly' || (invModal && invModal.startsWith('expired-monthly:'))) || !fssReady || !FSS._db) return;
+    let cancelled = false;
+    setExpMonthlyFetch({ key: 'all', rows: null });
+    (async () => {
+      try {
+        const colRef = collection(FSS._db, "stockMovements");
+        const q = query(colRef, where("source", "==", "expired_removal"), orderBy("dateKey", "desc"));
+        const snap = await getDocs(q);
+        if (cancelled) return;
+        setExpMonthlyFetch({ key: 'all', rows: snap.docs.map(d => ({ id: d.id, ...d.data() })) });
+      } catch (err) {
+        // Firestore ইনডেক্স না থাকলে বা অফলাইনে — লোকাল windowed stockMovements-এই fallback
+        if (!cancelled) setExpMonthlyFetch({ key: 'all', rows: null });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [invModal, fssReady]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // product-profit-loss মডালের accordion state — Rules of Hooks: top-level এ রাখতে হবে
   const [expandedKeys, setExpandedKeys] = useState({});
   const toggleExpand = (key) => setExpandedKeys(prev => ({ ...prev, [key]: !prev[key] }));
@@ -16347,6 +16346,37 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     );
   }
 
+  // ── 🗑️ মেয়াদোত্তীর্ণ ব্যাচ সরানোর নিশ্চিতকরণ পেজ (এডমিন-only অ্যাকশন) — সবচেয়ে বেশি অগ্রাধিকার ─────
+  if (expRemoveConfirm) {
+    const { product, batch } = expRemoveConfirm;
+    const value = Math.round((batch.qty || 0) * (batch.costPrice || 0));
+    return (
+      <div style={{ ...S.page, padding:"0 14px 16px" }}>
+        <button style={S.textBtn} onClick={() => setExpRemoveConfirm(null)}>← ফিরুন</button>
+        <div style={{ background:"linear-gradient(135deg,#7f1d1d,#450a0a)", border:"1.5px solid #ef444455", borderRadius:18, padding:"22px 18px", textAlign:"center", marginTop:10 }}>
+          <div style={{ fontSize:36, marginBottom:10 }}>⚠️</div>
+          <div style={{ color:"#fff", fontWeight:900, fontSize:16, marginBottom:6 }}>{product.name}</div>
+          <div style={{ color:"#fca5a5", fontSize:13, fontWeight:700, marginBottom:14 }}>
+            মেয়াদোত্তীর্ণ ব্যাচ {batch.batchNo ? `(${batch.batchNo}) ` : ""}— {batch.qty}{product.unit||""} · মূল্য ৳{fmt(value)}
+          </div>
+          <div style={{ color:"#fecaca", fontSize:12.5, lineHeight:1.7, marginBottom:20 }}>
+            পণ্যটি দোকান থেকে সরিয়ে ফেলে থাকলে নিশ্চিত করুন — এই ব্যাচ স্টক থেকে স্থায়ীভাবে বাদ যাবে এবং মাসিক মেয়াদোত্তীর্ণ হিসাবে যোগ হবে। এই কাজ ফিরিয়ে নেওয়া যাবে না।
+          </div>
+          <div style={{ display:"flex", gap:10 }}>
+            <button onClick={() => setExpRemoveConfirm(null)}
+              style={{ flex:1, background:"#ffffff18", border:"1px solid #ffffff33", borderRadius:12, padding:"13px", color:"#fff", fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}>
+              বাতিল
+            </button>
+            <button onClick={() => removeExpiredBatch(product, batch)}
+              style={{ flex:1, background:"linear-gradient(135deg,#dc2626,#ef4444)", border:"none", borderRadius:12, padding:"13px", color:"#fff", fontWeight:900, fontSize:13, cursor:"pointer", fontFamily:"inherit", boxShadow:"0 4px 14px rgba(239,68,68,0.4)" }}>
+              ✅ নিশ্চিত, সরান
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // ── সাপ্লায়ার তালিকা পেজ ──
   if (invModal === 'supplier') {
     // সব পণ্যের সাপ্লায়ার গ্রুপ করো
@@ -16488,6 +16518,11 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
       return (
         <div style={{ ...S.page, padding:"0 14px 16px" }}>
           <button style={S.textBtn} onClick={closeSupplier}>← সাপ্লায়ার তালিকায় ফিরুন</button>
+          {expRemoveToast && (
+            <div style={{ background: expRemoveToast.color === "#22c55e" ? "#14532d" : "#7f1d1d", border:`1px solid ${expRemoveToast.color}55`, borderRadius:12, padding:"10px 14px", marginBottom:10, color:"#fff", fontSize:12.5, fontWeight:700 }}>
+              {expRemoveToast.msg}
+            </div>
+          )}
           <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:4 }}>
             <div style={{ width:38, height:38, borderRadius:10, background:`${accent}22`, border:`1px solid ${accent}44`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:18 }}>🏭</div>
             <div>
@@ -16540,6 +16575,23 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
                     {p.costPrice ? <span style={{ color:"#f59e0b", fontSize:10 }}>ক্রয়: ৳{p.costPrice}</span> : null}
                     {p.price ? <span style={{ color:"#1fd15e", fontSize:10 }}>বিক্রয়: ৳{p.price}</span> : null}
                   </div>
+                  {/* 🗑️ মেয়াদোত্তীর্ণ ব্যাচ সরান — শুধু এডমিন, শুধু 'expired' লিস্টে */}
+                  {baseInvKey === 'expired' && currentUser?.role !== "staff" && (() => {
+                    const expBatches = getExpiredBatchesOf(p, now);
+                    if (expBatches.length === 0) return null;
+                    return (
+                      <div style={{ marginTop:8, display:"flex", flexDirection:"column", gap:5 }}>
+                        {expBatches.map((b, bi) => (
+                          <button key={bi}
+                            onClick={() => setExpRemoveConfirm({ product: p, batch: b })}
+                            style={{ display:"flex", alignItems:"center", justifyContent:"space-between", background:"#ef444414", border:"1px solid #ef444440", borderRadius:10, padding:"7px 10px", color:"#f87171", fontSize:11, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
+                            <span>🗑️ দোকান থেকে সরানো হয়েছে — অ্যাপ থেকেও সরান {b.batchNo ? `(${b.batchNo})` : ""}</span>
+                            <span>{b.qty}{p.unit||""} · ৳{fmt(Math.round((b.qty||0)*(b.costPrice||0)))}</span>
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })}
@@ -16563,6 +16615,14 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
         <button style={S.textBtn} onClick={() => setInvModal(null)}>← ড্যাশবোর্ডে ফিরুন</button>
         <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:16, marginBottom:2 }}>{title}</div>
         <div style={{ color:"#64748b", fontSize:12, marginBottom:10 }}>{items.length}টি পণ্য · {supplierList.length}টি সাপ্লায়ার</div>
+
+        {/* মাসিক মেয়াদোত্তীর্ণ হিসাব — শুধু এডমিন */}
+        {baseInvKey === 'expired' && currentUser?.role !== "staff" && (
+          <button onClick={() => setInvModal('expired-monthly')}
+            style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"center", gap:7, background:"linear-gradient(135deg,#7c2d12,#dc2626)", border:"none", borderRadius:12, padding:"11px", color:"#fff", fontWeight:800, fontSize:12.5, cursor:"pointer", fontFamily:"inherit", marginBottom:12, boxShadow:"0 4px 14px rgba(220,38,38,0.3)" }}>
+            📊 মাসিক মেয়াদোত্তীর্ণ হিসাব দেখুন
+          </button>
+        )}
 
         {/* Print/WA */}
         {items.length > 0 && (
@@ -16610,6 +16670,99 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
               </div>
             );
           })}
+        </div>
+      </div>
+    );
+  }
+
+  // ── 📊 মাসিক মেয়াদোত্তীর্ণ হিসাব — ইংরেজি মাস অনুযায়ী (GMT+6) ─────────────────
+  if (invModal === 'expired-monthly' || (invModal && invModal.startsWith('expired-monthly:'))) {
+    const useFull = expMonthlyFetch.key === 'all' && expMonthlyFetch.rows;
+    const removalRows = useFull ? expMonthlyFetch.rows : (stockMovements || []).filter(m => m.source === 'expired_removal');
+    const loadingFull = fssReady && !!FSS._db && expMonthlyFetch.key === 'all' && expMonthlyFetch.rows === null;
+
+    const MONTH_NAMES_BN_EN = ["জানুয়ারি","ফেব্রুয়ারি","মার্চ","এপ্রিল","মে","জুন","জুলাই","আগস্ট","সেপ্টেম্বর","অক্টোবর","নভেম্বর","ডিসেম্বর"];
+    const monthLabel = (mk) => { const [y,m] = (mk||"").split("-"); return m ? `${MONTH_NAMES_BN_EN[parseInt(m,10)-1]} ${y}` : mk; };
+
+    const byMonth = {};
+    removalRows.forEach(r => {
+      const mk = r.monthKey || (r.dateKey ? r.dateKey.slice(0,7) : "");
+      if (!mk) return;
+      if (!byMonth[mk]) byMonth[mk] = { key: mk, qty:0, value:0, rows:[] };
+      byMonth[mk].qty   += (r.qty || 0);
+      byMonth[mk].value += (r.value || 0);
+      byMonth[mk].rows.push(r);
+    });
+    const months = Object.values(byMonth).sort((a,b) => b.key.localeCompare(a.key));
+
+    const selMonthKey = invModal.includes(":") ? invModal.split(":")[1] : null;
+
+    // ── নির্দিষ্ট মাসের বিস্তারিত (দিন-ভিত্তিক লিস্ট + Print/WhatsApp) ──
+    if (selMonthKey) {
+      const m = byMonth[selMonthKey] || { key: selMonthKey, qty:0, value:0, rows:[] };
+      const sortedRows = [...m.rows].sort((a,b) => (b.dateKey||"").localeCompare(a.dateKey||"") || (b.at||"").localeCompare(a.at||""));
+      const waText = `*${shopName}*\nমেয়াদোত্তীর্ণ পণ্যের মাসিক হিসাব — ${monthLabel(selMonthKey)}\nমোট: ${m.qty}টি · মূল্য ৳${fmt(m.value)}\n\n` +
+        sortedRows.map((r,i) => `${i+1}. ${r.productName} — ${r.qty}${r.unit||""} · ৳${fmt(r.value||0)} · ${r.dateKey}`).join("\n");
+      const pdfRows = sortedRows.map((r,i) => `<tr><td class="serial">${i+1}</td><td>${r.productName}</td><td class="num">${r.qty}${r.unit||""}</td><td class="num">৳${fmt(r.value||0)}</td><td class="num">${r.dateKey}</td></tr>`).join("");
+      const pdfHtml = buildPdfHtml(`<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্য</th><th class="num">পরিমাণ</th><th class="num">মূল্য</th><th class="num">তারিখ</th></tr></thead><tbody>${pdfRows}</tbody></table></div>`, shopName, `মেয়াদোত্তীর্ণ পণ্যের হিসাব — ${monthLabel(selMonthKey)}`);
+      return (
+        <div style={{ ...S.page, padding:"0 14px 16px" }}>
+          <button style={S.textBtn} onClick={() => setInvModal('expired-monthly')}>← মাসের তালিকায় ফিরুন</button>
+          <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:16, marginBottom:2 }}>{monthLabel(selMonthKey)} — মেয়াদোত্তীর্ণ পণ্যের হিসাব</div>
+          <div style={{ color:"#64748b", fontSize:12, marginBottom:12 }}>{m.qty}টি পণ্য · মোট মূল্য ৳{fmt(m.value)}</div>
+          {sortedRows.length > 0 && (
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:14 }}>
+              <button onClick={() => window.open(`https://wa.me/?text=${encodeURIComponent(waText)}`, "_blank")}
+                style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"linear-gradient(135deg,#065f46,#22c55e)", color:"#fff", border:"none", borderRadius:12, padding:"11px 8px", fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}>
+                📤 WhatsApp
+              </button>
+              <button onClick={() => printPdfHtml(pdfHtml)}
+                style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"linear-gradient(135deg,#1e40af,#3b82f6)", color:"#fff", border:"none", borderRadius:12, padding:"11px 8px", fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}>
+                🖨️ Print
+              </button>
+            </div>
+          )}
+          {sortedRows.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>এই মাসে কোনো মেয়াদোত্তীর্ণ পণ্য সরানো হয়নি</div>}
+          <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+            {sortedRows.map((r, i) => (
+              <div key={r.id || i} style={{ background:"#071a0f", border:"1px solid #ef444422", borderRadius:14, padding:"11px 14px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <div>
+                  <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:13.5 }}>{r.productName}</div>
+                  <div style={{ color:"#64748b", fontSize:10.5, marginTop:2 }}>{r.dateKey} {r.batchNo ? `· ${r.batchNo}` : ""}</div>
+                </div>
+                <div style={{ textAlign:"right" }}>
+                  <div style={{ color:"#f87171", fontWeight:900, fontSize:14 }}>৳{fmt(r.value||0)}</div>
+                  <div style={{ color:"#94a3b8", fontSize:10.5 }}>{r.qty}{r.unit||""}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    // ── মাসভিত্তিক তালিকা (মূল পেজ) ──
+    return (
+      <div style={{ ...S.page, padding:"0 14px 16px" }}>
+        <button style={S.textBtn} onClick={() => setInvModal('expired')}>← ফিরুন</button>
+        <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:16, marginBottom:2 }}>মাসিক মেয়াদোত্তীর্ণ হিসাব</div>
+        <div style={{ color:"#64748b", fontSize:12, marginBottom:12 }}>ইংরেজি মাস অনুযায়ী (GMT+6) — যা সরানো হয়েছে তার হিসাব</div>
+        {loadingFull && <div style={{ color:"#64748b", textAlign:"center", marginTop:20, fontSize:13 }}>সম্পূর্ণ ইতিহাস লোড হচ্ছে…</div>}
+        {!loadingFull && months.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>এখনো কোনো মেয়াদোত্তীর্ণ পণ্য সরানো হয়নি</div>}
+        <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+          {months.map(m => (
+            <div key={m.key} className="tap-card" onClick={() => setInvModal(`expired-monthly:${m.key}`)}
+              style={{ background:"linear-gradient(135deg,#ef44440d,#071a0f)", border:"1.5px solid #ef444433", borderRadius:16, padding:"14px 16px", cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+              <div>
+                <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:14 }}>{monthLabel(m.key)}</div>
+                <div style={{ color:"#94a3b8", fontSize:11, marginTop:3 }}>{m.qty}টি পণ্য মেয়াদোত্তীর্ণ হয়ে সরানো হয়েছে</div>
+              </div>
+              <div style={{ textAlign:"right" }}>
+                <div style={{ color:"#f87171", fontWeight:900, fontSize:16 }}>৳{fmt(m.value)}</div>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.5" strokeLinecap="round" style={{ marginTop:4 }}><polyline points="9 18 15 12 9 6"/></svg>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     );
@@ -17395,6 +17548,9 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
             {rangedItems.map((inv, i) => {
               // payType অনুযায়ী card accent color
               const isVoided   = inv.status === "voided";
+              // 🔒 Admin-only: প্রতিটি ইনভয়েস কার্ডে নেট লাভ — স্টাফ দেখতে পাবে না, শুধু ইনভয়েস দেখতে পারবে
+              const _showNetProfit = currentUser?.role !== "staff" && !isVoided;
+              const _cardNetProfit = _showNetProfit ? calcInvoiceProfit(inv, _cashProdMap) : 0;
               const isBaki     = !isVoided && inv.payType === "baki";
               const isPartial  = !isVoided && inv.payType === "partial";
               const isCash     = !isVoided && inv.payType === "cash";
@@ -17419,6 +17575,19 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
               })();
               return (
               <div key={inv.id || i} style={{ ...S.card, marginBottom: 0, padding: "12px 14px", background: cardBg, border: `1.5px solid ${cardBorder}`, borderRadius: 16, boxShadow: isVoided ? "none" : `0 0 0 1px ${cardBorder}22, 0 4px 16px ${cardBorder}22` }}>
+                {_showNetProfit && (
+                  <div style={{
+                    display:"flex", justifyContent:"space-between", alignItems:"center",
+                    marginBottom:8, padding:"5px 10px", borderRadius:9,
+                    background: _cardNetProfit >= 0 ? "#22c55e18" : "#ef444418",
+                    border: `1px solid ${_cardNetProfit >= 0 ? "#22c55e33" : "#ef444433"}`,
+                  }}>
+                    <span style={{ color:"#94a3b8", fontSize:9.5, fontWeight:800, letterSpacing:0.3 }}>🔒 নেট লাভ (শুধু এডমিন)</span>
+                    <span style={{ color: _cardNetProfit >= 0 ? "#4ade80" : "#f87171", fontWeight:900, fontSize:12.5 }}>
+                      {_cardNetProfit >= 0 ? "+" : "−"}৳{fmt(Math.abs(Number(_cardNetProfit.toFixed(2))))}
+                    </span>
+                  </div>
+                )}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <div style={{ ...S.avatar, width: 34, height: 34, fontSize: 13,
@@ -17934,10 +18103,7 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
         : daysSince > 60 && (c.balance || 0) > 0 ? "at_risk"
         : daysSince <= 30 ? "active"
         : "inactive";
-      const loyaltyTier = (c.loyaltyPoints || 0) >= 1000 ? "🥇"
-        : (c.loyaltyPoints || 0) >= 300 ? "🥈"
-        : (c.loyaltyPoints || 0) >= 100 ? "🥉" : null;
-      return { ...c, ltv, frequency, daysSince, avgOrder, riskScore, segment, recentPaid, loyaltyTier };
+      return { ...c, ltv, frequency, daysSince, avgOrder, riskScore, segment, recentPaid };
     }).sort((a, b) => b.ltv - a.ltv);
   }, [customers, invoices, txns]);
 
@@ -18216,9 +18382,6 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
                     {SEGMENTS[rfm.segment]?.icon} {SEGMENTS[rfm.segment]?.label}
                   </div>
                 )}
-                {rfm?.loyaltyTier && (
-                  <div style={{ fontSize:13, marginTop:2 }}>{rfm.loyaltyTier}</div>
-                )}
               </div>
             </div>
             {/* Action row */}
@@ -18368,19 +18531,6 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
             {customer.mobile && <div style={{ color:"#93c5fd", fontSize:11, fontWeight:700 }}>
               {customer.mobile}
             </div>}
-            {(customer.loyaltyPoints || 0) > 0 && (() => {
-              const pts = customer.loyaltyPoints || 0;
-              const tier = pts >= 1000 ? { label:"গোল্ড", icon:"🥇", color:"#fbbf24" }
-                : pts >= 300 ? { label:"সিলভার", icon:"🥈", color:"#cbd5e1" }
-                : { label:"ব্রোঞ্জ", icon:"🥉", color:"#d97706" };
-              return (
-                <div style={{ display:"flex", alignItems:"center", gap:5, marginTop:4 }}>
-                  <span style={{ fontSize:11 }}>{tier.icon}</span>
-                  <span style={{ color:tier.color, fontSize:11, fontWeight:800 }}>{pts} পয়েন্ট</span>
-                  <span style={{ color:"#64748b", fontSize:10 }}>({tier.label})</span>
-                </div>
-              );
-            })()}
           </div>
           {/* Balance badge */}
           <div style={{ background: customer.balance > 0 ? "linear-gradient(135deg,#7f1d1d55,#ef444433)" : "linear-gradient(135deg,#14532d55,#22c55e33)", border:`1.5px solid ${customer.balance > 0 ? "#ef444455" : "#22c55e55"}`, borderRadius:12, padding:"6px 10px", textAlign:"center", flexShrink:0 }}>
@@ -18923,8 +19073,6 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
         <div class="info-row" style="border-top:1px dashed #ccc;padding-top:8px;margin-top:8px;"><span class="info-label" style="color:#f59e0b;font-weight:700;">পূর্বের বাকি:</span><span class="info-val" style="color:#f59e0b;font-weight:700;">৳${fmtMoney(inv.prevBalance||0)}</span></div>
         <div class="info-row"><span class="info-label" style="color:#ef4444;font-weight:800;">বর্তমান বাকি:</span><span class="info-val" style="color:#ef4444;font-size:16px;font-weight:800;">৳${fmtMoney((inv.prevBalance||0)+(inv.bakiAmount||0)-(inv.overpayAmount||0))}</span></div>
         ` : ""}
-        ${inv.redeemedPoints > 0 ? `<div class="info-row"><span class="info-label" style="color:#fbbf24;">পয়েন্ট ব্যবহার:</span><span class="info-val" style="color:#fbbf24;">${inv.redeemedPoints} পয়েন্ট (– ৳${inv.redeemedValue||0})</span></div>` : ""}
-        ${inv.earnedPoints > 0 ? `<div class="info-row"><span class="info-label" style="color:#22c55e;">অর্জিত পয়েন্ট:</span><span class="info-val" style="color:#22c55e;">+${inv.earnedPoints}</span></div>` : ""}
         ${inv.note?`<div class="info-row"><span class="info-label">নোট:</span><span class="info-val">${inv.note}</span></div>`:""}
       </div>`;
     const html = buildPdfHtml(content, shopName, `${isBuyer?"ক্রেতার":"বিক্রেতার"} ইনভয়েস`);
@@ -19067,21 +19215,6 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
           <span>পরিশোধ পদ্ধতি</span>
           <span>{inv.payType === "baki" ? "বাকি" : inv.payType === "partial" ? "আংশিক" : "নগদ"}</span>
         </div>
-        {(inv.redeemedPoints > 0 || inv.earnedPoints > 0) && (
-          <div style={{ display:"flex", flexDirection:"column", gap:2, marginTop:6, padding:"8px 10px",
-            background:"#fbbf2412", borderRadius:10, border:"1px solid #fbbf2430" }}>
-            {inv.redeemedPoints > 0 && (
-              <div style={{ display:"flex", justifyContent:"space-between", color:"#fbbf24", fontSize:12, fontWeight:700 }}>
-                <span>🏆 পয়েন্ট ব্যবহার</span><span>{inv.redeemedPoints}pt (–৳{inv.redeemedValue||0})</span>
-              </div>
-            )}
-            {inv.earnedPoints > 0 && (
-              <div style={{ display:"flex", justifyContent:"space-between", color:"#22c55e", fontSize:12, fontWeight:700 }}>
-                <span>✨ অর্জিত পয়েন্ট</span><span>+{inv.earnedPoints}pt</span>
-              </div>
-            )}
-          </div>
-        )}
         {(inv.payType === "baki" || inv.payType === "partial" || (inv.prevBalance||0) > 0) && (
           <>
             <div style={{ borderTop: `1px dashed ${T.border}`, marginTop: 8, paddingTop: 8 }} />
