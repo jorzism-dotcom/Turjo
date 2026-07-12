@@ -2393,82 +2393,34 @@ function QRStaffScanner({ onResult, onManualFallback }) {
 }
 
 
-// ─── 🔎 Main-thread heartbeat detector ──────────────────────────────────────
-// প্রতি ৩০০ms-এ একবার টাইমস্ট্যাম্প রেকর্ড করে (নোটিফিকেশন সিস্টেম থেকে সম্পূর্ণ
-// স্বাধীন, অ্যাপ লোড হওয়ার সাথে সাথেই শুরু হয়)। যদি কোনো কারণে JS main thread
-// কয়েক সেকেন্ডের জন্য ব্যস্ত/ফ্রিজ হয়ে যায় (ভারী synchronous হিসাব, বড় রি-রেন্ডার
-// ইত্যাদির কারণে), তাহলে দুটো consecutive হার্টবিটের মধ্যে ফাঁক (gap) স্বাভাবিক
-// ৩০০ms-এর চেয়ে অনেক বেশি হয়ে যাবে — এটাই ফ্রিজ ধরার সবচেয়ে সহজ উপায়।
-if (typeof window !== "undefined" && !window.__heartbeatStarted) {
-  window.__heartbeatStarted = true;
-  window.__heartbeat = [];
-  setInterval(() => {
-    try {
-      window.__heartbeat.push(Date.now());
-      if (window.__heartbeat.length > 200) window.__heartbeat.shift();
-    } catch {}
-  }, 300);
-}
-const getHeartbeatReport = (windowMs = 15000) => {
-  try {
-    const hb = window.__heartbeat || [];
-    const cutoff = Date.now() - windowMs;
-    const recent = hb.filter(t => t >= cutoff);
-    if (recent.length < 2) return "হার্টবিট ডেটা অপ্রতুল";
-    let maxGap = 0, maxGapAt = null;
-    for (let i = 1; i < recent.length; i++) {
-      const gap = recent[i] - recent[i - 1];
-      if (gap > maxGap) { maxGap = gap; maxGapAt = recent[i - 1]; }
-    }
-    const now = Date.now();
-    return maxGap > 800
-      ? `⚠️ JS থ্রেড ফ্রিজ পাওয়া গেছে — সর্বোচ্চ ফাঁক ${maxGap}ms (${Math.round((now - maxGapAt) / 1000)}s আগে, স্বাভাবিক ৩০০ms-এর তুলনায়)`
-      : `✅ কোনো বড় ফ্রিজ পাওয়া যায়নি (সর্বোচ্চ ফাঁক ${maxGap}ms, স্বাভাবিক)`;
-  } catch (e) { return "হার্টবিট রিপোর্ট এরর: " + (e?.message || e); }
-};
-
 // ─── Notification System ─────────────────────────────────────────────────────
 const Notif = {
   _localNotif: null,
   _importFailed: false,
-  // 🎯 আসল root cause পাওয়া গেছে (সম্পূর্ণ ডায়াগনস্টিক রিপোর্ট থেকে):
-  //   unhandledrejection: "LocalNotifications.then()" is not implemented on android
-  // ব্যাখ্যা: window.Capacitor.Plugins.LocalNotifications একটা Proxy — এর যেকোনো
-  // প্রপার্টি অ্যাক্সেসকেই এটা native মেথড কল হিসেবে ধরে নেয়। এই ফাংশনটা যখন async
-  // হিসেবে সরাসরি সেই Proxy অবজেক্টটা `return` করত, তখন JS-এর নিজস্ব async/await
-  // মেকানিজম রিটার্ন-করা ভ্যালুতে thenable কিনা যাচাই করতে `.then` প্রপার্টি অ্যাক্সেস
-  // করে — আর সেটাই Proxy-কে বিভ্রান্ত করে "then" নামে একটা (অস্তিত্বহীন) native মেথড
-  // কল ট্রিগার করে দেয়, যেটা Android কখনো resolve/reject করে না। ফলে এই ফাংশনের
-  // নিজের promise-ই কখনো settle হতো না — এটাই এতদিনের সব "plugin hang" এর আসল কারণ।
-  // ফিক্স: Proxy-টাকে একটা প্লেইন অবজেক্টে মুড়ে রিটার্ন করা হচ্ছে ({ plugin }), যাতে
-  // await/Promise.resolve() কখনো Proxy-র `.then`-এ হাত না দেয়।
+  // নোট: window.Capacitor.Plugins.LocalNotifications একটা Proxy — এর যেকোনো প্রপার্টি
+  // অ্যাক্সেসকেই এটা native মেথড কল হিসেবে ধরে নেয়। তাই এই Proxy-টাকে কখনো সরাসরি একটা
+  // async ফাংশন থেকে return করা যাবে না (JS নিজে থেকেই .then চেক করে, যেটা Proxy-কে
+  // বিভ্রান্ত করে একটা অস্তিত্বহীন native "then" মেথড কল ট্রিগার করে, যা কখনো resolve/
+  // reject হয় না — ফলে পুরো ফাংশন চিরকাল hang করে থাকে)। তাই এখানে সবসময় { plugin }
+  // অবজেক্টে মুড়ে রিটার্ন করা হয়।
   async _getLocalNotif() {
-    if (Notif._localNotif) {
-      try { window.__notifLog?.push?.(`[+?ms] _getLocalNotif(): cache hit`); } catch {}
-      return { plugin: Notif._localNotif };
-    }
-    // ১. আগে registered global plugin চেক করি (build এ ESM import bundle না হলেও এটা কাজ করতে পারে)
+    if (Notif._localNotif) return { plugin: Notif._localNotif };
+    // ১. আগে registered global plugin চেক করি
     if (window.Capacitor?.Plugins?.LocalNotifications) {
-      try { window.__notifLog?.push?.(`[+?ms] _getLocalNotif(): window.Capacitor.Plugins.LocalNotifications থেকে সরাসরি পাওয়া গেছে (sync path)`); } catch {}
       Notif._localNotif = window.Capacitor.Plugins.LocalNotifications;
       return { plugin: Notif._localNotif };
     }
-    // 🔴 ফিক্স — window.Capacitor.Plugins.LocalNotifications ওই মুহূর্তে undefined থাকলে
-    // আগে সরাসরি dynamic import("@capacitor/local-notifications") চেষ্টা হতো, কোনো
-    // timeout guard ছাড়াই — timeout guard যোগ করা আছে, hang করলে স্পষ্ট error থ্রো করবে।
-    try { window.__notifLog?.push?.(`[+?ms] _getLocalNotif(): window.Capacitor.Plugins.LocalNotifications পাওয়া যায়নি — dynamic import() চেষ্টা হচ্ছে`); } catch {}
+    // ২. না পেলে dynamic import — timeout guard সহ, hang করলে স্পষ্ট error থ্রো করবে
     if (!Notif._importFailed) {
       try {
         const { LocalNotifications } = await Promise.race([
           import("@capacitor/local-notifications"),
           new Promise((_, reject) => setTimeout(() => reject(new Error("dynamic import() — 3s এর মধ্যে সাড়া দেয়নি")), 3000)),
         ]);
-        try { window.__notifLog?.push?.(`[+?ms] _getLocalNotif(): dynamic import() সফল`); } catch {}
         Notif._localNotif = LocalNotifications;
         return { plugin: LocalNotifications };
       } catch (e) {
         Notif._importFailed = true;
-        try { window.__notifLog?.push?.(`[+?ms] _getLocalNotif(): dynamic import() ব্যর্থ/timeout — ${e?.message || e}`); } catch {}
         console.warn("Notif: @capacitor/local-notifications import failed —", e?.message || e);
       }
     }
@@ -2598,19 +2550,8 @@ const Notif = {
   // ভিতরে drawable-mdpi, drawable-hdpi, drawable-xhdpi, drawable-xxhdpi, drawable-xxxhdpi
   // ফোল্ডারগুলোতে ic_stat_pulse.png কপি করতে হবে। ফোল্ডারগুলো না থাকলে নতুন তৈরি করুন।
   async send({ id = Date.now(), title, body, scheduleAt = null, repeatDailyAt = null, iconColor = "#10b981", largeBody = null, summaryText = null, smallIcon = "ic_stat_pulse" }) {
-    // 🔎 টাইমিং ব্রেডক্রাম্ব — বাইরের timeout যদি ভেতরের logic-কে ছাড়িয়ে আগে fire করে
-    // (মানে এই ফাংশনটাই কখনো throw করার সুযোগ পায়নি), তাহলেও কতদূর পর্যন্ত পৌঁছেছিল
-    // সেটা এই লগ থেকে জানা যাবে — devtools ছাড়াই, শুধু window.__notifLog পড়ে।
-    try {
-      window.__notifLog = window.__notifLog || [];
-      window.__notifLog.push(`[+0ms] send() শুরু — id=${id}`);
-    } catch {}
-    const _t0 = Date.now();
-    const notifLog = (msg) => { try { window.__notifLog.push(`[+${Date.now() - _t0}ms] ${msg}`); } catch {} };
     if (window.Capacitor?.isNativePlatform()) {
-      notifLog("native platform — _getLocalNotif() কল করা হচ্ছে");
       const { plugin: LocalNotifications } = await Notif._getLocalNotif();
-      notifLog("_getLocalNotif() সাড়া দিয়েছে");
       let schedule;
       if (repeatDailyAt) {
         // প্রতিদিন নির্দিষ্ট সময়ে রিপিট — 'on' ফরম্যাট ব্যবহার করতে হবে, 'at'+'every' একসাথে কাজ করে না
@@ -2618,10 +2559,8 @@ const Notif = {
       } else if (scheduleAt) {
         schedule = { at: new Date(scheduleAt), allowWhileIdle: true };
       } else {
-        // 🔴 ফিক্স — schedule ফিল্ড পুরোপুরি বাদ দিলে (immediate ধরে নেওয়ার আশায়)
-        // ডিভাইসে notification silently কখনোই দেখানো হচ্ছিল না — ডিবাগ ৫ টেস্টে
-        // প্রমাণিত হয়েছে explicit schedule.at থাকলে ঠিকমতো দেখায়। তাই এখন immediate
-        // notification-এর জন্যও ১ সেকেন্ড পরের একটা explicit 'at' সময় দেওয়া হচ্ছে।
+        // immediate notification-এর জন্যও explicit ১ সেকেন্ড পরের 'at' সময় দেওয়া হচ্ছে
+        // (schedule ফিল্ড বাদ দিলে কিছু ডিভাইসে notification silently না দেখানোর সমস্যা হয়)
         schedule = { at: new Date(Date.now() + 1000), allowWhileIdle: true };
       }
       const notif = {
@@ -2630,41 +2569,23 @@ const Notif = {
         ...(largeBody ? { largeBody } : {}),
         ...(summaryText ? { summaryText } : {}),
       };
-      // 🔴 ফিক্স — প্রমাণিত হয়েছে (টেস্ট নোটিফিকেশন এরর: "8s এর মধ্যে সাড়া দেয়নি")
-      // যে full payload (largeBody/summaryText সহ) schedule() কল কখনো কখনো
-      // চিরকাল hang করে — না resolve হয়, না reject হয়। তার মানে আগের কোডে
-      // ভেতরের catch(e) ব্লকটা কখনোই ট্রিগার হতো না (কারণ hang হলে কোনো error
-      // থ্রো হয় না), শুধু বাইরের কলার-এর (sendTestNotif) external timeout-ই
-      // fire করত। ফলে minimal-payload fallback (ডিবাগ ৫-এর মতো) কখনো ট্রাই-ই
-      // হতো না। এখন প্রতিটা schedule() কল নিজের একটা ছোট (4s) internal timeout
-      // দিয়ে race করা হচ্ছে, যাতে hang হলেও দ্রুত ধরা পড়ে ও পরের ধাপে (minimal
-      // payload) যাওয়া যায় — ঠিক ডিবাগ ৫-এ যেভাবে কাজ করেছিল।
+      // প্রতিটা schedule() কল একটা internal timeout দিয়ে race করা হয়, যাতে plugin
+      // hang করলেও দ্রুত ধরা পড়ে এবং largeBody/summaryText থাকলে একটা মিনিমাল
+      // payload দিয়ে fallback ট্রাই করা যায়।
       const withInternalTimeout = (p, ms) => Promise.race([
         p,
-        new Promise((_, reject) => setTimeout(() => reject(new Error(`schedule() — ${ms/1000}s এর মধ্যে সাড়া দেয়নি (plugin hang)`)), ms)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error(`schedule() — ${ms/1000}s এর মধ্যে সাড়া দেয়নি`)), ms)),
       ]);
       try {
-        notifLog("attempt ১ (full payload) schedule() কল হচ্ছে");
         await withInternalTimeout(LocalNotifications.schedule({ notifications: [notif] }), 4000);
-        notifLog("attempt ১ সফল");
         return;
       } catch(e) {
-        notifLog(`attempt ১ ব্যর্থ/timeout: ${e?.message || e}`);
         console.warn("Notif send (Capacitor) error, full payload:", e?.message || e);
-        // largeBody/summaryText (BigTextStyle) ডিবাগ ৫-এ কখনো টেস্ট করা হয়নি —
-        // ডিবাগ ৫ শুধু title+body+smallIcon+iconColor+schedule দিয়ে সফল হয়েছিল।
-        // যদি largeBody/summaryText (আসল ডেটা — invoice/বিক্রয় সংখ্যা, বিশেষ
-        // ক্যারেক্টার) native schedule()-কে hang/ব্যর্থ করে থাকে, তাহলে ডিবাগ
-        // ৫-এর ঠিক সেই মিনিমাল আকারে আরেকবার ট্রাই করা হচ্ছে।
         if (largeBody || summaryText) {
           try {
-            notifLog("attempt ২ (minimal payload, ডিবাগ ৫ স্টাইল) schedule() কল হচ্ছে");
             await withInternalTimeout(LocalNotifications.schedule({ notifications: [{ id: notif.id, title, body, allowWhileIdle: true, iconColor, smallIcon, schedule }] }), 4000);
-            notifLog("attempt ২ সফল");
-            console.warn("Notif send: minimal payload (Debug-5 style) succeeded after full payload failed/hung");
             return;
           } catch(e2) {
-            notifLog(`attempt ২ ব্যর্থ/timeout: ${e2?.message || e2}`);
             console.warn("Notif send (Capacitor) error, minimal payload also failed:", e2?.message || e2);
             if (window.Capacitor?.isNativePlatform()) throw e2;
           }
@@ -6936,7 +6857,7 @@ const SEED_USERS = [{ id: "u1", username: "admin", password: "", pin: "", name: 
 const uid      = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const todayStr = () => new Date().toLocaleDateString("en-US");
 const nowStr   = () => new Date().toLocaleString("en-US");
-const fmt      = (n) => Number(n).toLocaleString("en-US");
+const fmt      = (n) => Math.round(Number(n) || 0).toLocaleString("en-US");
 
 // ─── 📱 WhatsApp Quick Share — Capacitor Browser দিয়ে wa.me link খোলে ────────
 // বাংলাদেশের মোবাইল নম্বর normalize করে — 01XXXXXXXXX → 8801XXXXXXXXX
@@ -8057,11 +7978,11 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
 
       {/* ── Header ── */}
       <div style={{
-        margin: "12px 12px 0",
+        margin: "8px 10px 0",
         background: `linear-gradient(135deg,${activeColor}28,${activeColor}0e)`,
         border: `1.5px solid ${activeColor}44`,
-        borderRadius: 16,
-        padding: "14px 16px",
+        borderRadius: 14,
+        padding: "10px 12px",
         position: "relative",
         overflow: "hidden",
       }}>
@@ -8070,56 +7991,56 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
           borderRadius: "50%", background: `${activeColor}18`,
           filter: "blur(20px)", pointerEvents: "none",
         }} />
-        <div style={{ display: "flex", alignItems: "center", gap: 10, position: "relative" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, position: "relative" }}>
           <div style={{
-            width: 44, height: 44, borderRadius: 14,
+            width: 36, height: 36, borderRadius: 11,
             background: `linear-gradient(135deg,${activeColor}55,${activeColor}22)`,
             display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 22, boxShadow: `0 6px 20px ${activeColor}44`,
+            fontSize: 18, boxShadow: `0 6px 20px ${activeColor}44`,
             border: `1.5px solid ${activeColor}44`,
           }}>🧠</div>
           <div style={{ flex: 1 }}>
-            <div style={{ color: T.text, fontWeight: 900, fontSize: 16 }}>AI ফার্মেসি ইন্টেলিজেন্স</div>
-            <div style={{ color: T.sub, fontSize: 12, marginTop: 2 }}>
-              আপনার ফার্মেসির বিশ্লেষণ · ওষুধ বিক্রয় · মেয়াদ ট্র্যাকিং
+            <div style={{ color: T.text, fontWeight: 900, fontSize: 14 }}>AI ফার্মেসি ইন্টেলিজেন্স</div>
+            <div style={{ color: T.sub, fontSize: 10.5, marginTop: 1 }}>
+              বিশ্লেষণ · বিক্রয় · মেয়াদ ট্র্যাকিং
             </div>
           </div>
           {/* Health Score Badge */}
           <div style={{
             background: `linear-gradient(135deg,${healthLabel.color}33,${healthLabel.color}18)`,
             border: `1.5px solid ${healthLabel.color}55`,
-            borderRadius: 12, padding: "6px 10px", textAlign: "center",
+            borderRadius: 10, padding: "4px 9px", textAlign: "center",
           }}>
-            <div style={{ color: healthLabel.color, fontWeight: 900, fontSize: 18 }}>{healthScore}</div>
-            <div style={{ color: healthLabel.color, fontSize: 10 }}>স্বাস্থ্য</div>
+            <div style={{ color: healthLabel.color, fontWeight: 900, fontSize: 15 }}>{healthScore}</div>
+            <div style={{ color: healthLabel.color, fontSize: 8.5 }}>স্বাস্থ্য</div>
           </div>
         </div>
       </div>
 
       {/* ── Sub-Tabs ── */}
       <div style={{
-        display: "flex", overflowX: "auto", gap: 6,
-        padding: "10px 12px 4px", scrollbarWidth: "none",
+        display: "flex", overflowX: "auto", gap: 5,
+        padding: "8px 10px 3px", scrollbarWidth: "none",
       }}>
         {aiTabs.map(t => (
           <button key={t.key} onClick={() => setAiTab(t.key)} style={{
-            flexShrink: 0, display: "flex", alignItems: "center", gap: 5,
-            padding: "8px 14px", borderRadius: 22,
+            flexShrink: 0, display: "flex", alignItems: "center", gap: 4,
+            padding: "6px 11px", borderRadius: 18,
             border: aiTab === t.key ? `1.5px solid ${t.color}88` : `1.5px solid ${T.border}`,
             background: aiTab === t.key ? `linear-gradient(135deg,${t.color}33,${t.color}18)` : T.card,
             color: aiTab === t.key ? t.color : T.sub,
-            fontWeight: 800, fontSize: 12,
+            fontWeight: 800, fontSize: 11,
             boxShadow: aiTab === t.key ? `0 4px 16px ${t.color}33` : "none",
             cursor: "pointer", transition: "all 0.18s",
           }}>
-            <span style={{ fontSize: 14 }}>{t.icon}</span>
+            <span style={{ fontSize: 12.5 }}>{t.icon}</span>
             <span>{t.label}</span>
             {t.key === "actions" && smartActions.filter(a => a.priority === "high").length > 0 && (
               <span style={{
                 background: "#ef4444", color: "#fff",
-                borderRadius: "50%", width: 16, height: 16,
+                borderRadius: "50%", width: 15, height: 15,
                 display: "flex", alignItems: "center", justifyContent: "center",
-                fontSize: 10, fontWeight: 900,
+                fontSize: 9, fontWeight: 900,
               }}>{smartActions.filter(a => a.priority === "high").length}</span>
             )}
           </button>
@@ -8130,47 +8051,60 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
 
       {/* ── ১. ড্যাশবোর্ড ─────────────────────────────────────────────────────── */}
       {aiTab === "dashboard" && (
-        <div style={{ padding: "8px 12px", display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ padding: "6px 10px", display: "flex", flexDirection: "column", gap: 7 }}>
 
           {/* বিজনেস হেলথ মিটার */}
           <HealthMeter score={healthScore} label={healthLabel} T={T} activeColor={activeColor} growthPct={growthPct} />
 
-          {/* KPI গ্রিড */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          {/* KPI গ্রিড — কম্প্যাক্ট, ৩-কলাম */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
             {[
               { icon: "💰", val: `৳${fmt(todaySale)}`, label: "আজকের বিক্রয়", sub: `${todayInvs.length}টি ইনভয়েস`, color: "#22c55e" },
-              { icon: "💵", val: `৳${fmt(todayCashSale)}`, label: "আজকের নগদ বিক্রয়", sub: "নগদ + আংশিক পরিশোধ", color: "#16a34a" },
-              { icon: "🟢", val: `৳${fmt(todayCashProfit)}`, label: "নগদ বিক্রয়ে মোট লাভ", sub: `মার্জিন ${pct(todayCashProfit, todayCashSale)}%`, color: "#22c55e" },
-              { icon: "📌", val: `৳${fmt(todayBakiIncurred)}`, label: "আজকের বাকি", sub: "আজ নতুন বাকি বিক্রয়", color: "#f97316" },
+              { icon: "💵", val: `৳${fmt(todayCashSale)}`, label: "নগদ বিক্রয়", sub: "নগদ+আংশিক", color: "#16a34a" },
+              { icon: "🟢", val: `৳${fmt(todayCashProfit)}`, label: "নগদে লাভ", sub: `মার্জিন ${pct(todayCashProfit, todayCashSale)}%`, color: "#22c55e" },
+              { icon: "📌", val: `৳${fmt(todayBakiIncurred)}`, label: "আজকের বাকি", sub: "নতুন বাকি বিক্রয়", color: "#f97316" },
               { icon: "⚡", val: `৳${fmt(todayProfit)}`, label: "আজকের লাভ", sub: `মার্জিন ${pct(todayProfit, todaySale)}%`, color: "#f59e0b" },
               { icon: "🔴", val: `৳${fmt(totalBaki)}`, label: "মোট বকেয়া", sub: `${bakiCustomers}জনের কাছে`, color: "#ef4444" },
-              { icon: "📥", val: `৳${fmt(todayJoma)}`, label: "আজকের বাকি আদায়", sub: "আজ সংগৃহীত বকেয়া", color: "#3b82f6" },
-              { icon: "🏠", val: `৳${fmt(todaySelfUseCost)}`, label: "নিজের ব্যবহার (আজ)", sub: fmtProductList(todaySelfUseProducts), color: "#a78bfa" },
-              { icon: "🏡", val: `৳${fmt(monthSelfUseCost)}`, label: "নিজের ব্যবহার (এই মাস)", sub: fmtProductList(monthSelfUseProducts), color: "#a78bfa" },
-              { icon: "🪙", val: `৳${fmt(openingCashToday)}`, label: "আজকের ওপেনিং ক্যাশ", sub: "দোকান খোলার সময়ের ক্যাশ", color: "#0ea5e9" },
-              { icon: "🏧", val: `৳${fmt(withdrawalToday)}`, label: "আজকের উইথড্রয়াল", sub: "ক্যাশ ড্রয়ার থেকে বের হওয়া", color: "#f43f5e" },
-              { icon: "🏦", val: `৳${fmt(currentCashDrawer)}`, label: "ক্যাশড্রয়ারে বর্তমান ক্যাশ", sub: "ওপেনিং+নগদ+আদায়-খরচ-ক্রয়", color: "#0ea5e9" },
+              { icon: "📥", val: `৳${fmt(todayJoma)}`, label: "বাকি আদায়", sub: "আজ সংগৃহীত", color: "#3b82f6" },
+              { icon: "🏠", val: `৳${fmt(todaySelfUseCost)}`, label: "নিজের ব্যবহার", sub: "আজ", color: "#a78bfa" },
+              { icon: "🏡", val: `৳${fmt(monthSelfUseCost)}`, label: "নিজের ব্যবহার", sub: "এই মাস", color: "#a78bfa" },
+              { icon: "🪙", val: `৳${fmt(openingCashToday)}`, label: "ওপেনিং ক্যাশ", sub: "দোকান খোলার সময়", color: "#0ea5e9" },
+              { icon: "🏧", val: `৳${fmt(withdrawalToday)}`, label: "উইথড্রয়াল", sub: "আজকের", color: "#f43f5e" },
+              { icon: "🏦", val: `৳${fmt(currentCashDrawer)}`, label: "ক্যাশড্রয়ার", sub: "বর্তমান ক্যাশ", color: "#0ea5e9" },
               { icon: "🛒", val: `৳${fmt(todayPurchaseCost)}`, label: "আজকের ক্রয়", sub: `${todayPurchaseCount}টি এন্ট্রি`, color: "#8b5cf6" },
-              { icon: "📦", val: `৳${fmt(monthPurchaseCost)}`, label: "এই মাসের ক্রয়", sub: "গত ৩০ দিনের ক্রয়", color: "#8b5cf6" },
-              { icon: "🧾", val: `৳${fmt(todayExpense)}`, label: "আজকের খরচ", sub: "আজকের মোট খরচ", color: "#ef4444" },
-              { icon: "🧮", val: `৳${fmt(monthExpense)}`, label: "এ মাসের খরচ", sub: "গত ৩০ দিনের খরচ", color: "#ef4444" },
-              { icon: "📈", val: `৳${fmt(monthSale)}`, label: "মাসিক বিক্রয়", sub: growthPct !== null ? `${growthPct > 0 ? "▲" : "▼"} গত মাসের তুলনায় ${Math.abs(growthPct)}%` : "এ মাসের বিক্রয়", color: "#3b82f6" },
+              { icon: "📦", val: `৳${fmt(monthPurchaseCost)}`, label: "এই মাসের ক্রয়", sub: "গত ৩০ দিন", color: "#8b5cf6" },
+              { icon: "🧾", val: `৳${fmt(todayExpense)}`, label: "আজকের খরচ", sub: "মোট খরচ", color: "#ef4444" },
+              { icon: "🧮", val: `৳${fmt(monthExpense)}`, label: "এ মাসের খরচ", sub: "গত ৩০ দিন", color: "#ef4444" },
+              { icon: "📈", val: `৳${fmt(monthSale)}`, label: "মাসিক বিক্রয়", sub: growthPct !== null ? `${growthPct > 0 ? "▲" : "▼"} ${Math.abs(growthPct)}%` : "এ মাসে", color: "#3b82f6" },
               { icon: "💎", val: `৳${fmt(monthProfit)}`, label: "মাসিক লাভ", sub: `মার্জিন ${monthMargin}%`, color: monthMargin >= 15 ? "#22c55e" : monthMargin >= 8 ? "#f59e0b" : "#ef4444" },
-              { icon: "📦", val: `৳${fmt(stockValue)}`, label: "স্টক মূল্য", sub: `কম স্টক: ${lowStockItems.length}টি`, color: "#ec4899" },
+              { icon: "📦", val: `৳${fmt(stockValue)}`, label: "স্টক মূল্য", sub: `কম স্টক ${lowStockItems.length}টি`, color: "#ec4899" },
             ].map((item, i) => (
               <div key={i} style={{
-                background: T.card, borderRadius: 14, padding: "14px 12px",
+                background: `linear-gradient(160deg,${T.card},${item.color}0c)`, borderRadius: 10, padding: "7px 8px",
                 border: `1px solid ${item.color}33`,
-                boxShadow: `0 2px 14px ${item.color}18`,
-                position: "relative", overflow: "hidden",
+                boxShadow: `0 0 10px ${item.color}12`,
+                position: "relative", overflow: "hidden", minWidth: 0,
               }}>
+                <div style={{ display:"flex", alignItems:"center", gap: 4, marginBottom: 3 }}>
+                  <span style={{
+                    fontSize: 10, width: 16, height: 16, borderRadius: 5, flexShrink: 0,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    background: `${item.color}22`, border: `1px solid ${item.color}44`,
+                  }}>{item.icon}</span>
+                  <div style={{
+                    color: T.text, fontWeight: 800, fontSize: 9, opacity: 0.8,
+                    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                  }}>{item.label}</div>
+                </div>
                 <div style={{
-                  position: "absolute", right: -8, top: -8, fontSize: 36, opacity: 0.12,
-                }}>{item.icon}</div>
-                <div style={{ fontSize: 22, marginBottom: 6 }}>{item.icon}</div>
-                <div style={{ color: item.color, fontWeight: 900, fontSize: 18 }}>{item.val}</div>
-                <div style={{ color: T.text, fontWeight: 800, fontSize: 12, marginTop: 2 }}>{item.label}</div>
-                <div style={{ color: T.sub, fontSize: 11, marginTop: 2 }}>{item.sub}</div>
+                  color: item.color, fontWeight: 900, fontSize: 12.5,
+                  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                  textShadow: `0 0 12px ${item.color}55`,
+                }}>{item.val}</div>
+                <div style={{
+                  color: T.sub, fontSize: 8, marginTop: 1,
+                  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                }}>{item.sub}</div>
               </div>
             ))}
           </div>
@@ -8179,20 +8113,20 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
           {smartActions.filter(a => a.priority === "high").length > 0 && (
             <div style={{
               background: "#ef444412", border: "1.5px solid #ef444433",
-              borderRadius: 14, padding: "12px 14px",
+              borderRadius: 12, padding: "8px 10px",
             }}>
-              <div style={{ color: "#ef4444", fontWeight: 800, fontSize: 13, marginBottom: 8 }}>
+              <div style={{ color: "#ef4444", fontWeight: 800, fontSize: 11.5, marginBottom: 6 }}>
                 🚨 জরুরি সতর্কতা
               </div>
               {smartActions.filter(a => a.priority === "high").map((a, i) => (
                 <div key={a.title || i} style={{
-                  display: "flex", gap: 8, alignItems: "flex-start",
-                  marginBottom: i < smartActions.filter(x => x.priority === "high").length - 1 ? 8 : 0,
+                  display: "flex", gap: 6, alignItems: "flex-start",
+                  marginBottom: i < smartActions.filter(x => x.priority === "high").length - 1 ? 6 : 0,
                 }}>
-                  <span style={{ fontSize: 18 }}>{a.icon}</span>
+                  <span style={{ fontSize: 14 }}>{a.icon}</span>
                   <div>
-                    <div style={{ color: T.text, fontWeight: 800, fontSize: 13 }}>{a.title}</div>
-                    <div style={{ color: T.sub, fontSize: 11, marginTop: 2 }}>{a.desc}</div>
+                    <div style={{ color: T.text, fontWeight: 800, fontSize: 11.5 }}>{a.title}</div>
+                    <div style={{ color: T.sub, fontSize: 10 }}>{a.desc}</div>
                   </div>
                 </div>
               ))}
@@ -8760,64 +8694,62 @@ function InfoBanner({ color, icon, title, desc }) {
 }
 
 function HealthMeter({ score, label, T, activeColor, growthPct }) {
-  const circumference = 2 * Math.PI * 36;
+  const circumference = 2 * Math.PI * 26;
   const offset = circumference - (score / 100) * circumference;
   return (
     <div style={{
-      background: T.card, borderRadius: 14, padding: "16px",
-      border: `1px solid ${label.color}33`,
-      display: "flex", alignItems: "center", gap: 16,
+      background: `linear-gradient(135deg,${T.card},${label.color}0a)`, borderRadius: 14, padding: "10px 12px",
+      border: `1px solid ${label.color}3a`,
+      display: "flex", alignItems: "center", gap: 12,
+      boxShadow: `0 0 20px ${label.color}14, inset 0 0 20px ${label.color}08`,
     }}>
-      <div style={{ position: "relative", width: 90, height: 90, flexShrink: 0 }}>
-        <svg width="90" height="90" viewBox="0 0 90 90">
-          <circle cx="45" cy="45" r="36" fill="none" stroke="#1e293b" strokeWidth="8" />
-          <circle cx="45" cy="45" r="36" fill="none"
-            stroke={label.color} strokeWidth="8"
+      <div style={{ position: "relative", width: 62, height: 62, flexShrink: 0 }}>
+        <svg width="62" height="62" viewBox="0 0 62 62">
+          <circle cx="31" cy="31" r="26" fill="none" stroke="#1e293b" strokeWidth="6" />
+          <circle cx="31" cy="31" r="26" fill="none"
+            stroke={label.color} strokeWidth="6"
             strokeDasharray={circumference}
             strokeDashoffset={offset}
             strokeLinecap="round"
-            transform="rotate(-90 45 45)"
-            style={{ transition: "stroke-dashoffset 1s ease" }}
+            transform="rotate(-90 31 31)"
+            style={{ transition: "stroke-dashoffset 1s ease", filter: `drop-shadow(0 0 4px ${label.color}88)` }}
           />
         </svg>
         <div style={{
           position: "absolute", inset: 0, display: "flex",
           flexDirection: "column", alignItems: "center", justifyContent: "center",
         }}>
-          <div style={{ color: label.color, fontWeight: 900, fontSize: 22 }}>{score}</div>
-          <div style={{ color: "#94a3b8", fontSize: 9, fontWeight: 800 }}>/ ১০০</div>
+          <div style={{ color: label.color, fontWeight: 900, fontSize: 16 }}>{score}</div>
         </div>
       </div>
-      <div style={{ flex: 1 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-          <div style={{ color: label.color, fontWeight: 900, fontSize: 18 }}>ব্যবসা {label.text}</div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ color: label.color, fontWeight: 900, fontSize: 13, marginBottom: 4, display:"flex", alignItems:"center", gap:6 }}>
+          ব্যবসা {label.text}
+          {growthPct !== null && (
+            <span style={{
+              display: "inline-flex", alignItems: "center", gap: 2,
+              background: growthPct >= 0 ? "#22c55e1c" : "#ef44441c",
+              border: `1px solid ${growthPct >= 0 ? "#22c55e44" : "#ef444444"}`,
+              borderRadius: 6, padding: "1px 5px",
+              color: growthPct >= 0 ? "#22c55e" : "#ef4444", fontWeight: 800, fontSize: 9.5,
+            }}>
+              {growthPct >= 0 ? "▲" : "▼"} {Math.abs(growthPct)}%
+            </span>
+          )}
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
           {[
             { label: "মার্জিন", pct: Math.min(100, Math.max(0, score > 50 ? 70 : 30)), color: "#22c55e" },
             { label: "বকেয়া ঝুঁকি", pct: Math.min(100, Math.max(0, 100 - score)), color: "#ef4444" },
           ].map((bar, i) => (
-            <div key={i}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
-                <span style={{ color: "#94a3b8", fontSize: 10 }}>{bar.label}</span>
-              </div>
-              <div style={{ background: "#1e293b", borderRadius: 100, height: 5, overflow: "hidden" }}>
+            <div key={i} style={{ display:"flex", alignItems:"center", gap:6 }}>
+              <span style={{ color: "#64748b", fontSize: 9, width: 52, flexShrink:0 }}>{bar.label}</span>
+              <div style={{ background: "#1e293b", borderRadius: 100, height: 4, overflow: "hidden", flex:1 }}>
                 <div style={{ height: "100%", width: `${bar.pct}%`, background: bar.color, borderRadius: 100 }} />
               </div>
             </div>
           ))}
         </div>
-        {growthPct !== null && (
-          <div style={{
-            marginTop: 8, display: "inline-flex", alignItems: "center", gap: 4,
-            background: growthPct >= 0 ? "#22c55e18" : "#ef444418",
-            border: `1px solid ${growthPct >= 0 ? "#22c55e44" : "#ef444444"}`,
-            borderRadius: 8, padding: "3px 8px",
-            color: growthPct >= 0 ? "#22c55e" : "#ef4444", fontWeight: 800, fontSize: 12,
-          }}>
-            {growthPct >= 0 ? "▲" : "▼"} {Math.abs(growthPct)}% গত মাস থেকে
-          </div>
-        )}
       </div>
     </div>
   );
@@ -8831,7 +8763,7 @@ function ruleBasedAnswer(q, data) {
     healthScore, forecastData,
   } = data;
   const L = q.toLowerCase();
-  const fmt  = n => Number(n || 0).toLocaleString("en-US");
+  const fmt  = n => Math.round(n || 0).toLocaleString("en-US");
   const fmtK = n => { const a = Math.abs(Number(n||0)); return a>=100000?(a/100000).toFixed(1)+"লাখ":a>=1000?(a/1000).toFixed(1)+"K":String(Math.round(a)); };
   const has  = (...words) => words.some(w => L.includes(w));
   // 🔴 ফিক্স: এটা একটা সাধারণ (plain) ফাংশন — React কম্পোনেন্ট/হুক নয়, event handler থেকে
@@ -14633,7 +14565,7 @@ function AnalyticsSection_({ T, S, invoices = [], products = [], customers = [],
     return Object.values(map).sort((a, b) => b.total - a.total).slice(0, 5);
   }, [invoices]);
 
-  const fmt = n => n?.toLocaleString("en-US") ?? "0";
+  const fmt = n => Math.round(n || 0).toLocaleString("en-US");
 
   // ── Gradient Bar Row ──────────────────────────────────────────────────────
   const BAR_GRADS = [
@@ -21796,7 +21728,7 @@ function ExpenseTracker({ T, S, expenses = [], setExpenses, showToast, currentUs
     category: "অন্যান্য", amount: "", note: "", date: new Date().toISOString().split("T")[0],
   });
 
-  const fmt = n => Number(n || 0).toLocaleString("en-US");
+  const fmt = n => Math.round(n || 0).toLocaleString("en-US");
   const todayKey = new Date().toISOString().split("T")[0];
 
   // ── Date range filter ────────────────────────────────────────────────────────
@@ -22533,163 +22465,21 @@ function DailyNotifCard({ S, T = {}, shopName, showToast, customers = [], invoic
   const sendTestNotif = async () => {
     const sum = buildSummary();
     const { body, largeBody } = buildNotifContent(sum, "\n\n(টেস্ট)");
-    // 🔴 ফিক্স — permission-check fallback পুরোপুরি বাদ দেওয়া হলো। এই ডিভাইসে
-    // checkPermissions()/requestPermissions() বারবার (৬s, ২০s, ১৫s টেস্টে) প্রমাণিত
-    // হয়েছে যে চিরকাল hang করে — কোনো popup আসে না, কখনো resolve/reject হয় না।
-    // আর ডিবাগ ৫ ইতিমধ্যে প্রমাণ করেছে permission আগে থেকেই granted আছে ও সরাসরি
-    // schedule() কাজ করে। তাই permission-check ধাপ বাদ দিয়ে, সরাসরি schedule()
-    // ব্যর্থ হলে তার real error-টাই এখন সরাসরি দেখানো হচ্ছে — root cause বোঝার
-        // জন্য এটাই এখন একমাত্র বাকি ধাপ।
-    // 🔴 ফিক্স — আগে fixed id:9999 ব্যবহার হতো, যেটা বারবার hang হওয়া টেস্টে বহুবার
-    // পাঠানো হয়েছে। সন্দেহ ছিল এই নির্দিষ্ট ID OS-লেভেলে "আটকে" থাকতে পারে (ডিবাগ ৫-এর
-    // fixed 8888 বরাবর কাজ করত, কিন্তু সেটাও কম ব্যবহৃত)। এখন প্রতিবার নতুন/ভিন্ন ID
-    // ব্যবহার হচ্ছে যাতে "stuck ID" থিওরিটা চূড়ান্তভাবে যাচাই হয়।
-    const freshId = 9000 + (Date.now() % 800);
-    try {
-      window.__notifLog = [];
-    } catch {}
+    const testId = 9999;
     try {
       await withTimeout(Notif.send({
-        id: freshId,
+        id: testId,
         title: `✨ ${shopName} — আজকের সারসংক্ষেপ`,
         iconColor: "#8b5cf6",
         body,
         largeBody,
         summaryText: `${shopName} • দৈনিক রিপোর্ট ✨`,
       }), 10000, "Notification send");
-      showToast("🔔 টেস্ট নোটিফিকেশন পাঠানো হয়েছে (id=" + freshId + ")");
+      showToast("🔔 টেস্ট নোটিফিকেশন পাঠানো হয়েছে");
     } catch (e) {
       console.warn("Notif send failed:", e?.message || e);
-      const log = (window.__notifLog || []).join("\n") || "(কোনো log নেই — send() শুরুই হয়নি)";
-      const hbReport = getHeartbeatReport(15000);
-      try { showToast("নোটিফিকেশন পাঠানো যায়নি: " + (e?.message || e), "#ef4444"); } catch {}
-      try { window.alert("টেস্ট নোটিফিকেশন এরর (id=" + freshId + "): " + (e?.message || e) + "\n\n💓 " + hbReport + "\n\n📋 টাইমিং লগ:\n" + log); } catch {}
+      showToast("নোটিফিকেশন পাঠানো যায়নি: " + (e?.message || e), "#ef4444");
     }
-  };
-
-  // 🩺 সম্পূর্ণ ডায়াগনস্টিক — একটা বাটনে সব সম্ভাব্য কারণ একসাথে টেস্ট করে, যাতে বারবার
-  // বিল্ড-টেস্ট-বিল্ড করার দরকার না পড়ে। এটা যা যা চেক করে:
-  //   ১. Capacitor bridge নিজেই কাজ করছে কিনা (App.getInfo() — LocalNotifications-এর
-  //      সাথে সম্পর্কহীন একটা আলাদা প্লাগইন, যদি এটাও hang করে তাহলে বোঝা যাবে সমস্যা
-  //      পুরো bridge-এ, শুধু এক প্লাগইনে না)
-  //   ২. _getLocalNotif() কোন পথে যাচ্ছে (sync proxy নাকি dynamic import) ও কতক্ষণে
-  //   ৩. checkPermissions(), getPending()
-  //   ৪. minimal payload schedule() বনাম full payload (largeBody/summaryText সহ)
-  //      schedule() — দুটো আলাদা ID দিয়ে, যাতে largeBody/summaryText আসল সমস্যা কিনা ধরা পড়ে
-  //   ৫. ৬ সেকেন্ড পর getDeliveredNotifications() দিয়ে OS আসলেই দেখিয়েছিল কিনা কনফার্ম
-  //   ৬. পুরো সময়ে JS main-thread ফ্রিজ হয়েছিল কিনা (heartbeat)
-  //   ৭. একই সময়ে একাধিক sendTestNotif/diagnostic কল ওভারল্যাপ করছে কিনা (concurrency guard)
-  //   ৮. কোনো ধরা-না-পড়া JS error/promise rejection ব্যাকগ্রাউন্ডে ঘটেছে কিনা
-  // সব ফলাফল একটামাত্র রিপোর্টে — এটা copy/screenshot করে পাঠালেই আসল কারণ নিশ্চিতভাবে বোঝা যাবে।
-  const runFullDiagnostic = async () => {
-    if (window.__diagRunning) {
-      window.alert("⚠️ একটা ডায়াগনস্টিক ইতিমধ্যে চলছে — সেটা শেষ হওয়া পর্যন্ত অপেক্ষা করুন।");
-      return;
-    }
-    window.__diagRunning = true;
-    window.__notifCallDepth = (window.__notifCallDepth || 0) + 1;
-    const myDepth = window.__notifCallDepth;
-
-    const t0 = Date.now();
-    const report = [];
-    const log = (msg) => { report.push(`[+${Date.now() - t0}ms] ${msg}`); };
-
-    window.__diagErrors = [];
-    const errHandler = (e) => { try { window.__diagErrors.push(`window.error: ${e.message}`); } catch {} };
-    const rejHandler = (e) => { try { window.__diagErrors.push(`unhandledrejection: ${e.reason?.message || e.reason}`); } catch {} };
-    window.addEventListener("error", errHandler);
-    window.addEventListener("unhandledrejection", rejHandler);
-
-    const withT = (p, ms) => {
-      let timer;
-      const to = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`${ms / 1000}s টাইমআউট`)), ms); });
-      return Promise.race([p, to]).finally(() => clearTimeout(timer));
-    };
-
-    log(`🩺 ডায়াগনস্টিক শুরু — concurrent depth=${myDepth}${myDepth > 1 ? " ⚠️ একাধিক কল একসাথে চলছে, ফলাফল অবিশ্বাস্য হতে পারে!" : ""}`);
-    log(`env: isNativePlatform=${window.Capacitor?.isNativePlatform?.()}, Plugins.LocalNotifications sync আছে=${!!window.Capacitor?.Plugins?.LocalNotifications}`);
-    if (window.performance?.memory) {
-      const m = window.performance.memory;
-      log(`JS heap: ${(m.usedJSHeapSize / 1048576).toFixed(1)}MB ব্যবহৃত / ${(m.jsHeapSizeLimit / 1048576).toFixed(1)}MB সীমা`);
-    }
-
-    // ১. bridge sanity — সম্পূর্ণ আলাদা প্লাগইন
-    try {
-      const s = Date.now();
-      await withT(window.Capacitor.Plugins.App.getInfo(), 5000);
-      log(`✅ App.getInfo() — ${Date.now() - s}ms — Capacitor bridge সচল`);
-    } catch (e) { log(`❌ App.getInfo() ব্যর্থ (${e.message}) — পুরো bridge-ই সমস্যায় থাকতে পারে!`); }
-
-    // ২. প্লাগইন resolve
-    let LN = null;
-    try {
-      const s = Date.now();
-      const r = await withT(Notif._getLocalNotif(), 5000);
-      LN = r.plugin;
-      log(`✅ _getLocalNotif() — ${Date.now() - s}ms`);
-    } catch (e) { log(`❌ _getLocalNotif() ব্যর্থ (${e.message})`); }
-
-    if (LN) {
-      // ৩. checkPermissions
-      try {
-        const s = Date.now();
-        const r = await withT(LN.checkPermissions(), 5000);
-        log(`✅ checkPermissions() — ${Date.now() - s}ms — ${JSON.stringify(r)}`);
-      } catch (e) { log(`❌ checkPermissions() ব্যর্থ (${e.message})`); }
-
-      // ৪. getPending (আগে)
-      try {
-        const s = Date.now();
-        const r = await withT(LN.getPending(), 5000);
-        log(`✅ getPending() — ${Date.now() - s}ms — ${r?.notifications?.length || 0}টা pending আছে (আগে থেকেই)`);
-      } catch (e) { log(`❌ getPending() ব্যর্থ (${e.message})`); }
-
-      // ৫. minimal payload schedule (ডিবাগ ৫ স্টাইল)
-      const minId = 8000 + (Date.now() % 900);
-      try {
-        const s = Date.now();
-        await withT(LN.schedule({ notifications: [{ id: minId, title: "ডায়াগনস্টিক (minimal)", body: "minimal payload টেস্ট", schedule: { at: new Date(Date.now() + 4000), allowWhileIdle: true } }] }), 5000);
-        log(`✅ schedule() minimal payload — ${Date.now() - s}ms — id=${minId}`);
-      } catch (e) { log(`❌ schedule() minimal payload ব্যর্থ (${e.message}) — id=${minId}`); }
-
-      // ৬. full payload schedule (largeBody/summaryText সহ, আসল কনটেন্ট)
-      const fullId = 8900 + (Date.now() % 900);
-      try {
-        const sum = buildSummary();
-        const { body, largeBody } = buildNotifContent(sum, "\n\n(ডায়াগনস্টিক)");
-        const s = Date.now();
-        await withT(LN.schedule({ notifications: [{ id: fullId, title: "ডায়াগনস্টিক (full)", body, largeBody, summaryText: "ডায়াগনস্টিক টেস্ট", schedule: { at: new Date(Date.now() + 4000), allowWhileIdle: true } }] }), 5000);
-        log(`✅ schedule() full payload (largeBody/summaryText সহ) — ${Date.now() - s}ms — id=${fullId}`);
-      } catch (e) { log(`❌ schedule() full payload ব্যর্থ (${e.message}) — id=${fullId}`); }
-
-      // ৭. অপেক্ষা করে OS কনফার্মেশন
-      log("৬ সেকেন্ড অপেক্ষা করা হচ্ছে (schedule fire হওয়ার জন্য)...");
-      await new Promise(r => setTimeout(r, 6000));
-      try {
-        const s = Date.now();
-        const r = await withT(LN.getDeliveredNotifications(), 5000);
-        const ids = (r?.notifications || []).map(n => n.id);
-        log(`✅ getDeliveredNotifications() — ${Date.now() - s}ms — delivered: [${ids.join(",")}]`);
-        log(`   → minimal(id=${minId}): ${ids.includes(minId) ? "✅ OS ট্রেতে দেখিয়েছে" : "❌ দেখায়নি"}`);
-        log(`   → full(id=${fullId}): ${ids.includes(fullId) ? "✅ OS ট্রেতে দেখিয়েছে" : "❌ দেখায়নি"}`);
-      } catch (e) { log(`❌ getDeliveredNotifications() ব্যর্থ (${e.message})`); }
-    } else {
-      log("⏭️ LN পাওয়া যায়নি — permission/schedule/delivered টেস্ট বাদ দেওয়া হলো");
-    }
-
-    // ৮. heartbeat + error capture + concurrency সারাংশ
-    log(`💓 ${getHeartbeatReport(30000)}`);
-    log(window.__diagErrors.length ? `⚠️ ক্যাপচার করা error: ${window.__diagErrors.join(" | ")}` : "✅ কোনো unhandled JS error/rejection ধরা পড়েনি");
-    log(`concurrent call depth শেষে=${window.__notifCallDepth} (শুরুতে ছিল ${myDepth})`);
-
-    window.removeEventListener("error", errHandler);
-    window.removeEventListener("unhandledrejection", rejHandler);
-    window.__notifCallDepth = Math.max(0, window.__notifCallDepth - 1);
-    window.__diagRunning = false;
-
-    const full = report.join("\n");
-    window.__fullDiagnosticReport = full;
-    window.alert("🩺 সম্পূর্ণ ডায়াগনস্টিক রিপোর্ট:\n\n" + full);
   };
 
   return (
@@ -22822,152 +22612,7 @@ function DailyNotifCard({ S, T = {}, shopName, showToast, customers = [], invoic
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
             টেস্ট নোটিফিকেশন পাঠান
           </button>
-          <button onClick={runFullDiagnostic}
-            style={{ width:"100%", marginTop:8, background:"linear-gradient(135deg,#f59e0b,#dc2626)", color:"#fff", border:"none", borderRadius:12, padding:"11px 0", fontWeight:900, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}>
-            🩺 সম্পূর্ণ ডায়াগনস্টিক রিপোর্ট (একবারে সব টেস্ট, ~১৫ সেকেন্ড)
-          </button>
-          {/* 🔴 সাময়িক ডিবাগ বাটন — কোনো async/native কল নেই, শুধু sync alert().
-              এটাতে চাপ দিলে যদি popup না আসে, বুঝতে হবে সমস্যা touch/rendering
-              লেভেলে (JS logic-এর সমস্যা না) — সমাধান হলে এই বাটন সরিয়ে দেওয়া যাবে। */}
-          <button onClick={() => window.alert("✅ বাটন কাজ করছে — touch ঠিক আছে")}
-            style={{ width:"100%", marginTop:8, background:"#22c55e22", color:"#86efac", border:"1px dashed #22c55e66", borderRadius:12, padding:"8px 0", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
-            🔧 ডিবাগ: বাটন কাজ করছে কিনা টেস্ট করুন
-          </button>
-          {/* 🔴 সাময়িক ডিবাগ বাটন ২ — সম্পূর্ণ SYNC (কোনো await/promise নেই),
-              তাই এটা কখনোই hang করতে পারবে না। এটা সরাসরি window.Capacitor
-              অবজেক্ট চেক করে বলে দেবে নেটিভ LocalNotifications প্রক্সিটা এই
-              বিল্ডে আদৌ রেজিস্টার্ড আছে কিনা — asynchronous plugin call
-              hang হওয়ার আসল কারণ এখান থেকেই বোঝা যাবে। */}
-          <button onClick={() => {
-              try {
-                const cap = window.Capacitor;
-                const lines = [];
-                lines.push(`window.Capacitor আছে: ${cap ? "হ্যাঁ" : "না"}`);
-                if (cap) {
-                  lines.push(`Platform: ${typeof cap.getPlatform === "function" ? cap.getPlatform() : "n/a"}`);
-                  lines.push(`isNativePlatform: ${typeof cap.isNativePlatform === "function" ? cap.isNativePlatform() : "n/a"}`);
-                  const plugins = cap.Plugins || {};
-                  const pluginNames = Object.keys(plugins);
-                  lines.push(`মোট রেজিস্টার্ড প্লাগইন: ${pluginNames.length}`);
-                  lines.push(`LocalNotifications প্রক্সি আছে: ${plugins.LocalNotifications ? "✅ হ্যাঁ" : "❌ না"}`);
-                  if (typeof cap.isPluginAvailable === "function") {
-                    lines.push(`isPluginAvailable('LocalNotifications'): ${cap.isPluginAvailable("LocalNotifications")}`);
-                  }
-                  lines.push(`সব প্লাগইনের নাম: ${pluginNames.join(", ") || "(খালি)"}`);
-                } else {
-                  lines.push("⚠️ window.Capacitor সম্পূর্ণ undefined — এটা নেটিভ অ্যাপ হিসেবেই লোড হয়নি (ব্রাউজার মোডে চলছে)");
-                }
-                window.alert(lines.join("\n"));
-              } catch(e) {
-                window.alert("সিঙ্ক ডিবাগ চেক নিজেই এরর দিলো: " + (e?.message || e));
-              }
-            }}
-            style={{ width:"100%", marginTop:8, background:"#3b82f622", color:"#93c5fd", border:"1px dashed #3b82f666", borderRadius:12, padding:"8px 0", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
-            🔎 ডিবাগ ২: নেটিভ প্লাগইন রেজিস্ট্রেশন চেক করুন (সিঙ্ক, কখনো hang করবে না)
-          </button>
-          {/* 🔴 সাময়িক ডিবাগ বাটন ৩ — LocalNotifications বাদ দিয়ে সম্পূর্ণ ভিন্ন একটা
-              প্লাগইন (App.getInfo) কল করে দেখা — যদি এটাও hang করে, তাহলে বোঝা
-              যাবে পুরো Capacitor bridge-ই ভাঙা (শুধু LocalNotifications না)। */}
           <button onClick={async () => {
-              const results = [];
-              try {
-                const AppPlugin = window.Capacitor?.Plugins?.App;
-                if (!AppPlugin) { window.alert("App প্লাগইন প্রক্সিই নেই!"); return; }
-                const withT = (p, ms) => Promise.race([
-                  p.then(r => ({ ok:true, r })),
-                  new Promise(res => setTimeout(() => res({ ok:false }), ms)),
-                ]);
-                const t0 = Date.now();
-                const res1 = await withT(AppPlugin.getInfo(), 4000);
-                results.push(`App.getInfo(): ${res1.ok ? "✅ সাড়া দিয়েছে (" + (Date.now()-t0) + "ms) — " + JSON.stringify(res1.r) : "❌ 4s hang করলো"}`);
-
-                const LN = window.Capacitor?.Plugins?.LocalNotifications;
-                const t1 = Date.now();
-                const res2 = await withT(LN.checkPermissions(), 4000);
-                results.push(`LocalNotifications.checkPermissions(): ${res2.ok ? "✅ সাড়া দিয়েছে (" + (Date.now()-t1) + "ms) — " + JSON.stringify(res2.r) : "❌ 4s hang করলো"}`);
-
-                window.alert(results.join("\n\n"));
-              } catch(e) {
-                window.alert("এরর: " + (e?.message || e) + "\n\nএ পর্যন্ত ফলাফল:\n" + results.join("\n"));
-              }
-            }}
-            style={{ width:"100%", marginTop:8, background:"#f59e0b22", color:"#fcd34d", border:"1px dashed #f59e0b66", borderRadius:12, padding:"8px 0", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
-            🧪 ডিবাগ ৩: App vs LocalNotifications ব্রিজ তুলনা করুন
-          </button>
-          {/* 🔴 সাময়িক ডিবাগ বাটন ৪ — শুধু requestPermissions() টেস্ট, checkPermissions()
-              বাদ দিয়ে। এটা চাপার পর স্ক্রিনে সিস্টেম permission popup আসে কিনা সেটা
-              খেয়াল করে দেখতে হবে — popup আসলে Allow/Deny চাপুন, তারপর ফলাফল দেখুন। */}
-          <button onClick={async () => {
-              try {
-                const LN = window.Capacitor?.Plugins?.LocalNotifications;
-                if (!LN) { window.alert("প্লাগইন নেই!"); return; }
-                window.alert("⏳ এখন requestPermissions() কল হবে — এই OK চাপার পরপরই স্ক্রিনে কোনো সিস্টেম পপআপ (Allow/Deny) আসে কিনা ভালো করে খেয়াল করুন! পপআপ আসলে তাতে ট্যাপ করুন।");
-                const t0 = Date.now();
-                const result = await Promise.race([
-                  LN.requestPermissions().then(r => ({ ok:true, r })),
-                  new Promise(res => setTimeout(() => res({ ok:false }), 15000)),
-                ]);
-                const ms = Date.now() - t0;
-                window.alert(result.ok
-                  ? `✅ requestPermissions() সাড়া দিয়েছে (${ms}ms) — ${JSON.stringify(result.r)}`
-                  : `❌ ১৫ সেকেন্ডেও সাড়া দেয়নি (hang) — কোনো পপআপ দেখা গিয়েছিল কিনা মনে করুন`);
-              } catch(e) {
-                window.alert("এরর: " + (e?.message || e));
-              }
-            }}
-            style={{ width:"100%", marginTop:8, background:"#ec489922", color:"#f9a8d4", border:"1px dashed #ec489966", borderRadius:12, padding:"8px 0", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
-            🎯 ডিবাগ ৪: শুধু requestPermissions() টেস্ট (popup আসে কিনা দেখুন)
-          </button>
-          {/* 🔴 নতুন ডিবাগ বাটন ৫ — একটা real notification 5 সেকেন্ড পরের সময়ে
-              schedule করে, তারপর 8 সেকেন্ড অপেক্ষা করে getDeliveredNotifications()
-              (নোটিফিকেশন শেডে সত্যিই আছে কিনা — OS-এর নিজের কনফার্মেশন) ও
-              getPending() (এখনো pending আছে মানে fire-ই হয়নি) দুটোই চেক করে।
-              এতে নিশ্চিতভাবে বোঝা যাবে সমস্যাটা scheduling-এ নাকি display-এ। */}
-          <button onClick={async () => {
-              try {
-                const LN = window.Capacitor?.Plugins?.LocalNotifications;
-                if (!LN) { window.alert("প্লাগইন নেই!"); return; }
-                const testId = 8888;
-                await LN.schedule({
-                  notifications: [{
-                    id: testId,
-                    title: "🔎 ডিবাগ ৫ টেস্ট",
-                    body: "এটা ৫ সেকেন্ড পর শিডিউল হওয়া নোটিফিকেশন",
-                    smallIcon: "ic_stat_pulse",
-                    iconColor: "#8b5cf6",
-                    schedule: { at: new Date(Date.now() + 5000), allowWhileIdle: true },
-                  }],
-                });
-                window.alert("⏳ শিডিউল করা হয়েছে — ৮ সেকেন্ড অপেক্ষা করুন, তারপর ফলাফল আসবে। এই সময়ে নোটিফিকেশন ট্রে-তে (স্ক্রিনের উপর থেকে টেনে নামান) কিছু আসে কিনা খেয়াল করুন।");
-                await new Promise(r => setTimeout(r, 8000));
-                let msg = "";
-                try {
-                  const delivered = await LN.getDeliveredNotifications();
-                  const found = (delivered?.notifications || []).find(n => n.id === testId);
-                  msg += found
-                    ? "✅ getDeliveredNotifications() বলছে এটা সত্যিই দেখানো হয়েছিল (OS কনফার্ম করেছে)\n\n"
-                    : "❌ getDeliveredNotifications() এ এটা নেই — OS বলছে এটা কখনো ট্রেতে দেখানো হয়নি\n\n";
-                } catch(e) { msg += `getDeliveredNotifications() error/unsupported: ${e?.message || e}\n\n`; }
-                try {
-                  const pending = await LN.getPending();
-                  const stillPending = (pending?.notifications || []).find(n => n.id === testId);
-                  msg += stillPending
-                    ? "⚠️ এখনো pending-এ আছে — মানে এটা fire-ই হয়নি এখনো"
-                    : "ℹ️ আর pending-এ নেই — মানে scheduled সময়ে fire হয়ে গেছে (delivered কিনা উপরে দেখুন)";
-                } catch(e) { msg += `getPending() error: ${e?.message || e}`; }
-                window.alert(msg);
-              } catch(e) {
-                window.alert("এরর: " + (e?.message || e));
-              }
-            }}
-            style={{ width:"100%", marginTop:8, background:"#06b6d422", color:"#67e8f9", border:"1px dashed #06b6d466", borderRadius:12, padding:"8px 0", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
-            🔎 ডিবাগ ৫: সত্যিই notification tray-তে দেখানো হয় কিনা (OS কনফার্মেশন)
-          </button>
-          <button onClick={async () => {
-              // 🔴 ডিবাগ ফিক্স — আগে এখানে try/catch/timeout ছিল না, তাই hang
-              // হলে বাটন চাপ দিয়ে কিছুই দেখা যেত না (সম্পূর্ণ silent)। এখন
-              // diagnose() (দ্রুত, native call ছাড়াই বেশিরভাগ তথ্য) আগে দেখাবে,
-              // তারপর getPending()-ও timeout-guard সহ চেষ্টা করবে।
               let msg = "";
               try {
                 const diag = await withTimeout(Notif.diagnose(), 4000, "Diagnose");
