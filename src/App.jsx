@@ -15968,7 +15968,10 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
   const [viewPayInv, setViewPayInv] = useState(null);
   const [listDate,   setListDate]   = useState(() => todayEn()); // YYYY-MM-DD
   // invModal is lifted to parent (SmartBusinessMgmt) for back-button support
-  const [orderQtys,  setOrderQtys]  = useState({});
+  // 🆕 দুটি ক্রয় অর্ডার ফ্লো ("সকল পণ্য থেকে" ও "সাপ্লায়ার থেকে") সম্পূর্ণ আলাদা ও
+  // স্বয়ংসম্পূর্ণ — তাই প্রতিটির নিজস্ব স্বতন্ত্র সিলেকশন-স্টেট, একটা আরেকটাকে প্রভাবিত করে না।
+  const [orderQtysAll, setOrderQtysAll] = useState({});
+  const [orderQtysSup, setOrderQtysSup] = useState({});
   const [voidConfirm, setVoidConfirm] = useState(null);
   // ── মেয়াদোত্তীর্ণ পণ্য → দোকান থেকে সরালে অ্যাপ থেকেও সরানোর ব্যবস্থা ──────────
   const [expRemoveConfirm, setExpRemoveConfirm] = useState(null); // { product, batch }
@@ -16191,7 +16194,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
   // মাল্টি-সাপ্লায়ার অর্ডার করাই সম্ভব ছিল না। এখন পুরো "order" ফ্লো (landing/all/
   // suppliers/supplier-detail) ছেড়ে গেলেই শুধু রিসেট হয়।
   React.useEffect(() => {
-    if (!invModal || !invModal.startsWith('order')) setOrderQtys({});
+    if (!invModal || !invModal.startsWith('order')) { setOrderQtysAll({}); setOrderQtysSup({}); }
   }, [invModal]);
   // ড্যাশমোডাল বন্ধ হলে (ফিরুন বাটন/ফোনের ব্যাক/নেভিগেশন হোম) ভেতরের ইনভয়েস-ভিউও বন্ধ হবে
   React.useEffect(() => {
@@ -17157,24 +17160,24 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
             const outCount = sup.products.filter(p=>(p.stock||0)===0).length;
             const lowCount = sup.products.filter(p=>(p.stock||0)>0&&(p.stock||0)<=(p.minStockAlert||5)).length;
             return (
+              // 🔴 রিডেবিলিটি ফিক্স: আগে প্রায়-স্বচ্ছ গ্র্যাডিয়েন্ট ব্যাকগ্রাউন্ডে ধূসর টেক্সট
+              // পড়া কঠিন ছিল — এখন সলিড গাঢ় নেভি কার্ড + উজ্জ্বল হাই-কনট্রাস্ট টেক্সট।
               <div key={sup.name} className="tap-card"
                 onClick={() => openSupplier(sup.name)}
-                style={{ background:`linear-gradient(135deg,${accent}0d,#071a0f)`, border:`1.5px solid ${accent}33`, borderRadius:16, padding:"14px 16px", cursor:"pointer" }}>
-                <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-                  <div style={{ width:42, height:42, borderRadius:12, background:`${accent}22`, border:`1px solid ${accent}44`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                    <span style={{ fontSize:19 }}>🏭</span>
-                  </div>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:14 }}>{sup.name}</div>
-                    <div style={{ display:"flex", gap:8, marginTop:4, flexWrap:"wrap" }}>
-                      <span style={{ color:accent, fontSize:11, fontWeight:700 }}>{sup.products.length}টি পণ্য</span>
-                      <span style={{ color:"#64748b", fontSize:11 }}>মোট স্টক: {supTotal}</span>
-                      {outCount > 0 && <span style={{ color:"#ef4444", fontSize:11, fontWeight:700 }}>🚫 {outCount}টি শেষ</span>}
-                      {lowCount > 0 && <span style={{ color:"#f59e0b", fontSize:11, fontWeight:700 }}>⚠️ {lowCount}টি কম</span>}
-                    </div>
-                  </div>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={accent} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+                style={{ display:"flex", alignItems:"center", gap:12, background:"#111c33", border:`1.5px solid ${accent}55`, borderLeft:`4px solid ${accent}`, borderRadius:14, padding:"13px 15px", cursor:"pointer" }}>
+                <div style={{ width:42, height:42, borderRadius:12, background:`${accent}26`, border:`1px solid ${accent}55`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                  <span style={{ fontSize:19 }}>🏭</span>
                 </div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ color:"#ffffff", fontWeight:800, fontSize:14.5 }}>{sup.name}</div>
+                  <div style={{ display:"flex", gap:8, marginTop:5, flexWrap:"wrap" }}>
+                    <span style={{ color:accent, fontSize:11.5, fontWeight:800 }}>{sup.products.length}টি পণ্য</span>
+                    <span style={{ color:"#cbd5e1", fontSize:11.5, fontWeight:600 }}>মোট স্টক: {supTotal}</span>
+                    {outCount > 0 && <span style={{ color:"#fca5a5", background:"#7f1d1d55", borderRadius:6, padding:"1px 6px", fontSize:11, fontWeight:800 }}>🚫 {outCount}টি শেষ</span>}
+                    {lowCount > 0 && <span style={{ color:"#fcd34d", background:"#78350f55", borderRadius:6, padding:"1px 6px", fontSize:11, fontWeight:800 }}>⚠️ {lowCount}টি কম</span>}
+                  </div>
+                </div>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={accent} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
               </div>
             );
           })}
@@ -17291,9 +17294,46 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     );
   }
 
-  if (invModal === 'order' || invModal === 'order:all' || invModal === 'order:suppliers' || (invModal && invModal.startsWith('order:supplier:'))) {
-    const isOrderSupplierDetail = invModal && invModal.startsWith('order:supplier:');
+  if (invModal === 'order' || invModal === 'order:all' || invModal === 'order:suppliers' || invModal === 'order:all:review' || invModal === 'order:suppliers:review' || (invModal && invModal.startsWith('order:supplier:')) || (invModal && invModal.startsWith('order:saved:'))) {
+    const isOrderSupplierDetail = invModal && invModal.startsWith('order:supplier:') && !invModal.startsWith('order:suppliers');
     const selectedOrderSupplier = isOrderSupplierDetail ? invModal.replace('order:supplier:', '') : null;
+    const isReviewAll = invModal === 'order:all:review';
+    const isReviewSup = invModal === 'order:suppliers:review';
+    // 🆕 দুটি ক্রয় অর্ডার ফ্লো সম্পূর্ণ স্বতন্ত্র — কোন ফ্লো সক্রিয় তার ভিত্তিতে সঠিক
+    // (আলাদা) সিলেকশন-স্টেট বেছে নেওয়া হয়, একটার সিলেকশন আরেকটায় দেখাবে না।
+    const isSupplierFlow = invModal === 'order:suppliers' || isOrderSupplierDetail || isReviewSup;
+    const activeQtys    = isSupplierFlow ? orderQtysSup    : orderQtysAll;
+    const setActiveQtys = isSupplierFlow ? setOrderQtysSup : setOrderQtysAll;
+    const activeFlow = isSupplierFlow ? 'suppliers' : 'all';
+    const todayKeyPO = todayEn();
+    // 🆕 কনফার্ম করা অর্ডার purchaseOrders কালেকশনে সংরক্ষণ (স্টক/হিসাবে প্রভাব ফেলে না,
+    // শুধু "আজকের ক্রয় অর্ডার" হিসেবে দেখানোর জন্য — _type:"purchase_order")
+    const savePOFromSelection = (items, qtys, flow) => {
+      const groups = {};
+      items.filter(p => (qtys[p.id]||0) > 0).forEach(p => {
+        const k = p.company || p.category || "অজ্ঞাত";
+        (groups[k] = groups[k] || []).push(p);
+      });
+      const now = new Date();
+      const records = Object.entries(groups).map(([supName, prods], gi) => ({
+        id: `po_${now.getTime()}_${gi}_${Math.random().toString(36).slice(2,6)}`,
+        _type: "purchase_order",
+        flow,
+        supplier: supName,
+        dateKey: todayEn(),
+        createdAt: now.toISOString(),
+        items: prods.map(p => ({ productId: p.id, name: p.name, unit: p.unit||"", stock: p.stock||0, qty: qtys[p.id]||0 })),
+      }));
+      if (records.length) setPurchaseOrders(prev => [...records, ...(prev||[])]);
+      return records;
+    };
+    const todaysSavedOrders = (flow) => (purchaseOrders||[]).filter(p => p._type === "purchase_order" && p.flow === flow && p.dateKey === todayKeyPO);
+    const deletePOGroup = (id) => setPurchaseOrders(prev => (prev||[]).filter(p => p.id !== id));
+    const loadPOGroupForEdit = (rec, flow) => {
+      const setQ = flow === 'suppliers' ? setOrderQtysSup : setOrderQtysAll;
+      setQ(q => { const n = { ...q }; rec.items.forEach(it => { n[it.productId] = it.qty; }); return n; });
+      deletePOGroup(rec.id);
+    };
 
     const supplierOf = (p) => p.company || p.category || "অজ্ঞাত";
     // 🆕 কমন/আনকমন ব্যাজ — SmartInvoiceBuilder-এ ব্যবহৃত demandType ফিল্ড থেকে
@@ -17327,7 +17367,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     ];
 
     // 🆕 যেকোনো সাপ্লায়ার/পেজ থেকে সিলেক্ট করা সব পণ্য — মাল্টি-সাপ্লায়ার কম্বাইন্ড অর্ডারের জন্য
-    const allSelectedItems = products.filter(p => (orderQtys[p.id]||0) > 0);
+    const allSelectedItems = products.filter(p => (activeQtys[p.id]||0) > 0);
     const selectedSupplierCount = new Set(allSelectedItems.map(supplierOf)).size;
 
     const buildOrderHtml = (items, qtys, supName) => {
@@ -17366,12 +17406,19 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
       const isCrit = !isOut && (p.stock||0)<=(p.minStockAlert||5);
       const accentC = isOut ? "#ef4444" : isCrit ? "#f59e0b" : "#22c55e";
       const accentGlow = isOut ? "#ef444433" : isCrit ? "#f59e0b33" : "#22c55e22";
-      const qty = orderQtys[p.id]||0;
+      const qty = activeQtys[p.id]||0;
       const isOrdered = qty > 0;
       return (
-        <div key={p.id} style={{ position:"relative", background: isOrdered ? `linear-gradient(135deg,${accentGlow},#071a0f 60%)` : "linear-gradient(135deg,#0a1f12,#071a0f)", border:`1px solid ${isOrdered ? accentC+"66" : "#1a3a2488"}`, borderRadius:16, padding:"13px 14px", overflow:"hidden", boxShadow: isOrdered ? `0 0 18px ${accentC}18, 0 2px 8px #00000044` : "0 2px 8px #00000033", transition:"all 0.2s ease" }}>
-          <div style={{ position:"absolute", top:0, left:0, right:0, height:2, background: isOrdered ? `linear-gradient(90deg,transparent,${accentC}88,transparent)` : "linear-gradient(90deg,transparent,#1fd15e22,transparent)", borderRadius:"16px 16px 0 0" }}/>
-          <div style={{ position:"absolute", top:10, right:12, color:"#ffffff18", fontWeight:900, fontSize:22, fontFamily:"monospace", lineHeight:1, userSelect:"none" }}>{String(idx+1).padStart(2,"0")}</div>
+        // 🆕 সিলেক্ট করা (qty>0) পণ্য স্পষ্টভাবে বেগুনি রঙে হাইলাইট হবে — বোঝা যাবে এটা
+        // ইতিমধ্যে ক্রয় অর্ডারে যুক্ত হয়েছে।
+        <div key={p.id} style={{ position:"relative", background: isOrdered ? "linear-gradient(135deg,#2c1a52,#1a1035 60%)" : "linear-gradient(135deg,#0a1f12,#071a0f)", border:`1.5px solid ${isOrdered ? "#a78bfa" : "#1a3a2488"}`, borderRadius:16, padding:"13px 14px", overflow:"hidden", boxShadow: isOrdered ? `0 0 18px #a78bfa33, 0 2px 8px #00000044` : "0 2px 8px #00000033", transition:"all 0.2s ease" }}>
+          <div style={{ position:"absolute", top:0, left:0, right:0, height:2, background: isOrdered ? "linear-gradient(90deg,transparent,#a78bfa,transparent)" : "linear-gradient(90deg,transparent,#1fd15e22,transparent)", borderRadius:"16px 16px 0 0" }}/>
+          {isOrdered && (
+            <div style={{ position:"absolute", top:10, right:12, background:"linear-gradient(135deg,#a855f7,#7c3aed)", borderRadius:8, padding:"3px 9px", color:"#fff", fontWeight:800, fontSize:10.5, display:"flex", alignItems:"center", gap:3 }}>
+              ✓ যুক্ত হয়েছে
+            </div>
+          )}
+          {!isOrdered && <div style={{ position:"absolute", top:10, right:12, color:"#ffffff18", fontWeight:900, fontSize:22, fontFamily:"monospace", lineHeight:1, userSelect:"none" }}>{String(idx+1).padStart(2,"0")}</div>}
           <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:6, paddingRight:36 }}>
             <span style={{ color:"#f1f5f9", fontWeight:800, fontSize:14 }}>
               {p.name}{p.unit && <span style={{ color:"#475569", fontSize:11, fontWeight:600 }}> ({p.unit})</span>}
@@ -17388,16 +17435,16 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
           )}
           <div style={{ display:"flex", alignItems:"center", gap:7, flexWrap:"wrap" }}>
             {[5,10,25,50,100].map(n => (
-              <button key={n} onClick={()=>setOrderQtys(q=>({...q,[p.id]:(q[p.id]||0)+n}))}
+              <button key={n} onClick={()=>setActiveQtys(q=>({...q,[p.id]:(q[p.id]||0)+n}))}
                 style={{ background: isOrdered ? `linear-gradient(135deg,${accentC}25,${accentC}12)` : "linear-gradient(135deg,#ffffff10,#ffffff06)", border:`1px solid ${isOrdered ? accentC+"55" : "#ffffff18"}`, borderRadius:10, color: isOrdered ? accentC : "#94a3b8", fontSize:12, fontWeight:800, padding:"6px 14px", cursor:"pointer", fontFamily:"inherit", letterSpacing:0.3, transition:"all 0.15s ease" }}>+{n}</button>
             ))}
             {/* 🆕 ম্যানুয়াল সংখ্যা ইনপুট — সবসময় সরাসরি টাইপ/এডিট করা যায় */}
             <input type="number" inputMode="numeric" min="0" value={qty || ""} placeholder="সংখ্যা"
-              onChange={(e)=>{ const v = parseInt(e.target.value,10); setOrderQtys(q=>({...q,[p.id]: (isNaN(v)||v<0) ? 0 : v})); }}
+              onChange={(e)=>{ const v = parseInt(e.target.value,10); setActiveQtys(q=>({...q,[p.id]: (isNaN(v)||v<0) ? 0 : v})); }}
               onClick={(e)=>e.target.select()}
               style={{ width:70, background: isOrdered ? `linear-gradient(135deg,${accentC}22,${accentC}10)` : "#ffffff0d", border:`1px solid ${isOrdered ? accentC+"66" : "#ffffff18"}`, borderRadius:10, color: isOrdered ? accentC : "#f1f5f9", fontSize:14, fontWeight:900, padding:"9px 6px", textAlign:"center", fontFamily:"inherit" }} />
             {qty > 0 && (
-              <button onClick={()=>setOrderQtys(q=>({...q,[p.id]:0}))} style={{ background:"linear-gradient(135deg,#ef444420,#ef444410)", border:"1px solid #ef444444", borderRadius:10, color:"#ef4444", fontSize:12, fontWeight:800, padding:"6px 12px", cursor:"pointer", fontFamily:"inherit" }}>✕ রিসেট</button>
+              <button onClick={()=>setActiveQtys(q=>({...q,[p.id]:0}))} style={{ background:"linear-gradient(135deg,#ef444420,#ef444410)", border:"1px solid #ef444444", borderRadius:10, color:"#ef4444", fontSize:12, fontWeight:800, padding:"6px 12px", cursor:"pointer", fontFamily:"inherit" }}>✕ রিসেট</button>
             )}
           </div>
         </div>
@@ -17405,6 +17452,8 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     };
 
     // 🆕 কম্বাইন্ড (মাল্টি-সাপ্লায়ার) স্টিকি বটম বার — order:all ও order:suppliers দুই পেজেই দেখাবে
+    // সিলেক্ট করলেই সরাসরি প্রিন্ট/WhatsApp নয় — আগে "অর্ডার দেখুন ও কনফার্ম করুন" পেজে
+    // গিয়ে রিভিউ+এডিট করে তারপর কনফার্ম/শেয়ার করতে হবে (পয়েন্ট ৩-৪)।
     const renderCombinedStickyBar = () => (
       <div style={{ position:"sticky", bottom:0, zIndex:50, background:"linear-gradient(0deg,#020d06 85%,transparent)", padding:"10px 14px 14px" }}>
         {allSelectedItems.length > 0 && (
@@ -17412,18 +17461,12 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
             {allSelectedItems.length}টি পণ্য সিলেক্ট করা হয়েছে · {selectedSupplierCount}টি সাপ্লায়ার
           </div>
         )}
-        <div style={{ display:"flex", gap:10 }}>
-          <button disabled={allSelectedItems.length===0} onClick={()=>{ openPrintWindow(buildMultiSupplierOrderHtml(allSelectedItems, orderQtys)); }}
-            style={{ flex:1, background: allSelectedItems.length===0 ? "#334155" : "linear-gradient(135deg,#0369a1,#0ea5e9)", opacity: allSelectedItems.length===0?0.5:1, border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:15, padding:"13px 0", cursor: allSelectedItems.length===0?"not-allowed":"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:8, fontFamily:"inherit", boxShadow: allSelectedItems.length===0?"none":"0 2px 12px #0ea5e933" }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-            প্রিন্ট (সম্মিলিত)
-          </button>
-          <button disabled={allSelectedItems.length===0} onClick={()=>sendMultiSupplierWhatsApp(allSelectedItems, orderQtys)}
-            style={{ flex:1, background: allSelectedItems.length===0 ? "#334155" : "linear-gradient(135deg,#15803d,#22c55e)", opacity: allSelectedItems.length===0?0.5:1, border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:15, padding:"13px 0", cursor: allSelectedItems.length===0?"not-allowed":"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:8, fontFamily:"inherit", boxShadow: allSelectedItems.length===0?"none":"0 2px 12px #22c55e33" }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413Z"/></svg>
-            WhatsApp (সম্মিলিত)
-          </button>
-        </div>
+        <button disabled={allSelectedItems.length===0}
+          onClick={()=>setInvModal(isSupplierFlow ? 'order:suppliers:review' : 'order:all:review')}
+          style={{ width:"100%", background: allSelectedItems.length===0 ? "#334155" : "linear-gradient(135deg,#7c3aed,#4c1d95)", opacity: allSelectedItems.length===0?0.5:1, border:"none", borderRadius:14, color:"#fff", fontWeight:900, fontSize:15, padding:"14px 0", cursor: allSelectedItems.length===0?"not-allowed":"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:8, fontFamily:"inherit", boxShadow: allSelectedItems.length===0?"none":"0 2px 14px #7c3aed44" }}>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          অর্ডার দেখুন ও কনফার্ম করুন{allSelectedItems.length>0?` (${allSelectedItems.length})`:""}
+        </button>
       </div>
     );
 
@@ -17431,7 +17474,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     if (invModal === 'order') {
       return (
         <div style={{ ...S.page, padding:"0 14px 16px" }}>
-          <button style={S.textBtn} onClick={() => { setInvModal(null); setOrderQtys({}); }}>← ড্যাশবোর্ডে ফিরুন</button>
+          <button style={S.textBtn} onClick={() => { setInvModal(null); setOrderQtysAll({}); setOrderQtysSup({}); }}>← ড্যাশবোর্ডে ফিরুন</button>
           <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:17, marginBottom:2 }}>ক্রয় অর্ডার তৈরি করুন</div>
           <div style={{ color:"#64748b", fontSize:12, marginBottom:18 }}>কীভাবে ক্রয় অর্ডার তৈরি করতে চান বেছে নিন</div>
 
@@ -17476,6 +17519,23 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
             </div>
           </div>
           <div style={{ flex:1, overflowY:"auto", padding:"12px 14px 16px" }}>
+            {(() => { const saved = todaysSavedOrders('all'); return saved.length > 0 && (
+              <div style={{ marginBottom:14 }}>
+                <div style={{ color:"#a78bfa", fontWeight:800, fontSize:11.5, marginBottom:6, letterSpacing:0.4 }}>✅ আজকের কনফার্ম করা অর্ডার ({saved.length})</div>
+                <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                  {saved.map(rec => (
+                    <div key={rec.id} onClick={()=>setInvModal(`order:saved:${rec.id}`)} className="tap-card"
+                      style={{ display:"flex", alignItems:"center", justifyContent:"space-between", background:"#1a1035", border:"1px solid #7c3aed55", borderRadius:12, padding:"10px 12px", cursor:"pointer" }}>
+                      <div>
+                        <div style={{ color:"#f1f5f9", fontWeight:800, fontSize:12.5 }}>🏭 {rec.supplier}</div>
+                        <div style={{ color:"#c4b5fd", fontSize:11, marginTop:2 }}>{rec.items.length}টি পণ্য · দেখুন/এডিট</div>
+                      </div>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ); })()}
             {allProductsSorted.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>কোনো পণ্য নেই</div>}
             <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
               {allProductsSorted.map((p, idx) => renderOrderProductCard(p, idx, true))}
@@ -17486,10 +17546,117 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
       );
     }
 
+    // ═══ 🆕 রিভিউ/কনফার্ম পেজ — দুই ফ্লো-তেই ব্যবহৃত (activeFlow অনুযায়ী) ═══════════
+    if (isReviewAll || isReviewSup) {
+      const reviewItems = allSelectedItems;
+      const reviewGroups = {};
+      reviewItems.forEach(p => { const k = supplierOf(p); (reviewGroups[k] = reviewGroups[k] || []).push(p); });
+      const reviewSupNames = Object.keys(reviewGroups);
+      const backTarget = isReviewSup ? 'order:suppliers' : 'order:all';
+      const doConfirm = () => {
+        savePOFromSelection(reviewItems, activeQtys, activeFlow);
+        setActiveQtys({});
+        setInvModal(backTarget);
+      };
+      return (
+        <div style={{ ...S.page, padding:"0", display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
+          <div style={{ position:"sticky", top:0, zIndex:50, background:"linear-gradient(180deg,#020d06 0%,#041208 80%,#041208ee 100%)", borderBottom:"1px solid #7c3aed44", padding:"12px 14px 10px", backdropFilter:"blur(12px)", WebkitBackdropFilter:"blur(12px)" }}>
+            <button style={S.textBtn} onClick={() => setInvModal(backTarget)}>← এডিট করতে ফিরুন</button>
+            <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:16, marginTop:6 }}>অর্ডার পর্যালোচনা</div>
+            <div style={{ color:"#64748b", fontSize:12, marginTop:2 }}>
+              <span style={{ color:"#a78bfa", fontWeight:700 }}>{reviewItems.length}</span>টি পণ্য · {reviewSupNames.length}টি সাপ্লায়ার
+            </div>
+          </div>
+
+          <div style={{ flex:1, overflowY:"auto", padding:"12px 14px 16px" }}>
+            {reviewItems.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>কোনো পণ্য সিলেক্ট করা হয়নি</div>}
+            <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+              {reviewSupNames.map(supName => (
+                <div key={supName} style={{ background:"#0f1a2e", border:"1px solid #1e293b", borderRadius:16, overflow:"hidden" }}>
+                  <div style={{ background:"linear-gradient(135deg,#1e3a8a,#1e40af)", padding:"9px 14px", display:"flex", alignItems:"center", gap:8 }}>
+                    <span style={{ fontSize:15 }}>🏭</span>
+                    <span style={{ color:"#fff", fontWeight:800, fontSize:13.5 }}>{supName}</span>
+                    <span style={{ marginLeft:"auto", color:"#bfdbfe", fontSize:11, fontWeight:700 }}>{reviewGroups[supName].length}টি পণ্য</span>
+                  </div>
+                  <div style={{ padding:"6px 4px" }}>
+                    {reviewGroups[supName].map((p, i) => (
+                      <div key={p.id} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, padding:"9px 12px", borderBottom: i < reviewGroups[supName].length-1 ? "1px solid #1e293b" : "none" }}>
+                        <div style={{ minWidth:0, flex:1 }}>
+                          <div style={{ color:"#f1f5f9", fontWeight:700, fontSize:13 }}>{p.name}{p.unit?<span style={{ color:"#64748b", fontSize:11 }}> ({p.unit})</span>:null}</div>
+                          <div style={{ color:"#94a3b8", fontSize:11, marginTop:1 }}>বর্তমান স্টক: {p.stock||0}</div>
+                        </div>
+                        <input type="number" inputMode="numeric" min="0" value={activeQtys[p.id] || ""} placeholder="0"
+                          onChange={(e)=>{ const v = parseInt(e.target.value,10); setActiveQtys(q=>({...q,[p.id]: (isNaN(v)||v<0) ? 0 : v})); }}
+                          onClick={(e)=>e.target.select()}
+                          style={{ width:64, background:"#1e293b", border:"1px solid #3b4a63", borderRadius:9, color:"#4ade80", fontSize:15, fontWeight:900, padding:"8px 4px", textAlign:"center", fontFamily:"inherit", flexShrink:0 }} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ position:"sticky", bottom:0, zIndex:50, background:"linear-gradient(0deg,#020d06 85%,transparent)", padding:"10px 14px 14px" }}>
+            <div style={{ display:"flex", gap:10, marginBottom:8 }}>
+              <button disabled={reviewItems.length===0} onClick={()=>openPrintWindow(buildMultiSupplierOrderHtml(reviewItems, activeQtys))}
+                style={{ flex:1, background: reviewItems.length===0?"#334155":"linear-gradient(135deg,#0369a1,#0ea5e9)", opacity:reviewItems.length===0?0.5:1, border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:13, padding:"11px 0", cursor:reviewItems.length===0?"not-allowed":"pointer", fontFamily:"inherit" }}>
+                🖨️ প্রিন্ট
+              </button>
+              <button disabled={reviewItems.length===0} onClick={()=>sendMultiSupplierWhatsApp(reviewItems, activeQtys)}
+                style={{ flex:1, background: reviewItems.length===0?"#334155":"linear-gradient(135deg,#15803d,#22c55e)", opacity:reviewItems.length===0?0.5:1, border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:13, padding:"11px 0", cursor:reviewItems.length===0?"not-allowed":"pointer", fontFamily:"inherit" }}>
+                💬 WhatsApp
+              </button>
+            </div>
+            <button disabled={reviewItems.length===0} onClick={doConfirm}
+              style={{ width:"100%", background: reviewItems.length===0?"#334155":"linear-gradient(135deg,#15803d,#16a34a)", opacity:reviewItems.length===0?0.5:1, border:"none", borderRadius:14, color:"#fff", fontWeight:900, fontSize:15, padding:"13px 0", cursor:reviewItems.length===0?"not-allowed":"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:8, fontFamily:"inherit" }}>
+              ✅ কনফার্ম করুন — আজকের অর্ডার হিসেবে সেভ হবে
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ═══ 🆕 সেভ করা অর্ডার দেখা/এডিট করা পেজ ═══════════════════════════════
+    if (invModal && invModal.startsWith('order:saved:')) {
+      const recId = invModal.replace('order:saved:', '');
+      const rec = (purchaseOrders||[]).find(p => p.id === recId);
+      if (!rec) { setInvModal(null); return null; }
+      const backTo = rec.flow === 'suppliers' ? 'order:suppliers' : 'order:all';
+      return (
+        <div style={{ ...S.page, padding:"0 14px 16px" }}>
+          <button style={S.textBtn} onClick={() => setInvModal(backTo)}>← ফিরুন</button>
+          <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:16, marginBottom:2 }}>🏭 {rec.supplier}</div>
+          <div style={{ color:"#64748b", fontSize:12, marginBottom:14 }}>{rec.items.length}টি পণ্য · কনফার্ম করা ক্রয় অর্ডার</div>
+          <div style={{ background:"#0f1a2e", border:"1px solid #1e293b", borderRadius:16, overflow:"hidden", marginBottom:16 }}>
+            {rec.items.map((it, i) => (
+              <div key={it.productId} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 14px", borderBottom: i<rec.items.length-1?"1px solid #1e293b":"none" }}>
+                <div>
+                  <div style={{ color:"#f1f5f9", fontWeight:700, fontSize:13 }}>{it.name}{it.unit?` (${it.unit})`:""}</div>
+                  <div style={{ color:"#94a3b8", fontSize:11, marginTop:1 }}>স্টক ছিল: {it.stock}</div>
+                </div>
+                <div style={{ color:"#4ade80", fontWeight:900, fontSize:15 }}>{it.qty}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ display:"flex", gap:10 }}>
+            <button onClick={()=>{ loadPOGroupForEdit(rec, rec.flow); setInvModal(backTo); }}
+              style={{ flex:1, background:"linear-gradient(135deg,#7c3aed,#4c1d95)", border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:13.5, padding:"12px 0", cursor:"pointer", fontFamily:"inherit" }}>
+              ✏️ এডিট করুন
+            </button>
+            <button onClick={()=>deletePOGroup(rec.id)}
+              style={{ flex:1, background:"linear-gradient(135deg,#b91c1c,#7f1d1d)", border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:13.5, padding:"12px 0", cursor:"pointer", fontFamily:"inherit" }}>
+              🗑️ মুছুন
+            </button>
+          </div>
+        </div>
+      );
+    }
+
     // ── সাপ্লায়ার ডিটেইল: ক্রয় অর্ডার তৈরি (ফ্লো ২-এর অংশ) ──
     if (isOrderSupplierDetail) {
       const supProducts = uniqueItems.filter(p => supplierOf(p) === selectedOrderSupplier);
-      const supOrderedCount = supProducts.filter(p=>(orderQtys[p.id]||0)>0).length;
+      const supOrderedCount = supProducts.filter(p=>(activeQtys[p.id]||0)>0).length;
 
       return (
         <div style={{ ...S.page, padding:"0", display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
@@ -17522,36 +17689,8 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
             </div>
           </div>
 
-          {/* STICKY BOTTOM — এই সাপ্লায়ারের দ্রুত অর্ডার + সব সাপ্লায়ার মিলিয়ে কম্বাইন্ড অর্ডার */}
-          <div style={{ position:"sticky", bottom:0, zIndex:50, background:"linear-gradient(0deg,#020d06 85%,transparent)", padding:"10px 14px 14px" }}>
-            <div style={{ display:"flex", gap:10, marginBottom: allSelectedItems.length>0 ? 8 : 0 }}>
-              <button onClick={()=>{ openPrintWindow(buildOrderHtml(supProducts, orderQtys, selectedOrderSupplier)); }}
-                style={{ flex:1, background:"linear-gradient(135deg,#0369a1,#0ea5e9)", border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:14, padding:"12px 0", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6, fontFamily:"inherit", boxShadow:"0 2px 12px #0ea5e933" }}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-                শুধু এই সাপ্লায়ার
-              </button>
-              <button onClick={()=>sendWhatsApp(supProducts, orderQtys, selectedOrderSupplier)}
-                style={{ flex:1, background:"linear-gradient(135deg,#15803d,#22c55e)", border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:14, padding:"12px 0", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6, fontFamily:"inherit", boxShadow:"0 2px 12px #22c55e33" }}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413Z"/></svg>
-                শুধু এই সাপ্লায়ার
-              </button>
-            </div>
-            {allSelectedItems.length > 0 && (
-              <>
-                <div style={{ textAlign:"center", color:"#a78bfa", fontSize:11, fontWeight:700, marginBottom:6 }}>— অথবা সব সাপ্লায়ার মিলিয়ে ({selectedSupplierCount}টি) একসাথে —</div>
-                <div style={{ display:"flex", gap:10 }}>
-                  <button onClick={()=>{ openPrintWindow(buildMultiSupplierOrderHtml(allSelectedItems, orderQtys)); }}
-                    style={{ flex:1, background:"linear-gradient(135deg,#7c3aed,#5b21b6)", border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:13.5, padding:"11px 0", cursor:"pointer", fontFamily:"inherit", boxShadow:"0 2px 12px #7c3aed33" }}>
-                    🖨️ সম্মিলিত প্রিন্ট
-                  </button>
-                  <button onClick={()=>sendMultiSupplierWhatsApp(allSelectedItems, orderQtys)}
-                    style={{ flex:1, background:"linear-gradient(135deg,#7c3aed,#5b21b6)", border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:13.5, padding:"11px 0", cursor:"pointer", fontFamily:"inherit", boxShadow:"0 2px 12px #7c3aed33" }}>
-                    💬 সম্মিলিত WhatsApp
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
+          {/* STICKY BOTTOM — সিলেক্ট করা সব সাপ্লায়ার/পণ্য একসাথে রিভিউ+কনফার্ম করতে */}
+          {renderCombinedStickyBar()}
         </div>
       );
     }
@@ -17569,35 +17708,54 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
         </div>
 
         <div style={{ flex:1, overflowY:"auto", padding:"0 14px 16px" }}>
+          {(() => { const saved = todaysSavedOrders('suppliers'); return saved.length > 0 && (
+            <div style={{ marginBottom:14 }}>
+              <div style={{ color:"#a78bfa", fontWeight:800, fontSize:11.5, marginBottom:6, letterSpacing:0.4 }}>✅ আজকের কনফার্ম করা অর্ডার ({saved.length})</div>
+              <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                {saved.map(rec => (
+                  <div key={rec.id} onClick={()=>setInvModal(`order:saved:${rec.id}`)} className="tap-card"
+                    style={{ display:"flex", alignItems:"center", justifyContent:"space-between", background:"#1a1035", border:"1px solid #7c3aed55", borderRadius:12, padding:"10px 12px", cursor:"pointer" }}>
+                    <div>
+                      <div style={{ color:"#f1f5f9", fontWeight:800, fontSize:12.5 }}>🏭 {rec.supplier}</div>
+                      <div style={{ color:"#c4b5fd", fontSize:11, marginTop:2 }}>{rec.items.length}টি পণ্য · দেখুন/এডিট</div>
+                    </div>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ); })()}
           {uniqueItems.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>কোনো পণ্য নেই</div>}
           <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
             {orderSupplierList.map(sup => {
-              const supOrdered = sup.products.filter(p=>(orderQtys[p.id]||0)>0).length;
+              const supOrdered = sup.products.filter(p=>(activeQtys[p.id]||0)>0).length;
               const outCount = sup.products.filter(p=>(p.stock||0)===0).length;
               const critCount = sup.products.filter(p=>(p.stock||0)>0&&(p.stock||0)<=(p.minStockAlert||5)).length;
               const urgency = outCount > 0 ? "#ef4444" : critCount > 0 ? "#f59e0b" : "#1fd15e";
+              const isSelected = supOrdered > 0;
               return (
+                // 🔴 রিডেবিলিটি ফিক্স + 🆕 সিলেক্ট হলে কার্ড স্পষ্টভাবে বেগুনি হাইলাইট হবে
                 <div key={sup.name} className="tap-card"
                   onClick={() => setInvModal(`order:supplier:${sup.name}`)}
-                  style={{ background:`linear-gradient(135deg,${urgency}0d,#071a0f)`, border:`1.5px solid ${supOrdered>0?"#a78bfa66":urgency+"33"}`, borderRadius:16, padding:"14px 16px", cursor:"pointer", position:"relative", transition:"all 0.2s" }}>
-                  {supOrdered > 0 && (
-                    <div style={{ position:"absolute", top:10, right:12, background:"linear-gradient(135deg,#7c3aed,#5b21b6)", borderRadius:8, padding:"3px 10px", color:"#fff", fontWeight:800, fontSize:11 }}>
-                      {supOrdered}টি অর্ডার ✓
+                  style={{ background: isSelected ? "#241247" : "#111c33", border:`1.5px solid ${isSelected?"#a78bfa":urgency+"55"}`, borderLeft:`4px solid ${isSelected?"#a78bfa":urgency}`, borderRadius:14, padding:"13px 15px", cursor:"pointer", position:"relative" }}>
+                  {isSelected && (
+                    <div style={{ position:"absolute", top:10, right:12, background:"linear-gradient(135deg,#a855f7,#7c3aed)", borderRadius:8, padding:"3px 10px", color:"#fff", fontWeight:800, fontSize:11 }}>
+                      ✓ {supOrdered}টি যুক্ত
                     </div>
                   )}
                   <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-                    <div style={{ width:42, height:42, borderRadius:12, background:`${urgency}22`, border:`1px solid ${urgency}44`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                    <div style={{ width:42, height:42, borderRadius:12, background:`${urgency}26`, border:`1px solid ${urgency}55`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
                       <span style={{ fontSize:19 }}>🏭</span>
                     </div>
-                    <div style={{ flex:1, minWidth:0, paddingRight: supOrdered>0 ? 80 : 0 }}>
-                      <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:14 }}>{sup.name}</div>
-                      <div style={{ display:"flex", gap:8, marginTop:4, flexWrap:"wrap" }}>
-                        <span style={{ color:urgency, fontSize:11, fontWeight:700 }}>{sup.products.length}টি পণ্য</span>
-                        {outCount > 0 && <span style={{ color:"#ef4444", fontSize:11, fontWeight:700 }}>🚫 {outCount}টি স্টক শেষ</span>}
-                        {critCount > 0 && <span style={{ color:"#f59e0b", fontSize:11, fontWeight:700 }}>⚠️ {critCount}টি ক্রিটিক্যাল</span>}
+                    <div style={{ flex:1, minWidth:0, paddingRight: isSelected ? 84 : 0 }}>
+                      <div style={{ color:"#ffffff", fontWeight:800, fontSize:14.5 }}>{sup.name}</div>
+                      <div style={{ display:"flex", gap:8, marginTop:5, flexWrap:"wrap" }}>
+                        <span style={{ color:urgency, fontSize:11.5, fontWeight:800 }}>{sup.products.length}টি পণ্য</span>
+                        {outCount > 0 && <span style={{ color:"#fca5a5", background:"#7f1d1d55", borderRadius:6, padding:"1px 6px", fontSize:11, fontWeight:800 }}>🚫 {outCount}টি স্টক শেষ</span>}
+                        {critCount > 0 && <span style={{ color:"#fcd34d", background:"#78350f55", borderRadius:6, padding:"1px 6px", fontSize:11, fontWeight:800 }}>⚠️ {critCount}টি ক্রিটিক্যাল</span>}
                       </div>
                     </div>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={urgency} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={isSelected?"#a78bfa":urgency} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
                   </div>
                 </div>
               );
