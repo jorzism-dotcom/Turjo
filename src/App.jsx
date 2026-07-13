@@ -16189,12 +16189,9 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
   };
 
 
-  // 🔴 ফিক্স: আগে invModal !== 'order' চেক করতো, তাই একটা সাপ্লায়ারের পণ্য সিলেক্ট করে
-  // আরেকটা সাপ্লায়ারে গেলেই (order:supplier:A → order:supplier:B) সিলেকশন মুছে যেত —
-  // মাল্টি-সাপ্লায়ার অর্ডার করাই সম্ভব ছিল না। এখন পুরো "order" ফ্লো (landing/all/
-  // suppliers/supplier-detail) ছেড়ে গেলেই শুধু রিসেট হয়।
+  // পুরো "order" ফ্লো (landing/create/create-review/view/...) ছেড়ে গেলেই সিলেকশন রিসেট হয়।
   React.useEffect(() => {
-    if (!invModal || !invModal.startsWith('order')) { setOrderQtysAll({}); setOrderQtysSup({}); }
+    if (!invModal || !invModal.startsWith('order')) { setOrderQtysAll({}); }
   }, [invModal]);
   // ড্যাশমোডাল বন্ধ হলে (ফিরুন বাটন/ফোনের ব্যাক/নেভিগেশন হোম) ভেতরের ইনভয়েস-ভিউও বন্ধ হবে
   React.useEffect(() => {
