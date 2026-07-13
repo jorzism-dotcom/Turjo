@@ -22109,26 +22109,6 @@ function ReturnModule({ T, S, invoices, customers, showToast, currentUser, shopN
     setDetailInv(inv);
   }, [invSearch, invoices, showToast]);
 
-  // ── 🖨️ থার্মাল প্রিন্ট — লিস্টের যেকোনো রো থেকে সরাসরি (মোডাল না খুলেই) ──
-  const printInvoiceThermal = React.useCallback((inv) => {
-    const itemRows = (inv.items||[]).map((item,i) => {
-      const _g = (item.qty||0)*(item.price||0), _d = Math.min(Math.max(parseFloat(item.itemDiscount)||0,0), _g);
-      const _p = _g > 0 ? Math.round((_d / _g) * 10000) / 100 : 0;
-      return `<tr><td>${i+1}</td><td>${item.name}${_d>0?` <span style="color:#16a34a;font-size:10px;">(–৳${fmtMoney(_d)}${_p>0?` ${_p}%`:""})</span>`:""}</td><td class="right">${item.qty}</td><td class="right">৳${fmtMoney(item.price)}</td><td class="right" style="color:#3b82f6;">৳${fmtMoney(_g-_d)}</td></tr>`;
-    }).join("");
-    const cust = custMap.get(inv.customerId);
-    const content = `<div class="info"><span class="info-l">কাস্টমার:</span><span class="info-r">${inv.customerName || cust?.name || "হাঁটা কাস্টমার"}</span></div>
-      <div class="info"><span class="info-l">ইনভয়েস:</span><span class="info-r">#${(inv.invoiceNo || inv.id || "").toString().slice(-8).toUpperCase()}</span></div>
-      <div class="info"><span class="info-l">তারিখ:</span><span class="info-r">${inv.date || inv.dateKey || ""}</span></div>
-      ${inv.status === "voided" ? `<div class="info" style="color:#ef4444;"><span class="info-l">স্ট্যাটাস:</span><span class="info-r">❌ বাতিলকৃত${inv.voidReason ? ` — ${inv.voidReason}` : ""}</span></div>` : ""}
-      <hr class="dashed">
-      <table><thead><tr><th>#</th><th>পণ্য</th><th class="right">পরি.</th><th class="right">দাম</th><th class="right">মোট</th></tr></thead><tbody>${itemRows}</tbody></table>
-      <hr class="dashed">
-      <div class="info total"><span>মোট:</span><span>৳${fmtMoney(inv.total||0)}</span></div>
-      <div class="info"><span>পরিশোধ:</span><span>${inv.payType==="baki"?"বাকি":inv.payType==="partial"?"আংশিক":"নগদ"}</span></div>`;
-    printThermalDirect(content, inv.shopName || shopName || "SBM", "ইনভয়েস", null);
-  }, [custMap, shopName]);
-
   // ══════════════════════════════════════════════════════════════════════════
   // 📜 ইনভয়েস হিস্ট্রি — ৩০ দিনের বাইরের পুরনো ইনভয়েস, Firestore থেকে পেজিনেটেড,
   // এখন সার্চ ফিল্টার সহ (কাস্টমার/দিন/মাস/পেমেন্ট টাইপ)
@@ -22262,15 +22242,12 @@ function ReturnModule({ T, S, invoices, customers, showToast, currentUser, shopN
   return (
     <div style={{ ...S.page, paddingBottom: 100 }}>
 
-      {/* ── Header ── */}
-      <div style={{ ...S.header, marginBottom: 0 }}>
-        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-          <div style={{ width:4, height:22, borderRadius:2, background:"linear-gradient(180deg,#6366f1,#8b5cf6)" }} />
-          <span style={{ ...S.headerTitle, fontSize:17 }}>📜 ইনভয়েস হিস্ট্রি</span>
-        </div>
+      {/* ── Header — মিডল-এলাইনড, বোল্ড ও বড়, যেকোনো থিমে ক্লিয়ার দেখাতে T.text ব্যবহার ── */}
+      <div style={{ textAlign:"center", marginBottom:14 }}>
+        <span style={{ color:T.text, fontWeight:900, fontSize:22, letterSpacing:0.3 }}>📜 ইনভয়েস হিস্ট্রি</span>
       </div>
 
-      <div style={{ marginTop:14 }}>
+      <div>
 
         {/* ══ 🔍 ইনভয়েস খুঁজুন ══ */}
         <div className="qc-gradient-card" style={{ ...S.card, padding:"16px 14px", marginBottom:14 }}>
@@ -22337,12 +22314,18 @@ function ReturnModule({ T, S, invoices, customers, showToast, currentUser, shopN
                 </div>
 
                 <div style={{ display:"flex", gap:8, marginBottom:8 }}>
-                  <input type="date" value={ihDate}
-                    onChange={e => { setIhDate(e.target.value); if (e.target.value) setIhMonth(""); }}
-                    style={{ ...S.input, marginTop:0, flex:1, fontSize:12 }} />
-                  <input type="month" value={ihMonth}
-                    onChange={e => { setIhMonth(e.target.value); if (e.target.value) setIhDate(""); }}
-                    style={{ ...S.input, marginTop:0, flex:1, fontSize:12 }} />
+                  <div style={{ flex:1 }}>
+                    <div style={{ color:T.sub, fontSize:10.5, fontWeight:700, marginBottom:3 }}>📅 নির্দিষ্ট দিন</div>
+                    <input type="date" value={ihDate}
+                      onChange={e => { setIhDate(e.target.value); if (e.target.value) setIhMonth(""); }}
+                      style={{ ...S.input, marginTop:0, width:"100%", fontSize:12 }} />
+                  </div>
+                  <div style={{ flex:1 }}>
+                    <div style={{ color:T.sub, fontSize:10.5, fontWeight:700, marginBottom:3 }}>🗓️ নির্দিষ্ট মাস</div>
+                    <input type="month" value={ihMonth}
+                      onChange={e => { setIhMonth(e.target.value); if (e.target.value) setIhDate(""); }}
+                      style={{ ...S.input, marginTop:0, width:"100%", fontSize:12 }} />
+                  </div>
                 </div>
 
                 <div style={{ display:"flex", gap:6, marginBottom:10, flexWrap:"wrap" }}>
@@ -22419,7 +22402,7 @@ function ReturnModule({ T, S, invoices, customers, showToast, currentUser, shopN
           <div onClick={() => { if (!showVoidHist) openVoidHist(); else setShowVoidHist(false); }}
             style={{ display:"flex", justifyContent:"space-between", alignItems:"center", cursor:"pointer", userSelect:"none" }}>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-              <span style={{ fontSize:16 }}>❌</span>
+              <span style={{ fontSize:16 }}>🚫</span>
               <div>
                 <div style={{ color:T.text, fontWeight:900, fontSize:14 }}>বাতিলকৃত ইনভয়েস হিস্ট্রি</div>
                 <div style={{ color:T.sub, fontSize:11, marginTop:1 }}>সব সময়ের বাতিলকৃত ইনভয়েস — দিন/মাস অনুযায়ী দেখুন</div>
@@ -22487,19 +22470,14 @@ function ReturnModule({ T, S, invoices, customers, showToast, currentUser, shopN
                     {vhRows.map((inv, i) => {
                       const cust = custMap.get(inv.customerId);
                       return (
-                        <div key={inv.id || i}
-                          style={{ background:T.bg, border:"1px solid #ef444433", borderRadius:12, padding:"11px 13px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}>
-                          <div onClick={() => setDetailInv(inv)} style={{ minWidth:0, flex:1, cursor:"pointer" }}>
+                        <div key={inv.id || i} onClick={() => setDetailInv(inv)}
+                          style={{ background:T.bg, border:"1px solid #ef444433", borderRadius:12, padding:"11px 13px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:8, cursor:"pointer" }}>
+                          <div style={{ minWidth:0, flex:1 }}>
                             <div style={{ color:T.text, fontWeight:800, fontSize:13, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{cust?.name || inv.customerName || "ওয়াক-ইন"}</div>
                             <div style={{ color:T.sub, fontSize:10.5, marginTop:2 }}>{inv.date || inv.dateKey || "—"} · {inv.invoiceNo || inv.id}</div>
                             {inv.voidReason && <div style={{ color:"#f59e0b", fontSize:10.5, marginTop:2 }}>📝 {inv.voidReason}</div>}
                           </div>
-                          <div style={{ textAlign:"right", flexShrink:0, display:"flex", alignItems:"center", gap:8 }}>
-                            <div style={{ color:"#ef4444", fontWeight:900, fontSize:13 }}>৳{fmt(inv.total || 0)}</div>
-                            <button onClick={(e) => { e.stopPropagation(); printInvoiceThermal(inv); }} title="প্রিন্ট"
-                              style={{ background:"#3b82f622", border:"1px solid #3b82f644", borderRadius:8, width:30, height:30, flexShrink:0,
-                                color:"#3b82f6", fontSize:14, cursor:"pointer", fontFamily:"inherit" }}>🖨️</button>
-                          </div>
+                          <div style={{ color:"#ef4444", fontWeight:900, fontSize:13, flexShrink:0 }}>৳{fmt(inv.total || 0)}</div>
                         </div>
                       );
                     })}
@@ -22513,7 +22491,7 @@ function ReturnModule({ T, S, invoices, customers, showToast, currentUser, shopN
         {/* ══ স্ট্যাট কার্ড — এ মাসের বাতিলকৃত ইনভয়েস ══ */}
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
           <div className="qc-gradient-card" style={{ ...S.card, padding:"12px 14px" }}>
-            <div style={{ fontSize:20, marginBottom:4 }}>❌</div>
+            <div style={{ fontSize:20, marginBottom:4 }}>🗑️</div>
             <div style={{ color:"#6366f1", fontWeight:900, fontSize:15 }}>
               {monthVoidedCount}টি
             </div>
@@ -22670,9 +22648,9 @@ function ExpenseTracker({ T, S, expenses = [], setExpenses, showToast, currentUs
   return (
     <div style={{ ...S.page, paddingBottom: 100 }}>
 
-      {/* ── Header — মিডল-এলাইনড, বোল্ড ও বড় ── */}
-      <div style={{ textAlign: "center", marginBottom: 14 }}>
-        <span style={{ ...S.headerTitle, fontSize: 20, fontWeight: 900 }}>💸 খরচ ব্যবস্থাপনা</span>
+      {/* ── Header — মিডল-এলাইনড, বোল্ড ও বড়, যেকোনো থিমে ক্লিয়ার দেখাতে T.text ব্যবহার ── */}
+      <div style={{ textAlign: "center", marginBottom: 16 }}>
+        <span style={{ color: T.text, fontWeight: 900, fontSize: 24, letterSpacing: 0.3 }}>💸 খরচ ব্যবস্থাপনা</span>
       </div>
 
       {/* ── দিন/মাস নেভিগেটর + প্রিন্ট ── */}
@@ -22729,13 +22707,14 @@ function ExpenseTracker({ T, S, expenses = [], setExpenses, showToast, currentUs
         </div>
       </div>
 
-      {/* ── + নতুন খরচ — মিডল-এলাইনড ── */}
-      <div style={{ display: "flex", justifyContent: "center", marginBottom: 14 }}>
+      {/* ── + নতুন খরচ — মিডল-এলাইনড, বড় বাটন ── */}
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>
         <button
           onClick={() => { setShowForm(v => !v); setEditId(null); setForm({ category: "অন্যান্য", amount: "", note: "", date: todayKey }); }}
-          style={{ ...S.addBtn, width: "auto", padding: "10px 24px", margin: 0, display: "flex", alignItems: "center", gap: 6,
+          style={{ ...S.addBtn, width: "auto", padding: "16px 34px", margin: 0, display: "flex", alignItems: "center", gap: 8,
+            borderRadius: 16, boxShadow: "0 6px 18px #f59e0b44",
             background: "linear-gradient(135deg,#f59e0b,#d97706)" }}>
-          <IcPlus /><span style={{ fontSize: 13, fontWeight: 800 }}>নতুন খরচ</span>
+          <IcPlus /><span style={{ fontSize: 17, fontWeight: 900 }}>নতুন খরচ</span>
         </button>
       </div>
 
@@ -22823,24 +22802,35 @@ function ExpenseTracker({ T, S, expenses = [], setExpenses, showToast, currentUs
             <div style={{ fontSize: 32, marginBottom: 8 }}>💸</div>
             <div style={{ color: T.sub, fontSize: 12.5 }}>এই {viewMode === "day" ? "দিনে" : "মাসে"} কোনো খরচ নেই</div>
           </div>
-        ) : (
-          navList.map((e, i) => {
+        ) : (<>
+          {viewMode === "month" && (
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, paddingBottom: 4, borderBottom: `1px solid ${T.border}`, marginBottom: 2 }}>
+              <div style={{ width: 64, textAlign: "center", color: T.sub, fontSize: 9.5, fontWeight: 800 }}>তারিখ</div>
+              <div style={{ width: 66, textAlign: "right", color: T.sub, fontSize: 9.5, fontWeight: 800 }}>পরিমাণ</div>
+            </div>
+          )}
+          {navList.map((e, i) => {
             const catInfo = EXPENSE_CATEGORIES.find(c => c.id === e.category) || { icon: "📦", color: "#94a3b8" };
             return (
               <div key={e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
-                padding: "9px 0", borderBottom: i < navList.length - 1 ? `1px solid ${T.border}` : "none" }}>
+                padding: "9px 0", borderBottom: i < navList.length - 1 ? `1px solid ${T.border}` : "none", gap: 6 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
                   <span style={{ color: T.sub, fontSize: 11, fontWeight: 700, width: 18, flexShrink: 0 }}>{i + 1}.</span>
                   <span style={{ fontSize: 16, flexShrink: 0 }}>{catInfo.icon}</span>
                   <div style={{ minWidth: 0 }}>
                     <div style={{ color: catInfo.color, fontWeight: 700, fontSize: 12.5 }}>{e.category}</div>
-                    {(e.note || viewMode === "month") && (
+                    {e.note && (
                       <div style={{ color: T.sub, fontSize: 10.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {e.note}{e.note && viewMode === "month" ? " · " : ""}{viewMode === "month" ? e.date : ""}
+                        {e.note}
                       </div>
                     )}
                   </div>
                 </div>
+                {viewMode === "month" && (
+                  <div style={{ flexShrink: 0, width: 64, textAlign: "center", background: T.bg, border: `1px solid ${T.border}`, borderRadius: 8, padding: "3px 2px" }}>
+                    <div style={{ color: T.sub, fontSize: 10.5, fontWeight: 700 }}>{(e.date || "").slice(5) || "—"}</div>
+                  </div>
+                )}
                 <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
                   <div style={{ color: "#ef4444", fontWeight: 900, fontSize: 13.5 }}>৳{fmt(e.amount)}</div>
                   {(currentUser?.role !== "staff") && (
@@ -22854,8 +22844,8 @@ function ExpenseTracker({ T, S, expenses = [], setExpenses, showToast, currentUs
                 </div>
               </div>
             );
-          })
-        )}
+          })}
+        </>)}
       </div>
     </div>
   );
