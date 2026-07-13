@@ -13583,7 +13583,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
   };
   const toggleItemDiscMode = (pid) => {
     setItemDiscMode(prev => {
-      const current = prev[pid] || "pct"; // ডিফল্ট এখন % — নতুন পণ্যে সরাসরি পার্সেন্টে ছাড় দেওয়া যায়
+      const current = prev[pid] || "amt"; // ডিফল্ট এখন ৳ (প্লেইন) — নতুন পণ্যে সরাসরি টাকায় ছাড় দেওয়া যায়
       return { ...prev, [pid]: (current === "pct" ? "amt" : "pct") };
     });
   };
@@ -14649,7 +14649,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                         const lineSubtotal = item.price * item.qty;
                         const lineDisc = Math.min(Math.max(parseFloat(item.itemDiscount) || 0, 0), lineSubtotal);
                         const lineNet = lineSubtotal - lineDisc;
-                        const mode = itemDiscMode[item.productId] || "pct";
+                        const mode = itemDiscMode[item.productId] || "amt";
                         const pctDisplay = lineSubtotal > 0 ? Math.round((lineDisc / lineSubtotal) * 10000) / 100 : 0;
                         const _palette = ["#22c55e", "#38bdf8", "#a78bfa", "#f59e0b", "#ec4899", "#fb7185", "#06b6d4"];
                         const accent = _palette[_idx % _palette.length];
@@ -16157,6 +16157,11 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
   // 🆕 দুটি ক্রয় অর্ডার ফ্লো ("সকল পণ্য থেকে" ও "সাপ্লায়ার থেকে") সম্পূর্ণ আলাদা ও
   // স্বয়ংসম্পূর্ণ — তাই প্রতিটির নিজস্ব স্বতন্ত্র সিলেকশন-স্টেট, একটা আরেকটাকে প্রভাবিত করে না।
   const [orderQtysAll, setOrderQtysAll] = useState({});
+  // 🆕 "ক্রয় অর্ডার তৈরি করুন" পেজে সাপ্লায়ার সার্চ (নাম টাইপ করলে অটো-সাজেস্ট, সিলেক্ট করলে
+  // শুধু ওই সাপ্লায়ারের পণ্য স্টক-আউট → ক্রিটিক্যাল → কম স্টক → বেশি স্টক সিরিয়ালে দেখানো হয়)
+  const [poSupplierQuery, setPoSupplierQuery] = useState("");
+  const [poSupplierSelected, setPoSupplierSelected] = useState(null);
+  const [poSupplierSuggestOpen, setPoSupplierSuggestOpen] = useState(false);
   const [voidConfirm, setVoidConfirm] = useState(null);
   // ── মেয়াদোত্তীর্ণ পণ্য → দোকান থেকে সরালে অ্যাপ থেকেও সরানোর ব্যবস্থা ──────────
   const [expRemoveConfirm, setExpRemoveConfirm] = useState(null); // { product, batch }
@@ -17178,6 +17183,91 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
       );
     }
 
+    // ── 🟠 ক্রিটিক্যাল স্টক / স্টক আউট / মেয়াদ শেষের কাছাকাছি — সাপ্লায়ারভিত্তিক
+    // গ্রুপ না করে সরাসরি পণ্যভিত্তিক ফ্ল্যাট তালিকা দেখানো হয় (এক্সপায়ার্ড লিস্টের
+    // মতোই)।
+    if (baseInvKey === 'critical' || baseInvKey === 'out' || baseInvKey === 'near-expiry') {
+      const flatSupplierGroups = {};
+      items.forEach(p => {
+        const key = p.company || p.category || "অজ্ঞাত";
+        if (!flatSupplierGroups[key]) flatSupplierGroups[key] = 0;
+        flatSupplierGroups[key]++;
+      });
+      const flatSupplierCount = Object.keys(flatSupplierGroups).length;
+
+      const sortedItems = [...items].sort((a, b) => {
+        if (baseInvKey === 'near-expiry') return new Date(a.expiryDate||0) - new Date(b.expiryDate||0);
+        if (baseInvKey === 'critical') return (a.stock||0) - (b.stock||0);
+        return (a.name||"").localeCompare(b.name||"", "bn");
+      });
+
+      const buildFlatPdfHtml = () => {
+        const rows = sortedItems.map((p,i) => {
+          const expCell = p.expiryDate ? fmtExpiryMonth(p.expiryDate) : "";
+          return `<tr><td class="serial">${i+1}</td><td>${p.name}</td><td>${p.company||p.category||"অজ্ঞাত"}</td><td class="num">${p.stock||0}${p.unit||""}</td>${isExpiryModal?`<td class="num">${expCell}</td>`:""}</tr>`;
+        }).join("");
+        return buildPdfHtml(`<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্য</th><th>সাপ্লায়ার</th><th class="num">স্টক</th>${isExpiryModal?`<th class="num">মেয়াদ</th>`:""}</tr></thead><tbody>${rows}</tbody></table></div>`, shopName, title);
+      };
+
+      const maxStock = sortedItems.length > 0 ? Math.max(...sortedItems.map(p => p.stock||0), 1) : 1;
+
+      return (
+        <div style={{ ...S.page, padding:"0 14px 16px" }}>
+          <button style={S.textBtn} onClick={() => setInvModal(null)}>← ড্যাশবোর্ডে ফিরুন</button>
+          <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:16, marginBottom:2 }}>{title}</div>
+          <div style={{ color:"#64748b", fontSize:12, marginBottom:10 }}>{sortedItems.length}টি পণ্য · {flatSupplierCount}টি সাপ্লায়ার</div>
+
+          {sortedItems.length > 0 && (
+            <div style={{ display:"flex", gap:8, marginBottom:14 }}>
+              <button onClick={() => openPrintWindow(buildFlatPdfHtml())}
+                style={{ flex:1, background:"linear-gradient(135deg,#0369a1,#0ea5e9)", border:"none", borderRadius:12, padding:"10px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>
+                🖨️ Print
+              </button>
+              <button onClick={() => { const lines = sortedItems.map((p,i)=>`${i+1}. ${p.name} (${p.company||p.category||"অজ্ঞাত"}) — ${p.stock||0}${p.unit||""}`).join("\n"); window.open(`https://wa.me/?text=${encodeURIComponent(title+"\n"+shopName+"\n\n"+lines)}`,"_blank"); }}
+                style={{ flex:1, background:"linear-gradient(135deg,#065f46,#10b981)", border:"none", borderRadius:12, padding:"10px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="#fff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
+                📤 WhatsApp
+              </button>
+            </div>
+          )}
+
+          {sortedItems.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>কোনো পণ্য নেই</div>}
+
+          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            {sortedItems.map((p, i) => {
+              const pct = Math.max(2, Math.round(((p.stock||0) / maxStock) * 100));
+              const grad = BAR_GRADIENTS[i % BAR_GRADIENTS.length];
+              const numColor = grad.match(/#([0-9a-f]{6})/gi);
+              const labelColor = numColor ? numColor[numColor.length-1] : accent;
+              const expDays = p.expiryDate ? Math.ceil((new Date(p.expiryDate) - now) / 86400000) : null;
+              return (
+                <div key={p.id} style={{ background:"#071a0f", border:`1px solid ${accent}33`, borderLeft:`3px solid ${accent}`, borderRadius:14, padding:"12px 14px" }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:4 }}>
+                    <span style={{ color:"#e2e8f0", fontWeight:800, fontSize:14 }}>{p.name}{p.unit ? <span style={{ color:"#64748b", fontSize:11 }}> ({p.unit})</span> : null}</span>
+                    <span style={{ color:labelColor, fontWeight:900, fontSize:15 }}>{p.stock||0}{p.unit||""}</span>
+                  </div>
+                  <div style={{ color:"#94a3b8", fontSize:11, marginBottom:6 }}>🏭 {p.company || p.category || "অজ্ঞাত"}</div>
+                  {expDays !== null && (
+                    <div style={{ color: expDays < 0 ? "#ef4444" : "#f59e0b", fontSize:10, fontWeight:700, marginBottom:6 }}>
+                      {expDays < 0 ? `⚠️ মেয়াদোত্তীর্ণ (${fmtExpiryMonth(p.expiryDate)})` : `⏳ মেয়াদ: ${fmtExpiryMonth(p.expiryDate)}`}
+                    </div>
+                  )}
+                  <div style={{ height:8, borderRadius:999, background:"#0d2e18", overflow:"hidden" }}>
+                    <div style={{ height:"100%", width:`${pct}%`, borderRadius:999, background:grad, transition:"width 0.5s ease" }} />
+                  </div>
+                  <div style={{ display:"flex", gap:10, marginTop:5 }}>
+                    {p.costPrice ? <span style={{ color:"#f59e0b", fontSize:10 }}>ক্রয়: ৳{p.costPrice}</span> : null}
+                    {p.price ? <span style={{ color:"#1fd15e", fontSize:10 }}>বিক্রয়: ৳{p.price}</span> : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
     // ── সাপ্লায়ার-ভিত্তিক গ্রুপিং ──
     const supplierGroups = {};
     items.forEach(p => {
@@ -17520,6 +17610,17 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     ];
     const allSelectedItems = products.filter(p => Object.prototype.hasOwnProperty.call(orderQtysAll, p.id));
 
+    // 🆕 সাপ্লায়ার সার্চের জন্য: সব সাপ্লায়ারের নামের একটা ইউনিক তালিকা
+    const allSupplierNames = [...new Set(products.map(p => supplierOf(p)).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"bn"));
+    // টাইপ করা টেক্সটের সাথে মিলে এমন সাপ্লায়ার সাজেশন (২ অক্ষর থেকে শুরু)
+    const poSupplierSuggestions = poSupplierQuery.trim().length >= 2
+      ? allSupplierNames.filter(s => s.toLowerCase().includes(poSupplierQuery.trim().toLowerCase())).slice(0, 8)
+      : [];
+    // সিলেক্ট করা সাপ্লায়ার থাকলে শুধু তার পণ্য — সিরিয়াল অপরিবর্তিত থাকে (স্টক-আউট → ক্রিটিক্যাল → কম স্টক → বেশি স্টক)
+    const poFilteredProducts = poSupplierSelected
+      ? allProductsSorted.filter(p => supplierOf(p) === poSupplierSelected)
+      : allProductsSorted;
+
     // 🆕 একবার কনফার্মে একটাই ইউনিফাইড রেকর্ড (সাপ্লায়ার-গ্রুপড নয়) — প্রতিটি আইটেমে নিজস্ব সাপ্লায়ার সংরক্ষিত থাকে
     const savePOFromSelection = (items, qtys) => {
       const ordered = items.filter(p => (qtys[p.id]||0) > 0);
@@ -17671,15 +17772,46 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
           <div style={{ position:"sticky", top:0, zIndex:50, background:FUT.headBg, borderBottom:`1px solid ${FUT.accent2}33`, padding:"12px 14px 10px", backdropFilter:"blur(12px)", WebkitBackdropFilter:"blur(12px)" }}>
             <button style={S.textBtn} onClick={() => setInvModal('order')}>← ফিরুন</button>
             <div style={{ color:"#f1f5f9", fontWeight:900, fontSize:16, marginTop:6 }}>পণ্য বেছে নিন</div>
-            <div style={{ color:"#64748b", fontSize:12, marginTop:2 }}>
-              <span style={{ color:FUT.accent2, fontWeight:700 }}>{allProductsSorted.length}</span>টি পণ্য
+
+            {/* 🆕 সাপ্লায়ার সার্চবার — নাম টাইপ করলে (২ অক্ষর থেকে) অটো-সাজেস্ট আসবে */}
+            <div style={{ position:"relative", marginTop:10 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8, background:"#ffffff0d", border:`1.5px solid ${poSupplierSelected ? FUT.accent2+"88" : "#ffffff20"}`, borderRadius:14, padding:"9px 12px" }}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7c8bb0" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0 }}><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+                <input
+                  type="text"
+                  value={poSupplierQuery}
+                  placeholder="সাপ্লায়ারের নাম লিখে সার্চ করুন..."
+                  onChange={(e)=>{ setPoSupplierQuery(e.target.value); setPoSupplierSelected(null); setPoSupplierSuggestOpen(true); }}
+                  onFocus={()=>setPoSupplierSuggestOpen(true)}
+                  style={{ flex:1, background:"transparent", border:"none", outline:"none", color:"#f1f5f9", fontSize:13.5, fontWeight:700, fontFamily:"inherit" }}
+                />
+                {(poSupplierQuery || poSupplierSelected) && (
+                  <button onClick={()=>{ setPoSupplierQuery(""); setPoSupplierSelected(null); setPoSupplierSuggestOpen(false); }}
+                    style={{ width:22, height:22, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", background:"#ffffff14", border:"none", borderRadius:"50%", color:"#94a3b8", fontSize:12, fontWeight:900, padding:0, cursor:"pointer" }}>✕</button>
+                )}
+              </div>
+              {poSupplierSuggestOpen && poSupplierSuggestions.length > 0 && (
+                <div style={{ position:"absolute", top:"calc(100% + 4px)", left:0, right:0, zIndex:60, background:"#0d0a24", border:`1px solid ${FUT.accent2}44`, borderRadius:12, overflow:"hidden", boxShadow:"0 8px 24px #00000066", maxHeight:220, overflowY:"auto" }}>
+                  {poSupplierSuggestions.map((s) => (
+                    <div key={s} onClick={()=>{ setPoSupplierSelected(s); setPoSupplierQuery(s); setPoSupplierSuggestOpen(false); }}
+                      style={{ padding:"10px 14px", fontSize:13, fontWeight:700, color:"#e2e8f0", cursor:"pointer", borderBottom:"1px solid #ffffff0f", display:"flex", alignItems:"center", gap:8 }}>
+                      <span style={{ fontSize:12 }}>🏭</span>{s}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div style={{ color:"#64748b", fontSize:12, marginTop:8 }}>
+              <span style={{ color:FUT.accent2, fontWeight:700 }}>{poFilteredProducts.length}</span>টি পণ্য
+              {poSupplierSelected && <span style={{ color:FUT.accent, fontWeight:800, marginLeft:8 }}>🏭 {poSupplierSelected}</span>}
               {allSelectedItems.length > 0 && <span style={{ color:FUT.accent, fontWeight:800, marginLeft:8 }}>· {allSelectedItems.length}টি সিলেক্ট করা হয়েছে</span>}
             </div>
           </div>
-          <div style={{ flex:1, overflowY:"auto", padding:"12px 14px 16px" }}>
-            {allProductsSorted.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>কোনো পণ্য নেই</div>}
+          <div style={{ flex:1, overflowY:"auto", padding:"12px 14px 16px" }} onClick={()=>{ if (poSupplierSuggestOpen) setPoSupplierSuggestOpen(false); }}>
+            {poFilteredProducts.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>{poSupplierSelected ? "এই সাপ্লায়ারের কোনো পণ্য নেই" : "কোনো পণ্য নেই"}</div>}
             <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-              {allProductsSorted.map((p, idx) => renderOrderProductCard(p, idx))}
+              {poFilteredProducts.map((p, idx) => renderOrderProductCard(p, idx))}
             </div>
           </div>
           <div style={{ position:"sticky", bottom:0, zIndex:50, background:"linear-gradient(0deg,#050414 85%,transparent)", padding:"10px 14px 14px" }}>
