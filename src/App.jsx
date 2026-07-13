@@ -12076,6 +12076,7 @@ function SmartBusinessMgmt() {
             <AuditTrailModule T={T} S={S}
               currentUser={currentUser}
               auditLogs={auditLogs}
+              shopName={shopName}
             />
           </ErrorBoundary>
         )}
@@ -24011,11 +24012,59 @@ function DailySummaryModule({ T, S, currentUser, shopName, showToast, customers 
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// 📋 অডিট ট্রেইল — Settings থেকে সরিয়ে আলাদা মডিউল হিসেবে
+// 📋 অডিট ট্রেইল — Settings থেকে সরিয়ে আলাদা মডিউল হিসেবে (Enterprise-grade UI)
 // ══════════════════════════════════════════════════════════════════════════
-function AuditTrailModule({ T, S, currentUser, auditLogs = [] }) {
-  const [showAudit, setShowAudit] = useState(true);
+
+// ── ছোট স্ট্যাট কার্ড — অডিট ট্রেইলের সারসংক্ষেপ দেখাতে ──────────────────────
+function AuditStatCard({ T, icon, label, val, color, small }) {
+  return (
+    <div style={{
+      background: `linear-gradient(160deg,${T.card},${color}0c)`,
+      border: `1px solid ${color}33`, borderRadius: 12, padding: "10px 12px",
+      boxShadow: `0 0 10px ${color}12`, minWidth: 0,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+        <span style={{
+          width: 22, height: 22, borderRadius: 7, flexShrink: 0,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          background: `${color}22`, border: `1px solid ${color}44`, fontSize: 12,
+        }}>{icon}</span>
+        <span style={{ color: T.sub, fontSize: 9.5, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+      </div>
+      <div style={{
+        color, fontWeight: 900, fontSize: small ? 12.5 : 17,
+        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+        textShadow: `0 0 10px ${color}44`,
+      }}>{val}</div>
+    </div>
+  );
+}
+
+// ── ফিল্টার চিপ — ব্যাজ কাউন্ট সহ ────────────────────────────────────────────
+function AuditFilterChip({ T, active, onClick, icon, label, count, color }) {
+  return (
+    <button onClick={onClick} style={{
+      flexShrink: 0, display: "flex", alignItems: "center", gap: 5,
+      padding: "6px 11px", borderRadius: 16,
+      border: `1.5px solid ${active ? color : T.border}`,
+      background: active ? `${color}22` : "transparent",
+      color: active ? color : T.sub, fontSize: 11, fontWeight: 700,
+      cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap",
+    }}>
+      {icon && <span>{icon}</span>}
+      <span>{label}</span>
+      <span style={{
+        background: active ? color : T.border, color: active ? "#fff" : T.sub,
+        borderRadius: 8, padding: "1px 6px", fontSize: 9.5, fontWeight: 800, minWidth: 16, textAlign: "center",
+      }}>{count}</span>
+    </button>
+  );
+}
+
+function AuditTrailModule({ T, S, currentUser, auditLogs = [], shopName }) {
   const [auditFilter, setAuditFilter] = useState("all");
+  const [searchQ,     setSearchQ]     = useState("");
+  const [dateRange,   setDateRange]   = useState("all"); // all | today | week | month
 
   if (currentUser?.role === "staff") {
     return (
@@ -24027,111 +24076,261 @@ function AuditTrailModule({ T, S, currentUser, auditLogs = [] }) {
     );
   }
 
+  // ── অ্যাকশন লেবেল ম্যাপ — আইকন, লেবেল, রঙ ──────────────────────────────────
   const ACTION_LABELS = {
-    INVOICE_VOID:          { icon: "🗑️", label: "ইনভয়েস ভয়েড", color: "#ef4444" },
-    PRODUCT_PRICE_CHANGE:  { icon: "💰", label: "দাম পরিবর্তন", color: "#f59e0b" },
-    STOCK_ADJUST:          { icon: "📦", label: "স্টক সংশোধন", color: "#6366f1" },
-    PRODUCT_DELETE:        { icon: "❌", label: "পণ্য মুছে ফেলা", color: "#ef4444" },
-    CUSTOMER_DELETE:       { icon: "👤", label: "কাস্টমার মুছে ফেলা", color: "#ef4444" },
-    LARGE_BAKI_ADD:        { icon: "📈", label: "বড় বাকি যোগ", color: "#f59e0b" },
-    LARGE_JOMA_COLLECT:    { icon: "💵", label: "বড় জমা আদায়", color: "#22c55e" },
+    INVOICE_VOID:          { icon: "🗑️", label: "ইনভয়েস ভয়েড",       color: "#ef4444" },
+    PRODUCT_PRICE_CHANGE:  { icon: "💰", label: "দাম পরিবর্তন",        color: "#f59e0b" },
+    STOCK_ADJUST:          { icon: "📦", label: "স্টক সংশোধন",        color: "#6366f1" },
+    PRODUCT_DELETE:        { icon: "❌", label: "পণ্য মুছে ফেলা",      color: "#ef4444" },
+    CUSTOMER_DELETE:       { icon: "👤", label: "কাস্টমার মুছে ফেলা",  color: "#ef4444" },
+    LARGE_BAKI_ADD:        { icon: "📈", label: "বড় বাকি যোগ",        color: "#f59e0b" },
+    LARGE_JOMA_COLLECT:    { icon: "💵", label: "বড় জমা আদায়",       color: "#22c55e" },
   };
+  const humanizeAction = (action) => (action || "অজানা কার্যক্রম").replace(/_/g, " ");
+  const infoOf = (action) => ACTION_LABELS[action] || { icon: "🔄", label: humanizeAction(action), color: "#94a3b8" };
 
-  const filtered = auditFilter === "all"
-    ? auditLogs
-    : auditLogs.filter(a => a.action === auditFilter);
+  // ── সময় হেল্পার — পুরনো লগে log.time ফিল্ডে পুরো তারিখ+সময় দুটোই থাকতে পারে, শুধু সময়টুকু বের করি ──
+  const timeOnly = (t) => { if (!t) return ""; const idx = t.indexOf(","); return idx >= 0 ? t.slice(idx + 1).trim() : t; };
+  const timeAgo = (iso) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    const diffMin = Math.floor((Date.now() - d.getTime()) / 60000);
+    if (diffMin < 1) return "এইমাত্র";
+    if (diffMin < 60) return `${diffMin} মিনিট আগে`;
+    const diffHr = Math.floor(diffMin / 60);
+    if (diffHr < 24) return `${diffHr} ঘণ্টা আগে`;
+    const diffDay = Math.floor(diffHr / 24);
+    if (diffDay < 30) return `${diffDay} দিন আগে`;
+    return `${Math.floor(diffDay / 30)} মাস আগে`;
+  };
+  const initialsOf = (name) => (name || "?").trim().charAt(0).toUpperCase() || "?";
+
+  // ── স্ট্যাটস — মোট লগ, আজকের লগ, সক্রিয় ব্যবহারকারী, সর্বোচ্চ ঘটিত অ্যাকশন ──
+  const todayKeyNow = todayEn();
+  const totalLogs   = auditLogs.length;
+  const todayLogs   = useMemo(() => auditLogs.filter(l => l.dateKey === todayKeyNow).length, [auditLogs, todayKeyNow]);
+  const activeUsers = useMemo(() => new Set(auditLogs.map(l => l.userName).filter(Boolean)).size, [auditLogs]);
+  const topAction   = useMemo(() => {
+    const counts = {};
+    auditLogs.forEach(l => { counts[l.action] = (counts[l.action] || 0) + 1; });
+    let best = null, bestN = 0;
+    Object.entries(counts).forEach(([k, n]) => { if (n > bestN) { best = k; bestN = n; } });
+    return best ? infoOf(best) : null;
+  }, [auditLogs]);
+
+  // ── অ্যাকশন-ভিত্তিক গণনা (ফিল্টার চিপের ব্যাজ) ─────────────────────────────
+  const actionCounts = useMemo(() => {
+    const m = {};
+    auditLogs.forEach(l => { m[l.action] = (m[l.action] || 0) + 1; });
+    return m;
+  }, [auditLogs]);
+  const knownActionKeys = Object.keys(ACTION_LABELS);
+  const otherCount = useMemo(() => auditLogs.filter(l => !ACTION_LABELS[l.action]).length, [auditLogs]);
+
+  // ── ফিল্টারিং ─────────────────────────────────────────────────────────────
+  const withinRange = useCallback((log) => {
+    if (dateRange === "all") return true;
+    const d = new Date(log.date);
+    if (isNaN(d.getTime())) return true;
+    const diffDays = Math.floor((Date.now() - d.getTime()) / 86400000);
+    if (dateRange === "today") return diffDays <= 0;
+    if (dateRange === "week")  return diffDays <= 7;
+    if (dateRange === "month") return diffDays <= 30;
+    return true;
+  }, [dateRange]);
+
+  const matchesSearch = useCallback((log) => {
+    if (!searchQ.trim()) return true;
+    const q = searchQ.trim().toLowerCase();
+    const hay = [
+      log.userName, log.role, log.action,
+      log.details?.productName, log.details?.customerName,
+      log.details?.reason, log.details?.invoiceNo,
+    ].filter(Boolean).join(" ").toLowerCase();
+    return hay.includes(q);
+  }, [searchQ]);
+
+  const filtered = useMemo(() => {
+    return auditLogs.filter(l => {
+      if (auditFilter === "other") { if (ACTION_LABELS[l.action]) return false; }
+      else if (auditFilter !== "all" && l.action !== auditFilter) return false;
+      if (!withinRange(l)) return false;
+      if (!matchesSearch(l)) return false;
+      return true;
+    });
+  }, [auditLogs, auditFilter, withinRange, matchesSearch]);
+
+  // ── প্রিন্ট / এক্সপোর্ট ───────────────────────────────────────────────────
+  const handlePrint = useCallback(() => {
+    const rowsHtml = filtered.map((log, i) => {
+      const info = infoOf(log.action);
+      const d = log.details || {};
+      const parts = [];
+      if (d.productName)  parts.push(d.productName);
+      if (d.customerName) parts.push(d.customerName);
+      if (d.oldPrice !== undefined) parts.push(`৳${d.oldPrice} → ৳${d.newPrice}`);
+      if (d.oldStock !== undefined) parts.push(`স্টক ${d.oldStock} → ${d.newStock}`);
+      if (d.amount !== undefined)   parts.push(`৳${Number(d.amount).toLocaleString("en-US")}`);
+      if (d.invoiceNo) parts.push(`#${d.invoiceNo}`);
+      if (d.reason)    parts.push(`কারণ: ${d.reason}`);
+      return `<tr><td class="serial">${i + 1}</td><td>${info.icon} ${info.label}</td><td>${log.userName || "—"}${log.role ? ` (${log.role})` : ""}</td><td>${log.date || ""} ${timeOnly(log.time)}</td><td>${parts.join(" · ") || "—"}</td></tr>`;
+    }).join("");
+    const content = `
+      <div class="section">
+        <h3 style="font-size:15px;margin-bottom:10px;">অডিট ট্রেইল — কে কখন কী করলো</h3>
+        <table>
+          <thead><tr><th class="serial">#</th><th>অ্যাকশন</th><th>ব্যবহারকারী</th><th>তারিখ ও সময়</th><th>বিস্তারিত</th></tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>`;
+    const html = buildPdfHtml(content, shopName || "SBM", `অডিট ট্রেইল — ${filtered.length}টি লগ`);
+    openPrintWindow(html);
+  }, [filtered, shopName]);
+
+  const DATE_RANGES = [["all","সব সময়"], ["today","আজ"], ["week","৭ দিন"], ["month","৩০ দিন"]];
 
   return (
     <div style={{ ...S.page, paddingBottom: 100 }}>
-      <div style={{ ...S.header, marginBottom: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ width: 4, height: 22, borderRadius: 2, background: "linear-gradient(180deg,#6366f1,#4338ca)" }} />
-          <span style={{ ...S.headerTitle, fontSize: 17 }}>📋 অডিট ট্রেইল</span>
-        </div>
+
+      {/* ── Header — মিডল-এলাইনড, বড়, বোল্ড, T.text দিয়ে যেকোনো থিমে স্পষ্ট দেখাবে ── */}
+      <div style={{ textAlign: "center", marginBottom: 16 }}>
+        <span style={{ color: T.text, fontWeight: 900, fontSize: 36, letterSpacing: 0.3 }}>📋 অডিট ট্রেইল</span>
+        <div style={{ color: T.sub, fontSize: 12, fontWeight: 600, marginTop: 4 }}>কে, কখন, কী করলো — সম্পূর্ণ কার্যকলাপের নিরাপত্তা লগ</div>
       </div>
 
-      <div className="qc-gradient-card" style={{ ...S.card, padding: "14px 16px", marginTop: 14 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: showAudit?12:0 }}
-          onClick={() => setShowAudit(v => !v)}>
-          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-            <span style={{ fontSize:18 }}>📋</span>
-            <div>
-              <div style={{ color:T.text, fontWeight:900, fontSize:14 }}>অডিট ট্রেইল</div>
-              <div style={{ color:T.sub, fontSize:11, marginTop:1 }}>কে কখন কী করলো — {auditLogs.length}টি লগ</div>
-            </div>
-          </div>
-          <span style={{ color:T.sub, fontSize:14 }}>{showAudit ? "▲" : "▼"}</span>
+      {/* ── স্ট্যাট সারসংক্ষেপ — এন্টারপ্রাইজ-গ্রেড ওভারভিউ ── */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8, marginBottom: 12 }}>
+        <AuditStatCard T={T} icon="📚" label="মোট লগ" val={totalLogs.toLocaleString("en-US")} color="#6366f1" />
+        <AuditStatCard T={T} icon="📆" label="আজকের লগ" val={todayLogs.toLocaleString("en-US")} color="#22c55e" />
+        <AuditStatCard T={T} icon="👥" label="সক্রিয় ব্যবহারকারী" val={activeUsers.toLocaleString("en-US")} color="#0ea5e9" />
+        <AuditStatCard T={T} icon={topAction ? topAction.icon : "—"} label="সর্বোচ্চ ঘটিত অ্যাকশন" val={topAction ? topAction.label : "—"} color={topAction ? topAction.color : "#94a3b8"} small />
+      </div>
+
+      {/* ── প্রধান কার্ড — সার্চ, ফিল্টার ও লগ লিস্ট ── */}
+      <div className="qc-gradient-card" style={{ ...S.card, padding: "14px 16px" }}>
+
+        {/* সার্চ + প্রিন্ট/এক্সপোর্ট */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          <input
+            value={searchQ}
+            onChange={e => setSearchQ(e.target.value)}
+            placeholder="🔍 ব্যবহারকারী, পণ্য, কারণ দিয়ে খুঁজুন..."
+            style={{ ...S.input, marginTop: 0, flex: 1, fontSize: 12.5, padding: "9px 12px" }}
+          />
+          <button onClick={handlePrint} title="প্রিন্ট / এক্সপোর্ট"
+            style={{ background: "#3b82f622", border: "1px solid #3b82f644", borderRadius: 10, width: 40, flexShrink: 0,
+              color: "#3b82f6", fontSize: 16, cursor: "pointer", fontFamily: "inherit" }}>🖨️</button>
         </div>
 
-        {showAudit && (
-          <div>
-            {/* Filter chips */}
-            <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:10 }}>
-              <button onClick={() => setAuditFilter("all")}
-                style={{ padding:"4px 10px", borderRadius:14,
-                  border:`1px solid ${auditFilter==="all"?T.accent:T.border}`,
-                  background: auditFilter==="all"?T.accent+"22":"transparent",
-                  color: auditFilter==="all"?T.accent:T.sub, fontSize:11, fontWeight:700,
-                  cursor:"pointer", fontFamily:"inherit" }}>
-                সব
-              </button>
-              {Object.entries(ACTION_LABELS).map(([key, info]) => (
-                <button key={key} onClick={() => setAuditFilter(key)}
-                  style={{ padding:"4px 10px", borderRadius:14,
-                    border:`1px solid ${auditFilter===key?info.color:T.border}`,
-                    background: auditFilter===key?info.color+"22":"transparent",
-                    color: auditFilter===key?info.color:T.sub, fontSize:11, fontWeight:700,
-                    cursor:"pointer", fontFamily:"inherit" }}>
-                  {info.icon} {info.label}
-                </button>
-              ))}
-            </div>
+        {/* ডেট-রেঞ্জ কুইক ফিল্টার */}
+        <div style={{ display: "flex", gap: 5, marginBottom: 8 }}>
+          {DATE_RANGES.map(([key, label]) => (
+            <button key={key} onClick={() => setDateRange(key)}
+              style={{ flex: 1, padding: "6px 4px", borderRadius: 10,
+                border: `1.5px solid ${dateRange === key ? T.accent : T.border}`,
+                background: dateRange === key ? T.accent + "22" : "transparent",
+                color: dateRange === key ? T.accent : T.sub, fontSize: 11, fontWeight: 700,
+                cursor: "pointer", fontFamily: "inherit" }}>
+              {label}
+            </button>
+          ))}
+        </div>
 
-            {filtered.length === 0 ? (
-              <div style={{ textAlign:"center", padding:"20px 0", color:T.sub, fontSize:12 }}>
-                কোনো লগ নেই
-              </div>
-            ) : (
-              <Virtuoso
-                style={{ height: Math.min(filtered.length * 70, 360) }}
-                data={filtered}
-                itemContent={(_, log) => {
-                  const info = ACTION_LABELS[log.action] || { icon:"📝", label:log.action, color:"#94a3b8" };
-                  return (
-                    <div style={{ padding:"8px 0", borderBottom:`1px solid ${T.border}` }}>
-                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
-                        <div style={{ flex:1 }}>
-                          <div style={{ color:info.color, fontWeight:800, fontSize:12 }}>
-                            {info.icon} {info.label}
-                          </div>
-                          <div style={{ color:T.sub, fontSize:11, marginTop:2 }}>
-                            {log.userName} ({log.role}) · {log.date} {log.time}
-                          </div>
-                          {/* details সংক্ষেপে দেখাই */}
-                          {log.details && (
-                            <div style={{ color:T.sub, fontSize:10, marginTop:3 }}>
-                              {log.details.productName && <span>{log.details.productName} · </span>}
-                              {log.details.customerName && <span>{log.details.customerName} · </span>}
-                              {log.details.oldPrice !== undefined && <span>৳{log.details.oldPrice} → ৳{log.details.newPrice} · </span>}
-                              {log.details.oldStock !== undefined && <span>স্টক {log.details.oldStock} → {log.details.newStock} · </span>}
-                              {log.details.amount !== undefined && <span>৳{Number(log.details.amount).toLocaleString("en-US")} · </span>}
-                              {log.details.invoiceNo && <span>#{log.details.invoiceNo} · </span>}
-                              {log.details.reason && <span>কারণ: {log.details.reason}</span>}
-                            </div>
-                          )}
-                        </div>
+        {/* অ্যাকশন ফিল্টার চিপ — ব্যাজ কাউন্ট সহ, হরাইজন্টাল স্ক্রল */}
+        <div style={{ display: "flex", gap: 5, overflowX: "auto", paddingBottom: 6, marginBottom: 6, scrollbarWidth: "none" }}>
+          <AuditFilterChip T={T} active={auditFilter === "all"} onClick={() => setAuditFilter("all")}
+            label="সব" count={totalLogs} color={T.accent} />
+          {knownActionKeys.map(key => (
+            (actionCounts[key] || 0) > 0 && (
+              <AuditFilterChip key={key} T={T} active={auditFilter === key} onClick={() => setAuditFilter(key)}
+                icon={ACTION_LABELS[key].icon} label={ACTION_LABELS[key].label}
+                count={actionCounts[key]} color={ACTION_LABELS[key].color} />
+            )
+          ))}
+          {otherCount > 0 && (
+            <AuditFilterChip T={T} active={auditFilter === "other"} onClick={() => setAuditFilter("other")}
+              icon="🔄" label="অন্যান্য" count={otherCount} color="#94a3b8" />
+          )}
+        </div>
+
+        <div style={{ color: T.sub, fontSize: 10.5, fontWeight: 700, marginBottom: 6 }}>
+          {filtered.length.toLocaleString("en-US")}টি ফলাফল দেখানো হচ্ছে
+        </div>
+
+        {/* ── লগ টাইমলাইন ── */}
+        {filtered.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "30px 0" }}>
+            <div style={{ fontSize: 36, marginBottom: 8 }}>🗒️</div>
+            <div style={{ color: T.sub, fontSize: 12.5 }}>কোনো লগ পাওয়া যায়নি</div>
+          </div>
+        ) : (
+          <Virtuoso
+            style={{ height: Math.min(filtered.length * 92, 520) }}
+            data={filtered}
+            itemContent={(_, log) => {
+              const info = infoOf(log.action);
+              const d = log.details || {};
+              const chips = [];
+              if (d.productName)  chips.push(d.productName);
+              if (d.customerName) chips.push(d.customerName);
+              if (d.oldPrice !== undefined) chips.push(`৳${d.oldPrice} → ৳${d.newPrice}`);
+              if (d.oldStock !== undefined) chips.push(`স্টক ${d.oldStock} → ${d.newStock}`);
+              if (d.amount !== undefined)   chips.push(`৳${Number(d.amount).toLocaleString("en-US")}`);
+              if (d.invoiceNo) chips.push(`#${d.invoiceNo}`);
+              if (d.reason)    chips.push(`কারণ: ${d.reason}`);
+
+              return (
+                <div style={{ display: "flex", gap: 10, padding: "10px 4px", borderBottom: `1px solid ${T.border}` }}>
+                  {/* আইকন ব্যাজ */}
+                  <div style={{
+                    width: 34, height: 34, borderRadius: 10, flexShrink: 0,
+                    background: `linear-gradient(135deg,${info.color}33,${info.color}18)`,
+                    border: `1.5px solid ${info.color}55`,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 15, boxShadow: `0 0 8px ${info.color}22`,
+                  }}>{info.icon}</div>
+
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6 }}>
+                      <div style={{ color: info.color, fontWeight: 800, fontSize: 12.5 }}>{info.label}</div>
+                      <div style={{ color: T.sub, fontSize: 9.5, fontWeight: 700, flexShrink: 0, whiteSpace: "nowrap" }}>
+                        {timeAgo(log.createdAt)}
                       </div>
                     </div>
-                  );
-                }}
-              />
-            )}
-          </div>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 3, flexWrap: "wrap" }}>
+                      <span style={{
+                        width: 15, height: 15, borderRadius: "50%", background: `${T.accent}33`,
+                        color: T.accent, fontSize: 8.5, fontWeight: 900,
+                        display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+                      }}>{initialsOf(log.userName)}</span>
+                      <span style={{ color: T.text, fontSize: 11, fontWeight: 700 }}>{log.userName || "অজানা"}</span>
+                      {log.role && <span style={{ color: T.sub, fontSize: 10 }}>({log.role})</span>}
+                      <span style={{ color: T.sub, fontSize: 10 }}>· {log.date} {timeOnly(log.time)}</span>
+                    </div>
+
+                    {chips.length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 5 }}>
+                        {chips.map((c, ci) => (
+                          <span key={ci} style={{
+                            background: T.bg, border: `1px solid ${T.border}`, borderRadius: 8,
+                            padding: "2px 7px", color: T.sub, fontSize: 9.5, fontWeight: 600,
+                          }}>{c}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            }}
+          />
         )}
       </div>
     </div>
   );
 }
+
 
 // ══════════════════════════════════════════════════════════════════════════
 // 👥 স্টাফ/সেলসবয় ব্যবস্থাপনা — Settings থেকে সরিয়ে আলাদা মডিউল হিসেবে
