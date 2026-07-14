@@ -289,12 +289,27 @@ function calcNextBatch(productId, products, purchaseOrders, purchaseDate) {
   return `${prefix}${nextN}`;
 }
 
-// ─── getSortedActiveBatches — p.batches থেকে FIFO অর্ডারে সব active (qty>0) batch ──
-// productBatchMap, prodBatchMap, এবং বিক্রয়ের সময় stock deduction — সব একই sort logic ব্যবহার করে
+// ─── isBatchExpired — একটা তারিখ আজকের হিসেবে মেয়াদোত্তীর্ণ কিনা ─────────────
+// date-only ("YYYY-MM-DD") হলে দিনের শেষ (23:59:59) পর্যন্ত সেইদিন এখনো বিক্রয়যোগ্য
+function isBatchExpired(expiryDate) {
+  if (!expiryDate) return false;
+  const exp = /T/.test(expiryDate) ? new Date(expiryDate) : new Date(`${expiryDate}T23:59:59`);
+  if (isNaN(exp.getTime())) return false;
+  return exp < new Date();
+}
+
+// ─── getSortedActiveBatches — p.batches থেকে FIFO অর্ডারে সব active (qty>0,
+// অ-মেয়াদোত্তীর্ণ) batch ── productBatchMap, prodBatchMap, এবং বিক্রয়ের সময়
+// stock deduction — সব একই sort logic ব্যবহার করে
+// 🔴 ফিক্স: মেয়াদোত্তীর্ণ ব্যাচ (qty থাকলেও) এখন এখান থেকে বাদ যায়, তাই
+// বিক্রয়/FIFO-deduction কখনো মেয়াদোত্তীর্ণ ব্যাচ থেকে হয় না — একই পণ্যে একটা
+// মেয়াদোত্তীর্ণ ও একটা সচল ব্যাচ দুটোই থাকলে শুধু সচলটা থেকেই বিক্রি হবে।
+// এক্সপায়ার্ড ব্যাচ raw p.batches[]-এ থেকেই যায় (মেয়াদোত্তীর্ণ পণ্য পেজ ও
+// প্রোডাক্ট কার্ডে দেখানোর জন্য), শুধু "বিক্রয়যোগ্য পুল" থেকে বাদ পড়ে।
 function getSortedActiveBatches(product) {
   if (!product?.batches || product.batches.length === 0) return [];
   return product.batches
-    .filter(b => (b.qty || 0) > 0)
+    .filter(b => (b.qty || 0) > 0 && !isBatchExpired(b.expiryDate))
     .sort((a, b) => {
       if (a.expiryDate && b.expiryDate) return new Date(a.expiryDate) - new Date(b.expiryDate);
       if (a.expiryDate) return -1;
@@ -303,11 +318,71 @@ function getSortedActiveBatches(product) {
     });
 }
 
-// ─── getActiveBatch — p.batches থেকে FIFO active batch (qty>0) ──────────────
+// ─── getActiveBatch — p.batches থেকে FIFO active (অ-মেয়াদোত্তীর্ণ) batch ────
 // productBatchMap ও prodBatchMap উভয়ের shared helper
 function getActiveBatch(product) {
   const active = getSortedActiveBatches(product);
   return active[0] || null;
+}
+
+// ─── getSellableStock — পণ্যের প্রকৃত বিক্রয়যোগ্য (অ-মেয়াদোত্তীর্ণ) স্টক ──────
+// p.stock-এ মেয়াদোত্তীর্ণ ব্যাচের qty-ও যোগ থাকতে পারে (যতক্ষণ না ম্যানুয়ালি
+// রাইট-অফ করা হয়) — তাই বিক্রয় UI-তে max-qty/disable চেক এটা দিয়ে করতে হবে,
+// সরাসরি p.stock দিয়ে না — নাহলে মেয়াদোত্তীর্ণ স্টকও বিক্রির অনুমতি পেয়ে যায়।
+function getSellableStock(product) {
+  if (!product) return 0;
+  if (product.productType === "service") return Infinity;
+  if (product.batches && product.batches.length > 0) {
+    return getSortedActiveBatches(product).reduce((s, b) => s + (b.qty || 0), 0);
+  }
+  // legacy: batch-tracking ছাড়া পুরনো পণ্য — top-level expiryDate দিয়ে চেক
+  if (isBatchExpired(product.expiryDate)) return 0;
+  return product.stock || 0;
+}
+
+// ─── computeStockDeductionFIFO — একটা পণ্য থেকে qty বাদ দিলে নতুন stock/batches
+// কী হবে তা বিশুদ্ধভাবে (pure function, কোনো state/side-effect নেই) হিসেব করে।
+// 🔴 এন্টারপ্রাইজ-লেভেল ফিক্স (স্টক race condition): আগে এই FIFO deduction
+// logic শুধু sale-completion কোডের ভেতরে (local `products` state থেকে) সরাসরি
+// লেখা ছিল, আর ফলাফল সরাসরি `setProducts` দিয়ে স্থানীয়ভাবে বসিয়ে সেটাই
+// generic diff-push দিয়ে Firestore-এ (absolute value হিসেবে) পাঠানো হতো।
+// দুই ডিভাইস একই পণ্য প্রায় একই সময়ে বিক্রি করলে দুজনেই নিজের নিজের stale
+// লোকাল stock থেকে হিসেব করত — শেষে যেটা Firestore-এ পৌঁছাত সেটাই জিতত, আরেকটার
+// deduction সম্পূর্ণ হারিয়ে যেত (overselling ঝুঁকি) — ঠিক customer.balance-এ
+// যে বাগ ছিল (এখন transactionUpdateBalance() দিয়ে ফিক্স করা) তারই প্যারালাল
+// কেস। এই ফাংশনটাকে আলাদা করে বের করা হলো যাতে এটা:
+//   ১. sale-এর সময় optimistic local UI আপডেটে ব্যবহার করা যায় (আগের মতোই), এবং
+//   ২. FSS.transactionUpdateStock()-এর ভেতরে সার্ভারের বর্তমান (up-to-date)
+//      product ডকুমেন্টে প্রয়োগ করে atomically লেখা যায় (নিচে দেখুন)।
+function computeStockDeductionFIFO(product, qty) {
+  if (!product || product.productType === "service") {
+    return { newStock: product?.stock ?? 0, updatedBatches: product?.batches || [], batchNo: "", costPrice: product?.costPrice ?? 0 };
+  }
+  const newStock = Math.max(0, (product.stock || 0) - qty);
+  let remaining = qty;
+  const sortedBatches = getSortedActiveBatches(product);
+  let batchNo = "", costPrice = product.costPrice ?? 0;
+  if (sortedBatches.length > 0) {
+    let calcRem = qty, totalC = 0, totalQ = 0;
+    sortedBatches.forEach(b => {
+      if (calcRem <= 0) return;
+      const d = Math.min(calcRem, b.qty || 0);
+      totalC += d * (b.costPrice ?? product.costPrice ?? 0);
+      totalQ += d;
+      calcRem -= d;
+    });
+    costPrice = totalQ > 0 ? totalC / totalQ : (product.costPrice ?? 0);
+    batchNo = sortedBatches[0].batchNo || "";
+  }
+  const updatedBatches = sortedBatches
+    .map(b => {
+      if (remaining <= 0) return b;
+      const deduct = Math.min(remaining, b.qty || 0);
+      remaining -= deduct;
+      return { ...b, qty: (b.qty || 0) - deduct };
+    })
+    .filter(b => b.qty > 0);
+  return { newStock, updatedBatches, batchNo, costPrice };
 }
 
 // ─── smartMatch — fuzzy/contains scorer for Bengali+English ───────────────────
@@ -5029,6 +5104,96 @@ const FSS = {
     }
   },
 
+  // 🔴 এন্টারপ্রাইজ-লেভেল ফিক্স (স্টক race condition) — transactionUpdateBalance()-
+  // এর ঠিক একই প্যাটার্ন, product.stock/batches-এর জন্য। দুই ডিভাইস একই পণ্য
+  // প্রায় একই সময়ে বিক্রি করলে, দুজনেই runTransaction()-এর ভেতর সার্ভারের
+  // *সেই মুহূর্তের* stock/batches পড়ে তার ওপর deduction প্রয়োগ করে — Firestore
+  // নিজে থেকেই conflict ধরলে retry করে সঠিক ক্রমে delta apply করে, তাই কোনো
+  // বিক্রয়ের deduction-ই হারায় না (আগে যেমন LWW-তে একটা আরেকটাকে মুছে দিত)।
+  // deductQty শুধু বিক্রি হওয়া qty (product-এর বর্তমান local guess না) — চূড়ান্ত
+  // stock/batches/batchNo/costPrice ফেরত দেয়, caller সেটাই receipt ও local
+  // state-এ ব্যবহার করবে (নিজের stale guess না)। Firebase বন্ধ থাকলে null —
+  // caller তখন আগের মতো synchronous local calculation-এ fallback করবে।
+  async transactionUpdateStock(productId, deductQty) {
+    if (!this._db || !productId) return null;
+    try {
+      const ref = doc(this._db, "products", String(productId));
+      const result = await runTransaction(this._db, async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists()) return null;
+        const serverProduct = { id: snap.id, ...snap.data() };
+        const { newStock, updatedBatches, batchNo, costPrice } = computeStockDeductionFIFO(serverProduct, deductQty);
+        tx.update(ref, {
+          stock: newStock, batches: updatedBatches, costPrice,
+          lastUpdated: new Date().toISOString(), _updatedAt: Date.now(),
+        });
+        return { stock: newStock, batches: updatedBatches, batchNo, costPrice };
+      });
+      return result;
+    } catch (e) {
+      logErrorToCentral?.("transaction:stock", e, { productId, deductQty });
+      return null; // ব্যর্থ হলে caller local fallback ব্যবহার করবে
+    }
+  },
+
+  // 🔴 ফিক্স (ইনভয়েস ভয়েড — স্টক রেস কন্ডিশন): transactionUpdateStock()-এর
+  // ঠিক উল্টো/একই প্যাটার্ন — ইনভয়েস ভয়েড হলে বিক্রি হওয়া qty স্টকে ফেরত
+  // দেওয়ার সময়ও runTransaction() দিয়ে সার্ভারের *সেই মুহূর্তের* stock/batches
+  // পড়ে তার ওপর restore প্রয়োগ করা হয়। আগে voidInvoice() সরাসরি local
+  // (সম্ভবত stale) products state থেকে হিসেব করে setProducts দিয়ে বসাত, যা
+  // generic diff-push দিয়ে Firestore-এ absolute value হিসেবে যেত — অন্য
+  // ডিভাইস একই সময়ে ঐ পণ্য বিক্রি/ভয়েড করলে একজনের পরিবর্তন আরেকজনেরটা মুছে
+  // দিতে পারত। restoreBatchNo থাকলে সেই ব্যাচেই qty ফেরত যায় (ব্যাচ না থাকলে
+  // "VOID-ADJ-" ব্যাচ নতুন করে তৈরি হয়) — ঠিক voidInvoice-এর আগের লজিকের মতোই,
+  // শুধু এখন সার্ভারের বর্তমান কপির ওপর atomically। Firebase বন্ধ/ব্যর্থ হলে
+  // null — caller আগের মতো synchronous local calculation-এ fallback করবে।
+  async transactionRestoreStock(productId, restoreQty, restoreBatchNo, batchMeta = {}) {
+    if (!this._db || !productId) return null;
+    try {
+      const ref = doc(this._db, "products", String(productId));
+      const result = await runTransaction(this._db, async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists()) return null;
+        const serverProduct = { id: snap.id, ...snap.data() };
+        let updatedBatches = serverProduct.batches ? [...serverProduct.batches] : [];
+        if (restoreBatchNo) {
+          const bIdx = updatedBatches.findIndex(b => b.batchNo === restoreBatchNo);
+          if (bIdx >= 0) {
+            updatedBatches[bIdx] = { ...updatedBatches[bIdx], qty: (updatedBatches[bIdx].qty || 0) + restoreQty };
+          } else {
+            updatedBatches.push({
+              batchNo: restoreBatchNo, qty: restoreQty,
+              costPrice: batchMeta.costPrice ?? serverProduct.costPrice ?? 0,
+              expiryDate: batchMeta.expiryDate || "",
+            });
+          }
+        } else {
+          updatedBatches = [
+            ...updatedBatches,
+            {
+              batchNo: batchMeta.voidAdjBatchNo || `VOID-ADJ-${String(productId).slice(-6)}`,
+              qty: restoreQty,
+              costPrice: batchMeta.costPrice ?? serverProduct.avgCost ?? serverProduct.costPrice ?? 0,
+              expiryDate: null,
+              addedAt: new Date().toISOString(),
+              note: "voidInvoice legacy-item adjustment",
+            },
+          ];
+        }
+        const newStock = (serverProduct.stock || 0) + restoreQty;
+        tx.update(ref, {
+          stock: newStock, batches: updatedBatches,
+          lastUpdated: new Date().toISOString(), _updatedAt: Date.now(),
+        });
+        return { stock: newStock, batches: updatedBatches };
+      });
+      return result;
+    } catch (e) {
+      logErrorToCentral?.("transaction:restoreStock", e, { productId, restoreQty });
+      return null; // ব্যর্থ হলে caller local fallback ব্যবহার করবে
+    }
+  },
+
   // 🔴 ফিক্স (এন্টারপ্রাইজ-লেভেল conflict resolution): _updatedAt ক্লায়েন্ট-সাইড
   // Date.now() — অ্যাডমিন ও স্টাফ ফোনের ঘড়িতে সামান্য পার্থক্য থাকলেও ভুল
   // ডিভাইসের রেকর্ড "নতুন" হিসেবে জিতে যেতে পারত (Master Sync merge-এ)। এখন
@@ -5465,15 +5630,31 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
     firstRemote.current = false;
     pending.current = new Map();
     const unsub = FSS.subscribeCollection(name, (arr, fromCache) => {
-      // 🔴 ফিক্স (অপশন ১): এই listener-এর একদম প্রথম স্ন্যাপশট যদি লোকাল ক্যাশ
-      // থেকে আসে (fromCache === true), সেটাকে "সত্য" ধরে নিয়ে seed/diff-baseline
-      // হিসেবে ব্যবহার করি না — সার্ভার-কনফার্মড স্ন্যাপশটের অপেক্ষা করি। এতে
-      // দীর্ঘক্ষণ ব্যাকগ্রাউন্ড/রিকানেক্টের পর আসা অসম্পূর্ণ ক্যাশড ডেটা ভুলবশত
-      // "সত্যিকার অবস্থা" হিসেবে গণ্য হয়ে diff-delete/সিঙ্ক ট্রিগার করে না। (শুধু
-      // প্রথম স্ন্যাপশটে প্রযোজ্য — পরবর্তীতে local write-এর optimistic echo
-      // fromCache হতে পারে, সেগুলো স্বাভাবিকভাবেই প্রসেস হবে।)
-      if (!firstRemote.current && fromCache) return;
       const incoming = filterIncoming ? filterIncoming(arr) : arr;
+      // 🔴 ফিক্স (মাল্টি-ডিভাইস sync স্থায়ী ব্লকেজ — root cause of "স্টাফ থেকে
+      // পণ্য/কাস্টমার অ্যাডমিনে যাচ্ছে না, উল্টো অ্যাডমিন থেকে যোগ করলে স্টাফের
+      // ডেটা হারিয়ে যাচ্ছে" বাগ): আগে এই listener-এর একদম প্রথম স্ন্যাপশট যদি
+      // লোকাল ক্যাশ থেকে আসত (fromCache === true) — খালি হোক বা ভরা হোক —
+      // সম্পূর্ণ স্কিপ করে সার্ভার-কনফার্মড স্ন্যাপশটের অপেক্ষা করা হতো।
+      // দুর্বল/অস্থির নেটওয়ার্কে (বিশেষত স্টাফ ফোনে, Android WebView background
+      // থেকে ফেরার পর listener-এর কানেকশন নীরবে মরে যায় — দেখুন এই ফাইলের
+      // heartbeat/resync কমেন্ট) সেই সার্ভার-কনফার্মড স্ন্যাপশট কখনো কখনো
+      // দীর্ঘক্ষণ (বাস্তবে প্রায় কখনোই না) আসত না। ফলে firstRemote.current
+      // স্থায়ীভাবে false থেকে যেত, আর নিচের local→remote push effect
+      // (`if (!firstRemote.current) return;`) অনির্দিষ্টকালের জন্য ব্লক থেকে
+      // যেত — সেই ডিভাইসে যোগ করা নতুন পণ্য/কাস্টমার কখনোই Firestore-এ পৌঁছাত
+      // না (ইনভয়েস/stockMovements আলাদা, শর্তহীন সরাসরি push পথ ব্যবহার করে,
+      // তাই ওগুলো ঠিকই সিঙ্ক হতো — এই অসামঞ্জস্যই বাগটা identify করতে সাহায্য
+      // করেছে)। তারপর যখন কোনোভাবে (heartbeat resync) একটা স্ন্যাপশট প্রসেস
+      // হতো, সেটাকে "প্রথম" ধরে পুরো local state-কে সেই (এই ডিভাইসের নিজের
+      // আন-সিঙ্কড রেকর্ড বাদ দিয়ে) স্ন্যাপশট দিয়ে রিপ্লেস করে দিত — এটাই
+      // "অন্য ডিভাইস থেকে যোগ করলে এই ডিভাইসের ডেটা হারিয়ে যাওয়া"-র কারণ।
+      // আসল যে ঝুঁকি ঠেকাতে এই গার্ড বসানো হয়েছিল সেটা ছিল শুধু "খালি" cache
+      // snapshot-কে ভুলবশত "কালেকশন খালি" ধরে seed-on-empty ভুল ট্রিগার করা —
+      // তাই এখন শুধু cache+খালি অবস্থাতেই স্কিপ করা হচ্ছে; cache+ভরা অবস্থাকে
+      // বৈধ baseline হিসেবে গ্রহণ করা হচ্ছে, যাতে push effect অকারণে
+      // চিরস্থায়ীভাবে আটকে না থাকে।
+      if (!firstRemote.current && fromCache && incoming.length === 0) return;
       if (!firstRemote.current) {
         firstRemote.current = true;
         // 🔴 ফিক্স: Master Reset-এর পরের ২ মিনিটে seed-on-empty বন্ধ — নাহলে
@@ -7892,13 +8073,13 @@ const runLogicTests = () => {
   });
 
   // ── ক্যাশ ড্রয়ার সূত্র — buildSummary()-এর হিসাবের reference-copy ──
-  const calcCashDrawer = (opening, cashSale, joma, withdrawal, purchaseCost) => opening + cashSale + joma - withdrawal - purchaseCost;
-  t("ক্যাশ ড্রয়ার সূত্র", "ওপেনিং+বিক্রি+আদায়−উত্তোলন−ক্রয় — স্বাভাবিক কেস", () => {
-    const actual = calcCashDrawer(1000, 5000, 800, 1200, 300);
-    return { pass: actual === 5300, expected: 5300, actual };
+  const calcCashDrawer = (opening, cashSale, joma, withdrawal) => opening + cashSale + joma - withdrawal;
+  t("ক্যাশ ড্রয়ার সূত্র", "ওপেনিং+বিক্রি+আদায়−উত্তোলন — স্বাভাবিক কেস", () => {
+    const actual = calcCashDrawer(1000, 5000, 800, 1200);
+    return { pass: actual === 5600, expected: 5600, actual };
   });
   t("ক্যাশ ড্রয়ার সূত্র", "সব শূন্য হলে ফলাফলও শূন্য হওয়া উচিত", () => {
-    const actual = calcCashDrawer(0, 0, 0, 0, 0);
+    const actual = calcCashDrawer(0, 0, 0, 0);
     return { pass: actual === 0, expected: 0, actual };
   });
 
@@ -8691,7 +8872,7 @@ function useKpiStats({ customers, invoices, products, txns, expenses = [], cashL
     const todayPurchaseCount = todayPurchases.length;
     const monthPurchaseCost = purchaseOrdersAll.filter(p => (p.dateKey || "") >= monthStartKey).reduce((s, p) => s + (p.totalCost || 0), 0);
 
-    const currentCashDrawer = openingCashToday + todayCashSale + todayJoma - withdrawalToday - todayPurchaseCost;
+    const currentCashDrawer = openingCashToday + todayCashSale + todayJoma - withdrawalToday;
 
     const todayExpense = (expenses || []).filter(e => (e.dateKey || e.date) === todayKey).reduce((s, e) => s + (e.amount || 0), 0);
     const monthExpense = (expenses || []).filter(e => (e.dateKey || e.date || "") >= monthStartKey).reduce((s, e) => s + (e.amount || 0), 0);
@@ -8908,7 +9089,7 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
   const todayPurchaseCount = todayPurchases.length;
   const monthPurchaseCost = purchaseOrdersAll.filter(p => (p.dateKey || "") >= monthStartKey).reduce((s, p) => s + (p.totalCost || 0), 0);
 
-  const currentCashDrawer = openingCashToday + todayCashSale + todayJoma - withdrawalToday - todayPurchaseCost;
+  const currentCashDrawer = openingCashToday + todayCashSale + todayJoma - withdrawalToday;
 
   // ── খরচ (আজ/এই মাস) ─────────────────────────────────────────────────────
   const todayExpense = (expenses || []).filter(e => (e.dateKey || e.date) === todayKey).reduce((s, e) => s + (e.amount || 0), 0);
@@ -11943,45 +12124,61 @@ function SmartBusinessMgmt() {
     if (FSS.isReady()) FSS.setRecord("invoices", voidedInv.id, withTs(voidedInv));
 
     // ── 2. Restore stock + batches for every item in the invoice ─────────────
+    // 🔴 এন্টারপ্রাইজ-লেভেল ফিক্স (স্টক race condition — void পাথ): আগে এখানে
+    // সরাসরি local `products` state থেকে হিসেব করে setProducts দিয়ে বসানো হতো
+    // (Phase 1-এ যেভাবে বিক্রয়ের deduction ফিক্স করা হয়েছিল, ঠিক তার প্যারালাল
+    // বাগ — এখানে "restore" পাথে ছিল)। এখন FSS.transactionRestoreStock()
+    // দিয়ে সার্ভারের বর্তমান stock/batches-এর ওপর atomically qty ফেরত দেওয়া
+    // হয় — দুই ডিভাইস প্রায় একই সময়ে ঐ পণ্য বিক্রি/ভয়েড করলেও কোনো
+    // পরিবর্তন হারায় না। Firebase বন্ধ/ব্যর্থ হলে আগের মতো local fallback।
     if (inv.items && inv.items.length > 0) {
-      setProducts(prev => prev.map(p => {
-        const soldItem = inv.items.find(it => it.productId === p.id);
-        if (!soldItem) return p;
+      const sellableRestoreItems = inv.items.filter(it => it.productType !== "service");
+      const restoreResults = await Promise.all(sellableRestoreItems.map(async (soldItem) => {
         const restoredQty = soldItem.qty || 0;
+        if (restoredQty <= 0) return null;
+        const localP = products.find(p => p.id === soldItem.productId);
+        if (!localP) return null;
         const soldBatchNo = soldItem.batchNo || "";
-        let updatedBatches = p.batches ? [...p.batches] : [];
+        if (FSS.isReady()) {
+          const txResult = await FSS.transactionRestoreStock(soldItem.productId, restoredQty, soldBatchNo, {
+            costPrice: soldItem.costPrice || localP.costPrice || 0,
+            expiryDate: soldItem.expiryDate || "",
+            voidAdjBatchNo: `VOID-ADJ-${inv.id.slice(-6)}`,
+          });
+          if (txResult) return { id: soldItem.productId, stock: txResult.stock, batches: txResult.batches };
+        }
+        // fallback — Firestore বন্ধ/ব্যর্থ হলে আগের মতো local হিসেব
+        let updatedBatches = localP.batches ? [...localP.batches] : [];
         if (soldBatchNo) {
           const bIdx = updatedBatches.findIndex(b => b.batchNo === soldBatchNo);
           if (bIdx >= 0) {
-            // batch আছে — qty ফেরত দাও
             updatedBatches[bIdx] = { ...updatedBatches[bIdx], qty: (updatedBatches[bIdx].qty || 0) + restoredQty };
           } else {
-            // batch সম্পূর্ণ ডিলিট হয়ে গিয়েছিল — নতুন করে যোগ করো
             updatedBatches.push({
-              batchNo: soldBatchNo,
-              qty: restoredQty,
-              costPrice: soldItem.costPrice || p.costPrice || 0,
+              batchNo: soldBatchNo, qty: restoredQty,
+              costPrice: soldItem.costPrice || localP.costPrice || 0,
               expiryDate: soldItem.expiryDate || "",
             });
           }
         } else {
-          // 🔴 ফিক্স (ফেজ ৭): batchNo নেই (legacy/batch-tracking-এর আগের ইনভয়েস)
-          // — আগে এই ক্ষেত্রে শুধু stock ফিল্ড বাড়ত, batches[] অপরিবর্তিত থাকত,
-          // ফলে batch-sum ও stock ফিল্ডের মধ্যে গ্যাপ তৈরি হতো। এখন একটা
-          // adjustment ব্যাচ যোগ করে batches[]-কেও stock-এর সাথে sync রাখা হচ্ছে।
           updatedBatches = [
             ...updatedBatches,
             {
               batchNo: `VOID-ADJ-${inv.id.slice(-6)}`,
               qty: restoredQty,
-              costPrice: soldItem.costPrice || p.avgCost || p.costPrice || 0,
+              costPrice: soldItem.costPrice || localP.avgCost || localP.costPrice || 0,
               expiryDate: null,
               addedAt: new Date().toISOString(),
               note: "voidInvoice legacy-item adjustment",
             },
           ];
         }
-        return { ...p, stock: (p.stock || 0) + restoredQty, batches: updatedBatches, lastUpdated: new Date().toISOString() };
+        return { id: soldItem.productId, stock: (localP.stock || 0) + restoredQty, batches: updatedBatches };
+      }));
+      const restoreMap = new Map(restoreResults.filter(Boolean).map(r => [r.id, r]));
+      setProducts(prev => prev.map(p => {
+        const r = restoreMap.get(p.id);
+        return r ? { ...p, stock: r.stock, batches: r.batches, lastUpdated: new Date().toISOString() } : p;
       }));
     }
 
@@ -14187,6 +14384,10 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
   const [walkInMobile,     setWalkInMobile]     = useState(""); // walk-in বাকি কাস্টমারের মোবাইল
   const [walkInAddress,    setWalkInAddress]    = useState(""); // walk-in বাকি কাস্টমারের ঠিকানা
   const [walkInDueDate,    setWalkInDueDate]    = useState(""); // walk-in বাকির পরিশোধের তারিখ
+  const [walkInCustMode,   setWalkInCustMode]   = useState("new"); // "new" | "existing" — বাকি/আংশিক বাকির কাস্টমার নতুন নাকি পুরোনো
+  const [walkInExistingId, setWalkInExistingId] = useState(""); // পুরোনো কাস্টমার সিলেক্ট করলে তার id
+  const [walkInCustSearch, setWalkInCustSearch] = useState(""); // পুরোনো কাস্টমার সার্চ
+  const [selfUseOn,  setSelfUseOn]  = useState(false); // 🏠 নিজের ব্যবহার (Personal Use) টগল — Payment স্টেপে
   const [note,       setNote]       = useState("");
   const [discount,   setDiscount]   = useState(""); // টাকায় ডিসকাউন্ট
   const [discountPct, setDiscountPct] = useState(0); // % ডিসকাউন্ট (স্ট্যাকেবল)
@@ -14290,6 +14491,110 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     return map;
   }, [products]);
 
+  // 🔴 ফিক্স: p.stock-এর বদলে getSellableStock(p) — এতে মেয়াদোত্তীর্ণ ব্যাচের
+  // qty বাদ দিয়ে হিসেব হয়, তাই মেয়াদোত্তীর্ণ পণ্য/ব্যাচ ইনভয়েসে যোগ করা যায় না
+  const invProdMap = useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
+
+  // 🏠 নিজের ব্যবহার টগল — Payment স্টেপে অন/অফ করলে কার্টের সব আইটেমের দাম
+  // বিক্রয়মূল্য ⇄ ক্রয়মূল্যের মধ্যে রিক্যালকুলেট হবে
+  const toggleSelfUse = () => {
+    setSelfUseOn(prev => {
+      const next = !prev;
+      setItems(cur => cur.map(it => {
+        const p = invProdMap.get(it.productId);
+        const cost = it.costPrice ?? p?.costPrice ?? 0;
+        const sell = p?.price ?? it.price;
+        return { ...it, price: next ? cost : sell };
+      }));
+      return next;
+    });
+  };
+
+  const walkInCustMatches = useMemo(() => {
+    if (!walkInCustSearch.trim()) return [];
+    const q = walkInCustSearch.trim().toLowerCase();
+    return (customers || []).filter(c =>
+      (c.name || "").toLowerCase().includes(q) || (c.mobile || "").includes(q)
+    ).slice(0, 8);
+  }, [customers, walkInCustSearch]);
+
+  const selectWalkInExistingCust = (c) => {
+    setWalkInExistingId(c.id);
+    setWalkInName(c.name || "");
+    setWalkInMobile(c.mobile || "");
+    setWalkInAddress(c.address || "");
+    setWalkInCustSearch("");
+  };
+
+  // 🔎 বাকি/আংশিক বাকি ফর্মে কাস্টমার নির্বাচন — পুরোনো কাস্টমার সার্চ+সিলেক্ট অথবা নতুন কাস্টমার তৈরি
+  const renderWalkInCustPicker = (accentColor) => (
+    <>
+      <div style={{ display:"flex", gap:6, marginBottom:8 }}>
+        {[{ key:"new", label:"➕ নতুন কাস্টমার" }, { key:"existing", label:"🔎 পুরোনো কাস্টমার" }].map(m => (
+          <button key={m.key} type="button"
+            onClick={() => { setWalkInCustMode(m.key); setWalkInExistingId(""); setWalkInCustSearch(""); if (m.key === "existing") { setWalkInName(""); setWalkInMobile(""); setWalkInAddress(""); } }}
+            style={{ flex:1, padding:"7px 6px", borderRadius:8, border:`1.5px solid ${walkInCustMode===m.key ? accentColor : T.border}`, background: walkInCustMode===m.key ? accentColor+"1a" : "transparent", color: walkInCustMode===m.key ? accentColor : T.sub, fontWeight:700, fontSize:11, cursor:"pointer", fontFamily:"inherit" }}>
+            {m.label}
+          </button>
+        ))}
+      </div>
+
+      {walkInCustMode === "existing" ? (
+        <>
+          {walkInExistingId ? (
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", background:accentColor+"14", border:`1.5px solid ${accentColor}44`, borderRadius:10, padding:"9px 12px", marginBottom:6 }}>
+              <div>
+                <div style={{ fontWeight:800, fontSize:13, color:T.text }}>{walkInName}</div>
+                {walkInMobile && <div style={{ fontSize:11, color:T.sub }}>{walkInMobile}</div>}
+              </div>
+              <button type="button" onClick={() => { setWalkInExistingId(""); setWalkInName(""); setWalkInMobile(""); setWalkInAddress(""); }}
+                style={{ background:"none", border:"none", color:"#ef4444", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>✕ বদলান</button>
+            </div>
+          ) : (
+            <>
+              <input placeholder="নাম বা মোবাইল দিয়ে সার্চ করুন"
+                value={walkInCustSearch} onChange={e => setWalkInCustSearch(e.target.value)}
+                style={{ ...S.input, marginBottom:6 }} />
+              {walkInCustSearch.trim() && (
+                walkInCustMatches.length > 0 ? (
+                  <div style={{ maxHeight:160, overflowY:"auto", marginBottom:6, border:`1px solid ${T.border}`, borderRadius:10 }}>
+                    {walkInCustMatches.map(c => (
+                      <div key={c.id} onClick={() => selectWalkInExistingCust(c)}
+                        style={{ padding:"8px 12px", borderBottom:`1px solid ${T.border}`, cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                        <div>
+                          <div style={{ fontWeight:700, fontSize:12, color:T.text }}>{c.name}</div>
+                          <div style={{ fontSize:10, color:T.sub }}>{c.mobile || "মোবাইল নেই"}</div>
+                        </div>
+                        {(c.balance || 0) > 0 && <div style={{ fontSize:10, color:"#ef4444", fontWeight:700 }}>বাকি ৳{fmt(c.balance)}</div>}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize:11, color:T.sub, marginBottom:6 }}>কোনো কাস্টমার পাওয়া যায়নি — "নতুন কাস্টমার" ট্যাবে গিয়ে যোগ করুন</div>
+                )
+              )}
+            </>
+          )}
+        </>
+      ) : (
+        <>
+          <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>কাস্টমারের নাম <span style={{color:"#ef4444"}}>*</span></div>
+          <input placeholder="বাধ্যতামূলক"
+            value={walkInName} onChange={e => setWalkInName(e.target.value)}
+            style={{ ...S.input, marginBottom:6, borderColor: !walkInName.trim() ? "#ef444488" : undefined }} />
+          <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>মোবাইল নম্বর (ঐচ্ছিক)</div>
+          <input type="tel" inputMode="numeric" placeholder="" maxLength={11}
+            value={walkInMobile} onChange={e => setWalkInMobile(e.target.value.replace(/\D/g,"").slice(0,11))}
+            style={{ ...S.input, marginBottom:6 }} />
+          <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>ঠিকানা (ঐচ্ছিক)</div>
+          <input placeholder=""
+            value={walkInAddress} onChange={e => setWalkInAddress(e.target.value)}
+            style={{ ...S.input, marginBottom:6 }} />
+        </>
+      )}
+    </>
+  );
+
   const changeQty = (p, delta) => {
     const isSelfUse = selCust?.id === "__selfuse__";
     setItems(prev => {
@@ -14297,16 +14602,17 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       if (ex) {
         const newQty = ex.qty + delta;
         if (newQty <= 0) return prev.filter(i => i.productId !== p.id);
-        const isService = p.productType === "service";
-        const maxStock = isService ? Infinity : (p.stock !== undefined && p.stock !== null) ? p.stock : Infinity;
+        const maxStock = getSellableStock(p);
         if (delta > 0 && newQty > maxStock) return prev;
         return prev.map(i => i.productId === p.id ? { ...i, qty: newQty } : i);
       }
-      if (delta > 0 && (p.productType === "service" || p.stock === undefined || p.stock === null || p.stock > 0)) {
-        const isService = p.productType === "service";
-        const maxStockNew = isService ? Infinity : (p.stock !== undefined && p.stock !== null) ? p.stock : Infinity;
+      const maxStockNew = getSellableStock(p);
+      if (delta > 0 && maxStockNew > 0) {
         const startQty = maxStockNew !== Infinity ? Math.min(delta, maxStockNew) : delta;
         return [...prev, { productId: p.id, name: p.name, serial: p.serial, qty: startQty, price: isSelfUse ? (p.costPrice || 0) : p.price, costPrice: p.costPrice, productType: p.productType || "product" }];
+      }
+      if (delta > 0 && maxStockNew <= 0) {
+        showToast?.("এই পণ্যের সচল (অ-মেয়াদোত্তীর্ণ) স্টক নেই — বিক্রি করা যাবে না", "#ef4444");
       }
       return prev;
     });
@@ -14318,8 +14624,11 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     setItems(prev => {
       if (q <= 0) return prev.filter(i => i.productId !== pid);
       const prod = products.find(p => p.id === pid);
-      const isService = prod?.productType === "service";
-      const maxStock = isService ? Infinity : (prod?.stock !== undefined && prod?.stock !== null) ? prod.stock : Infinity;
+      const maxStock = getSellableStock(prod);
+      if (maxStock <= 0) {
+        showToast?.("এই পণ্যের সচল (অ-মেয়াদোত্তীর্ণ) স্টক নেই — বিক্রি করা যাবে না", "#ef4444");
+        return prev.filter(i => i.productId !== pid);
+      }
       const clamped = maxStock !== Infinity ? Math.min(q, maxStock) : q;
       const ex = prev.find(i => i.productId === pid);
       if (ex) return prev.map(i => i.productId === pid ? { ...i, qty: clamped } : i);
@@ -14369,7 +14678,9 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
   const resetAll = () => {
     setStep(1); setSelCust(null); setCustSearch(""); setItems([]);
     setCatFilter("সব"); setProdSearch(""); setPayType("baki");
-    setPartialAmt(""); setNote(""); setDiscount(""); setDiscountPct(0); setExtraCharge(""); setPrintInv(null); setPrintMode(null); setShowAllSummaryItems(false);
+    setPartialAmt(""); setNote(""); setDiscount(""); setDiscountPct(0); setExtraCharge(""); setPrintInv(null); setPrintMode(null); setShowAllSummaryItems(false); setSelfUseOn(false);
+    setWalkInPayType("cash"); setWalkInPartialAmt(""); setWalkInName(""); setWalkInMobile(""); setWalkInAddress(""); setWalkInDueDate("");
+    setWalkInCustMode("new"); setWalkInExistingId(""); setWalkInCustSearch("");
     onDone?.();
     setTab?.("dashboard");
   };
@@ -14431,7 +14742,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     setCreating(true);
     try {
     const isWalkIn = selCust.id === "__walkin__";
-    const isSelfUse = selCust.id === "__selfuse__";
+    const isSelfUse = selfUseOn || selCust.id === "__selfuse__";
     // Walk-in partial: আংশিক বাকি হলে নতুন payType সেট
     // Walk-in payment logic: cash | partial | baki
     const walkInIsBaki    = isWalkIn && walkInPayType === "baki";
@@ -14441,22 +14752,27 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     const walkInBakiAmt   = walkInIsBaki ? total : walkInIsPartial ? total - walkInPaidAmt : 0;
     const effectivePayType = isSelfUse ? "cash" : isWalkIn ? (walkInIsBaki ? "baki" : walkInIsPartial ? "partial" : "cash") : payType;
 
-    // Walk-in বাকি/আংশিক বাকি হলে নতুন কাস্টমার তৈরি করো
+    // Walk-in বাকি/আংশিক বাকি হলে — পুরোনো কাস্টমার সিলেক্ট করা থাকলে তার balance আপডেট, নাহলে নতুন কাস্টমার তৈরি
     const invId = uid(); // invoice id আগেই তৈরি করি — txn-এ invoiceId লিংক করতে
     let walkInCustId = null;
     if (walkInHasBaki && walkInBakiAmt > 0) {
-      const newCust = {
-        id: uid(),
-        name: walkInName.trim() || "Walk-in বাকিদার",
-        mobile: walkInMobile.trim() || "",
-        address: walkInAddress.trim() || "",
-        balance: walkInBakiAmt,
-        serial: customers.length + 1,
-        createdAt: new Date().toISOString(),
-      };
-      setCustomers(prev => [...prev, newCust]);
-      walkInCustId = newCust.id;
-      addTxn(newCust.id, "baki", walkInBakiAmt, walkInBakiAmt, invId, `Walk-in বাকি`);
+      if (walkInCustMode === "existing" && walkInExistingId) {
+        walkInCustId = walkInExistingId;
+        setCustomers(prev => prev.map(c => c.id === walkInExistingId ? { ...c, balance: (c.balance || 0) + walkInBakiAmt } : c));
+      } else {
+        const newCust = {
+          id: uid(),
+          name: walkInName.trim() || "Walk-in বাকিদার",
+          mobile: walkInMobile.trim() || "",
+          address: walkInAddress.trim() || "",
+          balance: walkInBakiAmt,
+          serial: customers.length + 1,
+          createdAt: new Date().toISOString(),
+        };
+        setCustomers(prev => [...prev, newCust]);
+        walkInCustId = newCust.id;
+      }
+      addTxn(walkInCustId, "baki", walkInBakiAmt, walkInBakiAmt, invId, `Walk-in বাকি`);
     }
 
     const selfUseCost = isSelfUse ? items.reduce((s, it) => {
@@ -14466,8 +14782,8 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     }, 0) : 0;
     const inv = {
       id: invId, customerId: isSelfUse ? null : isWalkIn ? walkInCustId : selCust.id,
-      customerName: isWalkIn ? (walkInName.trim() || "Walk-in Customer") : selCust.name,
-      customerMobile: isWalkIn ? walkInMobile.trim() : selCust.mobile,
+      customerName: isSelfUse ? "নিজের ব্যবহার (Personal Use)" : isWalkIn ? (walkInName.trim() || "Walk-in Customer") : selCust.name,
+      customerMobile: isSelfUse ? "" : isWalkIn ? walkInMobile.trim() : selCust.mobile,
       items, total: isSelfUse ? selfUseCost : total, subtotal: isSelfUse ? selfUseCost : subtotal, discount: discAmt, itemDiscount: isSelfUse ? 0 : itemDiscTotal, extraCharge: isSelfUse ? 0 : extraAmt,
       payType: effectivePayType, note,
       paidAmount: isSelfUse ? 0 : isWalkIn ? walkInPaidAmt : paidAmt,
@@ -14509,43 +14825,38 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
 
     // ── Deduct stock for each sold product (নিজের ব্যবহারেও স্টক কমবে) ──
     // batchNo ট্র্যাক করার জন্য map তৈরি (রিসিট ট্রেসেবিলিটি)
+    // 🔴 এন্টারপ্রাইজ-লেভেল ফিক্স (স্টক race condition): আগে এখানে সরাসরি
+    // local `products` state থেকে stock/batches হিসেব করে setProducts দিয়ে
+    // বসিয়ে দেওয়া হতো, যেটা পরে generic diff-push দিয়ে Firestore-এ absolute
+    // value হিসেবে যেত। দুই ডিভাইস একই পণ্য প্রায় একই সময়ে বিক্রি করলে একজনের
+    // deduction আরেকজনেরটাকে সম্পূর্ণ মুছে দিতে পারত (overselling ঝুঁকি) — ঠিক
+    // customer.balance-এ যেমন ছিল (transactionUpdateBalance() দিয়ে ফিক্স করা)।
+    // এখন প্রতিটা বিক্রিত পণ্যের জন্য FSS.transactionUpdateStock() ব্যবহার করা
+    // হচ্ছে — এটা runTransaction()-এর ভেতর সার্ভারের *সেই মুহূর্তের* stock পড়ে
+    // deduction প্রয়োগ করে atomically লেখে, তাই সমসাময়িক বিক্রয়ে কোনো
+    // deduction হারায় না। ফলাফল (সার্ভারের চূড়ান্ত stock/batches) থেকেই local
+    // state আপডেট হয় (নিজের stale guess থেকে না) — ঠিক balance-এর প্যাটার্নেই।
+    // Firebase বন্ধ/অফলাইন থাকলে (txResult === null) আগের মতো synchronous
+    // local calculation-এ fallback করে।
     const soldBatchMap = {};
-    setProducts(prev => prev.map(p => {
-      const sold = items.find(i => i.productId === p.id);
-      if (!sold) return p;
-      // সার্ভিস আইটেমে স্টক কমে না
-      if (p.productType === "service" || sold.productType === "service") return p;
-      const newStock = Math.max(0, (p.stock || 0) - sold.qty);
-      // FIFO: সবচেয়ে পুরনো / সবচেয়ে কাছের expiry ব্যাচ থেকে আগে কাটো — শেয়ার্ড হেল্পার ব্যবহার করে
-      let remaining = sold.qty;
-      const sortedBatches = getSortedActiveBatches(p);
-      // প্রথম ব্যাচ থেকে বিক্রি শুরু — batchNo রিসিটে রেকর্ড
-      // Weighted average: প্রতিটি batch থেকে কত qty কাটা হচ্ছে x তার costPrice
-      // Fix: batches[] empty হলেও p.costPrice (weighted avg) সেট করো
-      if (sortedBatches.length > 0) {
-        let calcRem = sold.qty, totalC = 0, totalQ = 0;
-        sortedBatches.forEach(b => {
-          if (calcRem <= 0) return;
-          const d = Math.min(calcRem, b.qty || 0);
-          totalC += d * (b.costPrice ?? p.costPrice ?? 0);
-          totalQ += d;
-          calcRem -= d;
-        });
-        const exactAvg = totalQ > 0 ? totalC / totalQ : (p.costPrice ?? 0);
-        soldBatchMap[p.id] = { batchNo: sortedBatches[0].batchNo || "", costPrice: exactAvg };
-      } else {
-        // batches[] নেই — product-এর weighted average costPrice সরাসরি ব্যবহার করো
-        soldBatchMap[p.id] = { batchNo: "", costPrice: p.costPrice ?? 0 };
+    const sellableItems = items.filter(i => i.productType !== "service");
+    const stockUpdates = await Promise.all(sellableItems.map(async (sold) => {
+      const localP = products.find(p => p.id === sold.productId);
+      if (!localP || localP.productType === "service") return null;
+      const txResult = FSS.isReady() ? await FSS.transactionUpdateStock(sold.productId, sold.qty) : null;
+      if (txResult) {
+        soldBatchMap[sold.productId] = { batchNo: txResult.batchNo, costPrice: txResult.costPrice };
+        return { id: sold.productId, stock: txResult.stock, batches: txResult.batches };
       }
-      const updatedBatches = sortedBatches
-        .map(b => {
-          if (remaining <= 0) return b;
-          const deduct = Math.min(remaining, b.qty || 0);
-          remaining -= deduct;
-          return { ...b, qty: (b.qty || 0) - deduct };
-        })
-        .filter(b => b.qty > 0); // শূন্য হয়ে যাওয়া batch সরাও
-      return { ...p, stock: newStock, batches: updatedBatches };
+      // fallback — Firestore বন্ধ/ব্যর্থ হলে আগের মতো local guess থেকে হিসেব
+      const { newStock, updatedBatches, batchNo, costPrice } = computeStockDeductionFIFO(localP, sold.qty);
+      soldBatchMap[sold.productId] = { batchNo, costPrice };
+      return { id: sold.productId, stock: newStock, batches: updatedBatches };
+    }));
+    const stockUpdateMap = new Map(stockUpdates.filter(Boolean).map(u => [u.id, u]));
+    setProducts(prev => prev.map(p => {
+      const upd = stockUpdateMap.get(p.id);
+      return upd ? { ...p, stock: upd.stock, batches: upd.batches } : p;
     }));
     // ইনভয়েস items-এ batchNo যোগ করো (ট্রেসেবিলিটি)
     inv.items = (inv.items || items).map(i => {
@@ -14788,7 +15099,36 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
 
   return (
     <div style={{ ...S.page, flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0, boxSizing: "border-box" }}>
-      <div ref={el => { if (el) { setStepBarHeight(el.offsetHeight); } }}><StepBar /></div>
+      <div ref={el => { if (el) { setStepBarHeight(el.offsetHeight); } }} style={{ position: "relative" }}>
+        <StepBar />
+        {step === 3 && (
+          <button
+            onClick={toggleSelfUse}
+            style={{
+              position: "absolute", top: 0, right: 0,
+              display: "flex", alignItems: "center", gap: 6,
+              padding: "6px 10px", borderRadius: 10, cursor: "pointer", fontFamily: "inherit",
+              border: `1.5px solid ${selfUseOn ? "#f97316" : "#f9731655"}`,
+              background: selfUseOn ? "linear-gradient(135deg,#c2410c,#f97316)" : "transparent",
+              color: selfUseOn ? "#fff" : "#f97316",
+              fontWeight: 800, fontSize: 11,
+            }}>
+            🏠 নিজের ব্যবহার
+            <span style={{
+              width: 26, height: 15, borderRadius: 8, position: "relative", flexShrink: 0,
+              background: selfUseOn ? "#fff5" : "#f9731633",
+              transition: "background 0.2s",
+            }}>
+              <span style={{
+                position: "absolute", top: 1.5, left: selfUseOn ? 12 : 1.5,
+                width: 12, height: 12, borderRadius: "50%",
+                background: selfUseOn ? "#fff" : "#f97316",
+                transition: "left 0.2s",
+              }} />
+            </span>
+          </button>
+        )}
+      </div>
 
       {/* 🎤 Voice Invoice Overlay */}
       {voiceMode && (
@@ -14840,21 +15180,6 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
               Walk-in / অতিথি কাস্টমার
             </button>
             <div style={{ color:"#6366f1", fontSize:11, marginTop:6, textAlign:"center" }}>বাকি ছাড়া নগদ বিক্রয় — কোনো এন্ট্রি লাগবে না</div>
-          </div>
-
-          {/* নিজের ব্যবহার / Personal Use quick button */}
-          <div style={{ marginBottom:10, background:"linear-gradient(135deg,#7c2d1222,#ea580c11)", border:"1px solid #f9731633", borderRadius:14, padding:"10px 14px" }}>
-            <div style={{ color:"#f97316", fontWeight:800, fontSize:12, marginBottom:8, display:"flex", alignItems:"center", gap:6 }}>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg>
-              নিজের দোকানের পণ্য — নিজের ব্যবহার
-            </div>
-            <button
-              style={{ width:"100%", background:"linear-gradient(135deg,#c2410c,#f97316)", color:"#fff", border:"none", borderRadius:10, padding:"11px 14px", fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:8, boxShadow:"0 3px 12px #f9731633" }}
-              onClick={() => { setSelCust({ id:"__selfuse__", name:"নিজের ব্যবহার (Personal Use)", mobile:"", balance:0, serial:"🏠" }); setPayType("cash"); setStep(2); }}>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg>
-              🏠 নিজের ব্যবহার (Personal Use)
-            </button>
-            <div style={{ color:"#f97316", fontSize:11, marginTop:6, textAlign:"center" }}>স্টক কমবে, কিন্তু বিক্রয়/লাভ হিসাবে যুক্ত হবে না</div>
           </div>
 
           {/* ── কাস্টমার নির্বাচন করুন Header Card ── */}
@@ -15207,7 +15532,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
             itemContent={(_, p) => {
               const qty = getQty(p.id);
               const batch = productBatchMap[p.id];
-              const liveStock = (p.stock !== undefined && p.stock !== null) ? p.stock - qty : null;
+              const liveStock = p.productType === "service" ? null : ((p.stock !== undefined && p.stock !== null) ? getSellableStock(p) - qty : null);
               const isLowStock = liveStock !== null && liveStock <= (p.minStockAlert || 0);
               const isSelected = qty > 0;
               const glowColor = "#22c55e"; // theme-agnostic, always-visible selection glow
@@ -15306,6 +15631,13 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                       </div>
                     </div>
                   </div>
+                  )}
+
+                  {/* 🔴 ফিক্স: p.stock>0 থাকলেও সব ব্যাচ মেয়াদোত্তীর্ণ হলে স্পষ্ট নোটিশ */}
+                  {p.productType !== "service" && (p.stock || 0) > 0 && getSellableStock(p) === 0 && (
+                    <div style={{ marginTop: 4, textAlign: "center", background: "#ef444422", border: "1px solid #ef444455", borderRadius: 6, color: "#ef4444", fontSize: 10.5, fontWeight: 800, padding: "4px 0" }}>
+                      ⚠️ সব স্টক মেয়াদোত্তীর্ণ — বিক্রি বন্ধ
+                    </div>
                   )}
 
                   {/* প্রিসেট কুইক বাটন — প্রতি ক্লিকে যোগ হয়, একাধিকবার ক্লিক করা যাবে */}
@@ -15411,7 +15743,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
 
       {/* ── STEP 3: Payment ── */}
       {step === 3 && (() => {
-        const isSelfUse = selCust?.id === "__selfuse__";
+        const isSelfUse = selfUseOn;
         const isWalkIn  = selCust?.id === "__walkin__"; // 🔴 আগে এখানে define করা ছিল না, নিচে (Loyalty card) ব্যবহার হতো — ReferenceError দিত
         return (
         <div style={{ animation: "slideUp 0.25s ease", overflow: "hidden", display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
@@ -15420,7 +15752,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
             {/* Order summary */}
             <div className="qc-gradient-card" style={{ ...S.card, marginBottom: 10 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
-                <div style={{ color: T.text, fontWeight: 800, fontSize: 14 }}>{selCust?.name}</div>
+                <div style={{ color: T.text, fontWeight: 800, fontSize: 14 }}>{isSelfUse ? "🏠 নিজের ব্যবহার (Personal Use)" : selCust?.name}</div>
                 <div style={{ color: T.accent, fontWeight: 900, fontSize: 16 }}>৳{fmt(total)}</div>
               </div>
               <div style={{ color: T.sub, fontSize: 11, marginBottom: 8 }}>{items.filter(i=>i.qty>0).length}টি পণ্য · {items.filter(i=>i.qty>0).reduce((a,b)=>a+b.qty,0)}টি আইটেম · মোট মূল্য</div>
@@ -15553,6 +15885,12 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
               )}
             </div>
 
+            {isSelfUse && (
+              <div style={{ marginBottom:10, background:"linear-gradient(135deg,#7c2d1222,#ea580c11)", border:"1px solid #f9731633", borderRadius:14, padding:"10px 14px", color:"#f97316", fontSize:12, fontWeight:700, textAlign:"center" }}>
+                🏠 নিজের ব্যবহার চালু — স্টক কমবে, কিন্তু বিক্রয়/লাভ হিসাবে যুক্ত হবে না (দাম ক্রয়মূল্যে গণনা হচ্ছে)
+              </div>
+            )}
+
             {/* Discount + Extra Charge — পাশাপাশি */}
             {!isSelfUse && (
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}>
@@ -15615,7 +15953,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                     ].map(opt => (
                       <button key={opt.key}
                         style={{ flex:1, padding:"12px 4px", borderRadius:12, border:`2px solid ${walkInPayType===opt.key ? opt.color : T.border}`, background: walkInPayType===opt.key ? opt.color+"22" : T.card, color: walkInPayType===opt.key ? opt.color : T.sub, fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"center", gap:5 }}
-                        onClick={() => { setWalkInPayType(opt.key); setWalkInPartialAmt(""); setWalkInName(""); setWalkInMobile(""); setWalkInAddress(""); setWalkInDueDate(""); }}>
+                        onClick={() => { setWalkInPayType(opt.key); setWalkInPartialAmt(""); setWalkInName(""); setWalkInMobile(""); setWalkInAddress(""); setWalkInDueDate(""); setWalkInCustMode("new"); setWalkInExistingId(""); setWalkInCustSearch(""); }}>
                         <div style={{ width:10, height:10, borderRadius:"50%", background:opt.color, boxShadow: walkInPayType===opt.key ? `0 0 8px ${opt.color}` : "none" }} />
                         {opt.label}
                       </button>
@@ -15632,23 +15970,12 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                       <div style={{ color:"#ef4444", fontSize:12, fontWeight:700, marginBottom:8 }}>
                         বাকি: ৳{fmt(total - (parseFloat(walkInPartialAmt)||0))}
                       </div>
-                      <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>কাস্টমারের নাম (ঐচ্ছিক)</div>
-                      <input placeholder=""
-                        value={walkInName} onChange={e => setWalkInName(e.target.value)}
-                        style={{ ...S.input, marginBottom:6 }} />
-                      <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>মোবাইল নম্বর (ঐচ্ছিক)</div>
-                      <input type="tel" inputMode="numeric" placeholder="" maxLength={11}
-                        value={walkInMobile} onChange={e => setWalkInMobile(e.target.value.replace(/\D/g,"").slice(0,11))}
-                        style={{ ...S.input, marginBottom:6 }} />
-                      <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>ঠিকানা (ঐচ্ছিক)</div>
-                      <input placeholder=""
-                        value={walkInAddress} onChange={e => setWalkInAddress(e.target.value)}
-                        style={{ ...S.input, marginBottom:6 }} />
+                      {renderWalkInCustPicker("#f59e0b")}
                       <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>পরিশোধের তারিখ (ঐচ্ছিক)</div>
                       <input type="date"
                         value={walkInDueDate} onChange={e => setWalkInDueDate(e.target.value)}
                         style={{ ...S.input, marginBottom:0 }} />
-                      <div style={{ color:"#94a3b8", fontSize:10, marginTop:6 }}>নাম/মোবাইল দিলে বাকি কাস্টমার হিসেবে সেভ হবে</div>
+                      <div style={{ color:"#94a3b8", fontSize:10, marginTop:6 }}>নাম ছাড়া বাকি ইনভয়েস তৈরি করা যাবে না</div>
                     </div>
                   )}
                   {/* পুরো বাকি ফর্ম */}
@@ -15658,23 +15985,12 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                       <div style={{ color:"#ef4444", fontSize:13, fontWeight:800, marginBottom:10 }}>
                         মোট বাকি: ৳{fmt(total)}
                       </div>
-                      <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>কাস্টমারের নাম (ঐচ্ছিক)</div>
-                      <input placeholder=""
-                        value={walkInName} onChange={e => setWalkInName(e.target.value)}
-                        style={{ ...S.input, marginBottom:6 }} />
-                      <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>মোবাইল নম্বর (ঐচ্ছিক)</div>
-                      <input type="tel" inputMode="numeric" placeholder="" maxLength={11}
-                        value={walkInMobile} onChange={e => setWalkInMobile(e.target.value.replace(/\D/g,"").slice(0,11))}
-                        style={{ ...S.input, marginBottom:6 }} />
-                      <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>ঠিকানা (ঐচ্ছিক)</div>
-                      <input placeholder=""
-                        value={walkInAddress} onChange={e => setWalkInAddress(e.target.value)}
-                        style={{ ...S.input, marginBottom:6 }} />
+                      {renderWalkInCustPicker("#ef4444")}
                       <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>পরিশোধের তারিখ (ঐচ্ছিক)</div>
                       <input type="date"
                         value={walkInDueDate} onChange={e => setWalkInDueDate(e.target.value)}
                         style={{ ...S.input, marginBottom:0 }} />
-                      <div style={{ color:"#94a3b8", fontSize:10, marginTop:6 }}>নাম/মোবাইল দিলে বাকি কাস্টমার হিসেবে সেভ হবে</div>
+                      <div style={{ color:"#94a3b8", fontSize:10, marginTop:6 }}>নাম ছাড়া বাকি ইনভয়েস তৈরি করা যাবে না</div>
                     </div>
                   )}
                 </div>
@@ -15766,7 +16082,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
             )}
 
             {/* Note */}
-            <textarea placeholder="" value={note} onChange={e => setNote(e.target.value)}
+            <textarea placeholder="নোট লিখুন (ঐচ্ছিক)" value={note} onChange={e => setNote(e.target.value)}
               rows={2} style={{ ...S.input, resize:"none", marginBottom:8 }} />
 
           </div>
@@ -15776,7 +16092,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
             <div style={{ display:"flex", gap:10 }}>
               <button style={{ ...S.cancelBtn, flex:1 }} onClick={() => setStep(2)}>← পণ্য</button>
               <button style={{ ...S.saveBtn, flex:2, padding:14, fontSize:15, opacity:creating?0.7:1 }}
-                disabled={creating || (payType==="partial" && !partialAmt) || (selCust?.id==="__walkin__" && walkInPayType==="partial" && !walkInPartialAmt) || (selCust?.id==="__walkin__" && walkInPayType==="baki" && !walkInName.trim() && !walkInMobile.trim())}
+                disabled={creating || (!isSelfUse && payType==="partial" && !partialAmt) || (!isSelfUse && selCust?.id==="__walkin__" && walkInPayType==="partial" && !walkInPartialAmt) || (!isSelfUse && selCust?.id==="__walkin__" && (walkInPayType==="partial" || walkInPayType==="baki") && !walkInName.trim())}
                 onClick={createInvoice}>
                 {creating ? "তৈরি হচ্ছে..." : <span style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>ইনভয়েস তৈরি করুন →</span>}
               </button>
@@ -21087,8 +21403,8 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
             </div>
           )}
         </div>
-        <input style={{ ...S.input, fontSize: 22, textAlign: "center", fontWeight: 800 }} type="number" placeholder="" value={amount} onChange={e => setAmount(e.target.value)} inputMode="decimal" pattern="[0-9]*" />
-        <input style={S.input} placeholder="" defaultValue={note} ref={el => { if (el && !el._b) { el._b=true; el.addEventListener("compositionend", (e) => { {setNote(el.value);}; }, {passive:true}); el.addEventListener("blur", (e) => { {setNote(el.value);}; }, {passive:true}); el.addEventListener("input", (e) => { if(!e.isComposing){ {setNote(el.value);}; } }, {passive:true}); } }} onChange={()=>{}}
+        <input style={{ ...S.input, fontSize: 22, textAlign: "center", fontWeight: 800 }} type="number" placeholder="৳ পরিমাণ লিখুন" value={amount} onChange={e => setAmount(e.target.value)} inputMode="decimal" pattern="[0-9]*" />
+        <input style={S.input} placeholder="নোট লিখুন (ঐচ্ছিক)" defaultValue={note} ref={el => { if (el && !el._b) { el._b=true; el.addEventListener("compositionend", (e) => { {setNote(el.value);}; }, {passive:true}); el.addEventListener("blur", (e) => { {setNote(el.value);}; }, {passive:true}); el.addEventListener("input", (e) => { if(!e.isComposing){ {setNote(el.value);}; } }, {passive:true}); } }} onChange={()=>{}}
           lang="bn" autoCorrect="off" autoCapitalize="off" spellCheck="false" autoComplete="off" />
         <div style={S.rowBtns}>
           <button style={S.cancelBtn} onClick={onClose}>বাতিল</button>
@@ -21572,6 +21888,19 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       if (form.stock === "" || form.stock === null || form.stock === undefined || parseInt(form.stock) < 0 || isNaN(parseInt(form.stock))) errs.stock = true;
       if (form.minStockAlert === "" || form.minStockAlert === null || form.minStockAlert === undefined || parseInt(form.minStockAlert) < 0 || isNaN(parseInt(form.minStockAlert))) errs.minStockAlert = true;
       if (!form.expiryDate) errs.expiryDate = true;
+    }
+    // 🔴 ফিক্স: একই নামে একাধিক পণ্য এন্ট্রি হয়ে যাচ্ছিল (ভুলবশত ডুপ্লিকেট
+    // তৈরি — একই পণ্যের নতুন স্টক এলে নতুন প্রোডাক্ট বানানোর বদলে বিদ্যমান
+    // পণ্যে "ক্রয় এন্ট্রি" থেকে ব্যাচ যোগ করা উচিত)। case/space-insensitive
+    // তুলনা করে — নতুন পণ্য তৈরির সময়ই শুধু চেক হয় (এডিটে না, নিজের সাথে মিলবেই)
+    const normName = (s) => String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
+    if (!editId && form.name.trim()) {
+      const dup = products.find(p => p.id !== editId && normName(p.name) === normName(form.name));
+      if (dup) {
+        setFormErrors(e => ({ ...e, name: true }));
+        showToast(`"${dup.name}" নামে পণ্য আগে থেকেই আছে — নতুন স্টক এলে "ক্রয় এন্ট্রি" থেকে ব্যাচ যোগ করুন`, "#ef4444");
+        return;
+      }
     }
     setFormErrors(errs);
     if (Object.values(errs).some(Boolean)) {
@@ -24603,7 +24932,7 @@ function buildDailySummaryData({ invoices = [], txns = [], customers = [], produ
   const todayPurchaseCost = (purchaseOrders || [])
     .filter(p => p._type === "pe" && (p.dateKey === todayKey || (p.createdAt && p.createdAt.startsWith(todayKey))))
     .reduce((s, p) => s + (p.totalCost || 0), 0);
-  const currentCashDrawer = openingCash + cashSale + jomaToday - cashOutToday - todayPurchaseCost;
+  const currentCashDrawer = openingCash + cashSale + jomaToday - cashOutToday;
   return { revenue, cashSale, bakiToday, jomaToday, totalBakiNow, totalProfit, totalLoss, openingCash, cashOutToday, currentCashDrawer, todayPurchaseCost };
 }
 
@@ -26463,8 +26792,8 @@ function Settings_({ T, S, shopName,
       if (!s) {
         add("হিসাব সঠিকতা", "ক্যাশ ড্রয়ার হিসাব", "skip", "buildDailySummaryData() থেকে ফলাফল পাওয়া যায়নি");
       } else {
-        const detail = `ওপেনিং ৳${s.openingCash || 0} + নগদ বিক্রয় ৳${s.cashSale || 0} + বাকি আদায় ৳${s.jomaToday || 0} − উত্তোলন ৳${s.cashOutToday || 0} − ক্রয় খরচ ৳${s.todayPurchaseCost || 0} = প্রত্যাশিত ক্যাশ ৳${s.currentCashDrawer || 0} — এবার ড্রয়ারে সত্যিকারের ক্যাশ গুনে এই সংখ্যার সাথে মিলিয়ে দেখুন`;
-        add("হিসাব সঠিকতা", "ক্যাশ ড্রয়ার হিসাব (ওপেনিং+বিক্রি+আদায়−উত্তোলন−ক্রয়)",
+        const detail = `ওপেনিং ৳${s.openingCash || 0} + নগদ বিক্রয় ৳${s.cashSale || 0} + বাকি আদায় ৳${s.jomaToday || 0} − উত্তোলন ৳${s.cashOutToday || 0} = প্রত্যাশিত ক্যাশ ৳${s.currentCashDrawer || 0} — এবার ড্রয়ারে সত্যিকারের ক্যাশ গুনে এই সংখ্যার সাথে মিলিয়ে দেখুন`;
+        add("হিসাব সঠিকতা", "ক্যাশ ড্রয়ার হিসাব (ওপেনিং+বিক্রি+আদায়−উত্তোলন)",
           (s.currentCashDrawer || 0) < 0 ? "fail" : "skip",
           (s.currentCashDrawer || 0) < 0 ? `${detail} — ফলাফল নেগেটিভ, হিসাবের কোথাও ভুল আছে` : detail);
       }
