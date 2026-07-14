@@ -31320,88 +31320,20 @@ function ForceUpdateScreen({ version, message, updateUrl }) {
 // শপকিপার আপডেট করে ফেললে APP_VERSION_CODE বদলে যায় → compareVersions আর
 // negative রিটার্ন করে না → পরের বার অ্যাপ খুললে নোটিশ আপনাআপনি আসবেই না।
 //
-// 🔴 নতুন — এক-ক্লিক ইন-অ্যাপ আপডেট: বাটনে ক্লিক করলে APK ব্যাকগ্রাউন্ডে
-// ডাউনলোড হয় (প্রোগ্রেস % দেখায়), তারপর Android-এর নেটিভ ইনস্টলার ইনটেন্ট
-// অটোমেটিক খুলে যায় — দোকানদারকে শুধু শেষে "Install" বাটনে ট্যাপ করতে হয়
-// (Android নিরাপত্তার কারণে sideloaded APK-তে এই এক ধাপ কখনোই বাদ দেওয়া যায় না)।
-//
-// ⚠️ প্রয়োজনীয় নেটিভ সেটআপ (একবারই করতে হবে):
-//   npm install @capacitor/filesystem @capawesome-team/capacitor-file-opener
-//   npx cap sync android
-//   android/app/src/main/AndroidManifest.xml-এ যোগ করুন:
-//     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-//   android/app/src/main/res/xml/file_paths.xml (না থাকলে তৈরি করুন):
-//     <?xml version="1.0" encoding="utf-8"?>
-//     <paths xmlns:android="http://schemas.android.com/apk/res/android">
-//       <cache-path name="cache" path="." />
-//       <files-path name="files" path="." />
-//     </paths>
-//   উপরের সেটআপ ছাড়া এই ফিচার কাজ করবে না — কিন্তু নিচের কোড fail হলে
-//   স্বয়ংক্রিয়ভাবে পুরনো পদ্ধতিতে (ব্রাউজারে APK লিংক খোলা) fallback করে,
-//   তাই সেটআপ বাকি থাকলেও অ্যাপ ভাঙবে না।
+// 🔴 ফিক্স (CI build ব্যর্থতা): এখানে আগে @capacitor/filesystem ও
+// @capawesome-team/capacitor-file-opener দিয়ে সরাসরি in-app APK ইনস্টল করার
+// চেষ্টা ছিল, কিন্তু এই দুই প্যাকেজ কখনো npm install করে package.json-এ যোগ
+// করা হয়নি (শুধু কমেন্টে "করতে হবে" লেখা ছিল) — GitHub Actions build-এ Rollup
+// এই ইমপোর্ট resolve করতে না পেরে পুরো build ভেঙে যাচ্ছিল। এছাড়া এই ফিচারের
+// জন্য দরকারি Android manifest permission ও file_paths.xml সেটআপও কখনো
+// যাচাই করা হয়নি। তাই নিরাপদ ও নির্ভরযোগ্য পুরনো পদ্ধতিতে ফিরিয়ে দেওয়া হলো —
+// বাটনে ক্লিক করলে সরাসরি ব্রাউজারে APK ডাউনলোড লিংক খোলে, কোনো নতুন npm
+// dependency বা native সেটআপ ছাড়াই।
 function UpdateNoticeModal({ version, notes, updateUrl, onDismiss }) {
-  const [phase, setPhase] = useState("idle"); // idle | downloading | installing | error
-  const [progress, setProgress] = useState(0);
-  const [errMsg, setErrMsg] = useState("");
-
-  const blobToBase64 = (blob) => new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
-
-  const handleUpdateClick = async () => {
+  const handleUpdateClick = () => {
     if (!updateUrl) return;
-
-    // Web/ব্রাউজারে (Capacitor native না হলে) — সরাসরি লিংক খুলে দাও, পুরনো আচরণ
-    if (!(typeof window !== "undefined" && window.Capacitor?.isNativePlatform?.())) {
-      window.open(updateUrl, "_blank");
-      return;
-    }
-
-    setPhase("downloading");
-    setProgress(0);
-    setErrMsg("");
-    try {
-      const res = await fetch(updateUrl);
-      if (!res.ok || !res.body) throw new Error("ডাউনলোড শুরু করা যায়নি");
-      const total = Number(res.headers.get("content-length")) || 0;
-      const reader = res.body.getReader();
-      const chunks = [];
-      let received = 0;
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-        received += value.length;
-        if (total) setProgress(Math.min(99, Math.round((received / total) * 100)));
-      }
-      const blob = new Blob(chunks, { type: "application/vnd.android.package-archive" });
-      const base64 = await blobToBase64(blob);
-
-      const { Filesystem, Directory } = await import("@capacitor/filesystem");
-      const fileName = "sbm-update.apk";
-      await Filesystem.writeFile({ path: fileName, data: base64, directory: Directory.Cache, recursive: true });
-      const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache });
-
-      setProgress(100);
-      setPhase("installing");
-
-      const { FileOpener } = await import("@capawesome-team/capacitor-file-opener");
-      await FileOpener.openFile({ path: uri, mimeType: "application/vnd.android.package-archive" });
-      // এখান থেকে Android নিজেই ইনস্টলার স্ক্রিন দেখাবে — দোকানদার শুধু "Install" চাপবেন।
-    } catch (e) {
-      // 🔴 fallback — plugin সেটআপ না থাকলে বা ডাউনলোড ব্যর্থ হলে, পুরনো
-      // পদ্ধতিতে (ব্রাউজারে APK লিংক খোলা) দোকানদার তবু আপডেট করতে পারবেন।
-      setPhase("error");
-      setErrMsg("সরাসরি ইনস্টল করা যায়নি — ব্রাউজারে ডাউনলোড লিংক খোলা হচ্ছে...");
-      setTimeout(() => { window.open(updateUrl, "_blank"); }, 800);
-    }
+    window.open(updateUrl, "_blank");
   };
-
-  const busy = phase === "downloading" || phase === "installing";
 
   return (
     <div style={{
@@ -31431,7 +31363,7 @@ function UpdateNoticeModal({ version, notes, updateUrl, onDismiss }) {
             </div>
           )}
 
-          {notes && !busy && (
+          {notes && (
             <div style={{
               textAlign: "left", background: "rgba(255,255,255,0.05)", borderRadius: 12,
               padding: 12, marginBottom: 18, color: "#cbd5e1", fontSize: 13,
@@ -31441,54 +31373,29 @@ function UpdateNoticeModal({ version, notes, updateUrl, onDismiss }) {
             </div>
           )}
 
-          {busy && (
-            <div style={{ marginBottom: 18 }}>
-              <div style={{
-                height: 8, borderRadius: 6, background: "rgba(255,255,255,0.08)",
-                overflow: "hidden", marginBottom: 8
-              }}>
-                <div style={{
-                  height: "100%", width: `${phase === "installing" ? 100 : progress}%`,
-                  background: "linear-gradient(90deg,#06b6d4,#d946ef)",
-                  transition: "width 0.2s ease"
-                }} />
-              </div>
-              <div style={{ color: "#94a3b8", fontSize: 12 }}>
-                {phase === "downloading" ? `ডাউনলোড হচ্ছে... ${progress}%` : "ইনস্টলার খোলা হচ্ছে..."}
-              </div>
-            </div>
-          )}
-
-          {phase === "error" && (
-            <div style={{ color: "#fbbf24", fontSize: 12, marginBottom: 14 }}>{errMsg}</div>
-          )}
-
           <button
             onClick={handleUpdateClick}
-            disabled={busy}
             style={{
               width: "100%", padding: "13px", borderRadius: 12, border: "none",
               background: "linear-gradient(135deg,#06b6d4,#d946ef)",
               color: "#fff", fontSize: 15, fontWeight: 700,
-              cursor: busy ? "default" : "pointer", opacity: busy ? 0.7 : 1,
+              cursor: "pointer",
               boxShadow: "0 4px 20px rgba(217,70,239,0.35)"
             }}
           >
-            {busy ? "⏳ আপডেট চলছে..." : "⬇️ এখনই আপডেট করুন"}
+            ⬇️ এখনই আপডেট করুন
           </button>
 
-          {!busy && (
-            <button
-              onClick={onDismiss}
-              style={{
-                width: "100%", padding: "10px", marginTop: 10, borderRadius: 10,
-                border: "1px solid #334155", background: "transparent",
-                color: "#64748b", fontSize: 13, cursor: "pointer"
-              }}
-            >
-              পরে করবো
-            </button>
-          )}
+          <button
+            onClick={onDismiss}
+            style={{
+              width: "100%", padding: "10px", marginTop: 10, borderRadius: 10,
+              border: "1px solid #334155", background: "transparent",
+              color: "#64748b", fontSize: 13, cursor: "pointer"
+            }}
+          >
+            পরে করবো
+          </button>
         </div>
       </div>
     </div>
