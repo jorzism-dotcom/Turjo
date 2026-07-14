@@ -5262,9 +5262,10 @@ function useStaffPermissionGuard(fssReady, loaded, setCurrentUser, setUsers) {
         if (!prev || prev.role !== "staff" || prev.id !== fresh.id) return prev;
         if (
           JSON.stringify(fresh.tempPermissions || []) === JSON.stringify(prev.tempPermissions || []) &&
+          JSON.stringify(fresh.autoSchedules || []) === JSON.stringify(prev.autoSchedules || []) &&
           !!fresh.canAddProduct === !!prev.canAddProduct
         ) return prev;
-        return { ...prev, tempPermissions: fresh.tempPermissions || [], canAddProduct: !!fresh.canAddProduct };
+        return { ...prev, tempPermissions: fresh.tempPermissions || [], autoSchedules: fresh.autoSchedules || [], canAddProduct: !!fresh.canAddProduct };
       });
       // অন্য admin-facing UI (যেমন StaffMgmtModule) যাতেও আপডেটেড ডেটা দেখায়,
       // সেজন্য local users array-ও একইসাথে patch করা হয় — কিন্তু ডেটা সত্যিই
@@ -5338,6 +5339,23 @@ async function verifyPermissionSync(userId, checkFn, buildRecord, showToast, lab
   }
   showToast?.(`⚠️ ${label} — Firestore-এ এখনো কনফার্ম হয়নি (নেট/Rules চেক করুন)`, "#ef4444");
   try { logErrorToCentral?.("permission-verify:" + userId, new Error("verify failed after retries")); } catch {}
+}
+
+// ─── ⏰ isAutoScheduleActive — স্টাফের দৈনিক অটো-অন/অফ পারমিশন উইন্ডো চেক ──────
+// schedule: { key, enabled, startHour, startMinute, endHour, endMinute }
+// মধ্যরাত পার হওয়া উইন্ডোও (যেমন রাত ১০টা → রাত ১২টা/১২:৩০) সঠিকভাবে হ্যান্ডল করে।
+// সবসময় Asia/Dhaka সময় অনুযায়ী হিসাব হয় — ডিভাইসের টাইমজোন ভিন্ন হলেও ঠিক থাকে।
+function isAutoScheduleActive(schedule) {
+  if (!schedule || !schedule.enabled) return false;
+  const parts = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Dhaka", hour12: false, hour: "2-digit", minute: "2-digit" }).formatToParts(new Date());
+  const hh = parseInt(parts.find(p => p.type === "hour")?.value || "0", 10);
+  const mm = parseInt(parts.find(p => p.type === "minute")?.value || "0", 10);
+  const curMin = hh * 60 + mm;
+  const startMin = (schedule.startHour || 0) * 60 + (schedule.startMinute || 0);
+  let endMin = (schedule.endHour || 0) * 60 + (schedule.endMinute || 0);
+  if (endMin <= startMin) endMin += 24 * 60; // মধ্যরাত অতিক্রম করা উইন্ডো
+  const cur2 = curMin + 24 * 60;
+  return (curMin >= startMin && curMin < endMin) || (cur2 >= startMin && cur2 < endMin);
 }
 
 // ─── useFSSSettings — shopName/smsTemplates/smsGateway ↔ firestore/settings/main ─
@@ -9948,9 +9966,13 @@ function SmartBusinessMgmt() {
   // স্টাফের tempPermissions চেক: { key, expiresAt } — সময় পেরিয়ে গেলে false
   const hasPerm = (user, key) => {
     if (!user || user.role === "admin" || user.role === "owner") return true;
-    return (user.tempPermissions || []).some(
+    const tempOk = (user.tempPermissions || []).some(
       p => p.key === key && new Date(p.expiresAt) > new Date()
     );
+    if (tempOk) return true;
+    // ⏰ অটো-শিডিউল: এডমিনের সেট করা দৈনিক সময়সীমার মধ্যে থাকলে অটোমেটিক অনুমতি
+    const sched = (user.autoSchedules || []).find(s => s.key === key);
+    return isAutoScheduleActive(sched);
   };
 
   // ── tab setter — route guard সহ ───────────────────────────────────────────
@@ -10494,9 +10516,10 @@ function SmartBusinessMgmt() {
       }
       if (
         JSON.stringify(updated.tempPermissions || []) === JSON.stringify(prev.tempPermissions || []) &&
+        JSON.stringify(updated.autoSchedules || []) === JSON.stringify(prev.autoSchedules || []) &&
         !!updated.canAddProduct === !!prev.canAddProduct
       ) return prev;
-      return { ...prev, tempPermissions: updated.tempPermissions || [], canAddProduct: !!updated.canAddProduct };
+      return { ...prev, tempPermissions: updated.tempPermissions || [], autoSchedules: updated.autoSchedules || [], canAddProduct: !!updated.canAddProduct };
     });
   }, [users, loaded]);
 
@@ -12285,6 +12308,8 @@ function SmartBusinessMgmt() {
               users={users}
               setUsers={setUsers}
               showToast={showToast}
+              recoveryPhone={recoveryPhone}
+              recoveryPinHash={recoveryPinHash}
             />
           </ErrorBoundary>
         )}
@@ -22646,9 +22671,18 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
   }, [setSupplierPayments, showToast]);
 
   // ── Total stats ────────────────────────────────────────────────────────────
+  // 🔴 ফিক্স: আগে totalDue = Math.max(0, সব সাপ্লায়ারের totalPurchased যোগফল − সব
+  // সাপ্লায়ারের paid যোগফল) হিসাবে বের করা হতো — একটাই "global clip" পুরো
+  // যোগফলের উপর প্রয়োগ হতো। ফলে কোনো সাপ্লায়ারের ম্যানুয়াল "বাকি যোগ" থাকলেও
+  // (তার due ধনাত্মক), অন্য সাপ্লায়ারের ক্রয়-ছাড়াই-পেমেন্ট (paid > purchased, যার
+  // due আলাদাভাবে ০-তে ক্লিপ হওয়ার কথা) সেটাকে গাণিতিকভাবে বাতিল করে দিত — কার্ডে
+  // ৳0 দেখাত যদিও নির্দিষ্ট সাপ্লায়ারের পেজে সঠিক বাকি (যেমন ৳2,000) দেখাচ্ছিল।
+  // এখন প্রতিটি সাপ্লায়ারের ইতিমধ্যে-ক্লিপ-করা due (computeSupplierDueMap থেকে)
+  // আলাদাভাবে যোগ করা হয় — তাই এখানে শুধু প্রকৃত/ম্যানুয়াল বাকিই যোগ হয়, কোনো
+  // সাপ্লায়ারের ওভারপেমেন্ট অন্য সাপ্লায়ারের বাকিকে প্রভাবিত করতে পারে না।
   const totalPurchased = suppliers.reduce((s, sup) => s + sup.totalPurchased, 0);
   const totalPaid = Object.values(supplierDueMap).reduce((s, sup) => s + sup.paid, 0);
-  const totalDue = Math.max(0, totalPurchased - totalPaid);
+  const totalDue = suppliers.reduce((s, sup) => s + (sup.due || 0), 0);
   // 🆕 আজকের পরিশোধ — আজ যত টাকা প্রকৃত পরিশোধ হয়েছে (ম্যানুয়াল বাকি-যোগ এর মধ্যে ধরা হয়নি)
   const todayPaidTotal = useMemo(() =>
     supplierPayments
@@ -22708,7 +22742,7 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
               data={filteredSuppliers}
               itemContent={(_, sup) => {
                 const sum = paymentSummary[sup.name] || { paid:0, count:0, lastPaid:"" };
-                const due = Math.max(0, sup.totalPurchased - sum.paid);
+                const due = sup.due || 0;
                 const pctPaid = sup.totalPurchased > 0 ? Math.min(100, sum.paid / sup.totalPurchased * 100) : 0;
                 return (
                   <div style={{ paddingBottom:8 }}>
@@ -25024,12 +25058,140 @@ function AuditTrailModule({ T, S, currentUser, auditLogs = [], shopName }) {
 
 
 // ══════════════════════════════════════════════════════════════════════════
-// 👥 স্টাফ/সেলসবয় ব্যবস্থাপনা — Settings থেকে সরিয়ে আলাদা মডিউল হিসেবে
+// 👥 স্টাফ ব্যবস্থাপনা — Settings থেকে সরিয়ে আলাদা মডিউল হিসেবে (প্রিমিয়াম UI)
 // ══════════════════════════════════════════════════════════════════════════
-function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast }) {
-  const [showStaffExpanded, setShowStaffExpanded] = useState(true);
+
+// ── ⏰ StaffAutoScheduler — এডমিন দৈনিক অটো-অন/অফ সময় সেট করেন (যেমন রাত ১০টা–১২টা) ──
+function StaffAutoScheduler({ T, schedule, onChange }) {
+  const sched = schedule || { key: "purchase_entry", enabled: false, startHour: 22, startMinute: 0, endHour: 0, endMinute: 0 };
+  const toTimeStr = (h, m) => `${String(h ?? 0).padStart(2,"0")}:${String(m ?? 0).padStart(2,"0")}`;
+  const active = isAutoScheduleActive(sched);
+
+  return (
+    <div>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+          <span style={{ fontSize:10.5, color:T.sub }}>প্রতিদিন নির্দিষ্ট সময়ে স্বয়ংক্রিয় চালু/বন্ধ</span>
+          {sched.enabled && (
+            <span style={{ fontSize:9, fontWeight:800, padding:"2px 7px", borderRadius:20, background: active ? "#22c55e22" : "#64748b22", color: active ? "#22c55e" : "#94a3b8", border:`1px solid ${active ? "#22c55e44" : "#64748b33"}` }}>
+              {active ? "● এখন সক্রিয়" : "○ এখন নিষ্ক্রিয়"}
+            </span>
+          )}
+        </div>
+        <button
+          onClick={() => onChange({ ...sched, enabled: !sched.enabled })}
+          style={{
+            width: 40, height: 22, borderRadius: 20, border: "none", cursor: "pointer",
+            background: sched.enabled ? "linear-gradient(135deg,#7c3aed,#5b21b6)" : "#4b556355",
+            position: "relative", transition: "background 0.2s", flexShrink: 0,
+          }}>
+          <span style={{
+            position:"absolute", top:2, left: sched.enabled ? 20 : 2, width:18, height:18, borderRadius:"50%",
+            background:"#fff", transition:"left 0.2s", boxShadow:"0 1px 3px #0006",
+          }} />
+        </button>
+      </div>
+
+      {sched.enabled && (<>
+        <div style={{ marginTop:8, display:"flex", alignItems:"center", gap:8 }}>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:9, color:T.sub, marginBottom:3 }}>শুরু</div>
+            <input type="time" value={toTimeStr(sched.startHour, sched.startMinute)}
+              onChange={e => { const [h,m] = e.target.value.split(":").map(Number); onChange({ ...sched, startHour:h, startMinute:m }); }}
+              style={{ width:"100%", background:"#7c3aed15", border:"1px solid #7c3aed44", color:"#c4b5fd", borderRadius:8, padding:"6px 8px", fontSize:12, fontFamily:"inherit", colorScheme:"dark", boxSizing:"border-box" }} />
+          </div>
+          <span style={{ color:T.sub, fontSize:12, marginTop:14 }}>→</span>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:9, color:T.sub, marginBottom:3 }}>শেষ</div>
+            <input type="time" value={toTimeStr(sched.endHour, sched.endMinute)}
+              onChange={e => { const [h,m] = e.target.value.split(":").map(Number); onChange({ ...sched, endHour:h, endMinute:m }); }}
+              style={{ width:"100%", background:"#7c3aed15", border:"1px solid #7c3aed44", color:"#c4b5fd", borderRadius:8, padding:"6px 8px", fontSize:12, fontFamily:"inherit", colorScheme:"dark", boxSizing:"border-box" }} />
+          </div>
+        </div>
+        <div style={{ color:T.sub, fontSize:9, marginTop:6, opacity:0.75, lineHeight:1.5 }}>
+          প্রতিদিন {toTimeStr(sched.startHour, sched.startMinute)} থেকে {toTimeStr(sched.endHour, sched.endMinute)} পর্যন্ত ক্রয় এন্ট্রি স্বয়ংক্রিয়ভাবে চালু হবে, বাকি সময় নিজে থেকেই বন্ধ থাকবে।
+        </div>
+      </>)}
+    </div>
+  );
+}
+
+// ── 📷 StaffSetupQrPanel — স্টাফ ম্যানেজমেন্ট থেকেই সরাসরি সেটআপ QR দেখা যাবে ──────
+function StaffSetupQrPanel({ T, S, recoveryPhone, recoveryPinHash }) {
+  const [open, setOpen] = useState(false);
+  const [pin, setPin] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState("");
+  const [payload, setPayload] = useState("");
+
+  const isSet = !!(recoveryPhone && recoveryPinHash);
+
+  const close = () => { setOpen(false); setPin(""); setError(""); setPayload(""); };
+
+  const confirm = async () => {
+    if (!pin || pin.length !== 6) { setError("৬ ডিজিটের PIN দিন"); return; }
+    setChecking(true); setError("");
+    try {
+      const ok = await checkPassword(pin, recoveryPinHash);
+      if (!ok) { setError("ভুল PIN, আবার চেষ্টা করুন"); setChecking(false); return; }
+      setPayload(`SBMQR1|${recoveryPhone}|${pin}`);
+    } catch { setError("সমস্যা হয়েছে, আবার চেষ্টা করুন"); }
+    setChecking(false);
+  };
+
+  return (
+    <div className="qc-gradient-card" style={{ ...S.card, marginTop: 14, background: "linear-gradient(145deg,#1e1033 0%,#0f172a 100%)", border: "1.5px solid #7c3aed33" }}>
+      <div onClick={() => { if (isSet) { if (open) close(); else setOpen(true); } }}
+        style={{ display:"flex", justifyContent:"space-between", alignItems:"center", cursor: isSet ? "pointer" : "default", userSelect:"none" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+          <span style={{ fontSize:18 }}>📷</span>
+          <div>
+            <div style={{ color: T.text, fontWeight: 800, fontSize: 13 }}>স্টাফ সেটআপ QR</div>
+            <div style={{ color: T.sub, fontSize: 10.5, marginTop:2 }}>স্ক্যান করেই নতুন ফোনে স্টাফ লগইন সেটআপ হয়ে যাবে</div>
+          </div>
+        </div>
+        {isSet && <span style={{ color: T.sub, fontSize: 12 }}>{open ? "▲" : "▼"}</span>}
+      </div>
+
+      {!isSet ? (
+        <div style={{ color:T.sub, fontSize:11, marginTop:10, lineHeight:1.5 }}>
+          প্রথমে Settings-এ গিয়ে "ডেটা রিকভারি (Phone + PIN)" সেটআপ করুন — তারপর এখান থেকেই QR দেখা যাবে।
+        </div>
+      ) : open && (
+        <div style={{ marginTop:12, paddingTop:12, borderTop:"1px solid #ffffff14" }}>
+          {!payload ? (
+            <>
+              <div style={{ color:"#94a3b8", fontSize:11.5, marginBottom:8, lineHeight:1.5 }}>
+                QR দেখানোর আগে দোকানের ৬-ডিজিট Recovery PIN দিয়ে নিশ্চিত করুন।
+              </div>
+              <input style={S.input} placeholder="৬-ডিজিট PIN" maxLength={6} type="password" inputMode="numeric"
+                value={pin} onChange={e => { setPin(e.target.value.replace(/\D/g,"").slice(0,6)); setError(""); }} />
+              {error && <div style={S.err}>{error}</div>}
+              <button style={{ ...S.saveBtn, width:"100%", marginTop:8, opacity: checking?0.7:1 }} disabled={checking} onClick={confirm}>
+                {checking ? "যাচাই হচ্ছে..." : "QR দেখান"}
+              </button>
+            </>
+          ) : (
+            <div style={{ textAlign:"center" }}>
+              <div style={{ display:"inline-block", padding:10, background:"#fff", borderRadius:16 }}>
+                <QRCodeSVG value={payload} size={210} />
+              </div>
+              <div style={{ color:"#fca5a5", fontSize:11.5, marginTop:12, lineHeight:1.6, background:"#ef444412", border:"1px solid #ef444433", borderRadius:10, padding:"8px 12px" }}>
+                ⚠️ এই QR-এ দোকানের রিকভারি তথ্য আছে — শুধু বিশ্বাসযোগ্য স্টাফকে দেখান। তিনি অ্যাপ ইনস্টল করে "📷 QR স্ক্যান" বেছে স্ক্যান করবেন।
+              </div>
+              <button style={{ ...S.cancelBtn, width:"100%", marginTop:10 }} onClick={close}>বন্ধ করুন</button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, recoveryPhone, recoveryPinHash }) {
   const [showNewUser, setShowNewUser] = useState(false);
   const [userForm, setUserForm] = useState({ name: "", username: "", password: "", pin: "" });
+  const [search, setSearch] = useState("");
 
   if (currentUser?.role === "staff") {
     return (
@@ -25064,35 +25226,73 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast })
     showToast("স্টাফ অ্যাকাউন্ট মুছে ফেলা হয়েছে");
   };
 
+  const updateAutoSchedule = (u, nextSchedule) => {
+    const updatedUser = {
+      ...u,
+      autoSchedules: [
+        ...((u.autoSchedules || []).filter(s => s.key !== "purchase_entry")),
+        nextSchedule,
+      ],
+    };
+    setUsers(prev => prev.map(x => x.id === u.id ? updatedUser : x));
+    // 🛡️ সার্ভারে সত্যিই পৌঁছেছে কিনা নিশ্চিত করা — নাহলে চুপচাপ ব্যর্থ হয়ে
+    // অটো-শিডিউল আগের মতোই থেকে যাবে (আগে tempPermissions/canAddProduct-এ যে বাগ হয়েছিল সেই ক্লাস)
+    verifyPermissionSync(
+      u.id,
+      (fresh) => JSON.stringify((fresh.autoSchedules || []).find(s => s.key === "purchase_entry") || {}) === JSON.stringify(nextSchedule),
+      () => updatedUser,
+      showToast,
+      `${u.name}-এর অটো-শিডিউল`
+    );
+  };
+
+  const staffList = users.filter(u => u.role === "staff");
+  const q = search.trim().toLowerCase();
+  const filtered = q
+    ? staffList.filter(u => (u.name||"").toLowerCase().includes(q) || (u.username||"").toLowerCase().includes(q))
+    : staffList;
+
+  const activeTempCount = staffList.filter(u => (u.tempPermissions||[]).some(p => p.key === "purchase_entry" && new Date(p.expiresAt) > new Date())).length;
+  const activeScheduleCount = staffList.filter(u => isAutoScheduleActive((u.autoSchedules||[]).find(s => s.key === "purchase_entry"))).length;
+
   return (
     <div style={{ ...S.page, paddingBottom: 100 }}>
       <div style={{ ...S.header, marginBottom: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ width: 4, height: 22, borderRadius: 2, background: "linear-gradient(180deg,#6366f1,#4338ca)" }} />
-          <span style={{ ...S.headerTitle, fontSize: 17 }}>👥 স্টাফ/সেলসবয় ব্যবস্থাপনা</span>
+          <div style={{ width: 4, height: 22, borderRadius: 2, background: "linear-gradient(180deg,#8b5cf6,#4338ca)" }} />
+          <span style={{ ...S.headerTitle, fontSize: 17 }}>👥 স্টাফ ব্যবস্থাপনা</span>
+        </div>
+      </div>
+
+      {/* ── স্ট্যাটাস চিপস ── */}
+      <div style={{ display:"flex", gap:8, marginTop:14, flexWrap:"wrap" }}>
+        <div style={{ flex:"1 1 100px", background:"linear-gradient(145deg,#1e1b4b,#0f172a)", border:"1px solid #6366f133", borderRadius:12, padding:"10px 12px" }}>
+          <div style={{ color:"#a5b4fc", fontSize:18, fontWeight:900 }}>{staffList.length}</div>
+          <div style={{ color:T.sub, fontSize:9.5 }}>মোট স্টাফ</div>
+        </div>
+        <div style={{ flex:"1 1 100px", background:"linear-gradient(145deg,#3b0764,#0f172a)", border:"1px solid #a855f733", borderRadius:12, padding:"10px 12px" }}>
+          <div style={{ color:"#d8b4fe", fontSize:18, fontWeight:900 }}>{activeTempCount}</div>
+          <div style={{ color:T.sub, fontSize:9.5 }}>সাময়িক অনুমতি সক্রিয়</div>
+        </div>
+        <div style={{ flex:"1 1 100px", background:"linear-gradient(145deg,#052e16,#0f172a)", border:"1px solid #22c55e33", borderRadius:12, padding:"10px 12px" }}>
+          <div style={{ color:"#86efac", fontSize:18, fontWeight:900 }}>{activeScheduleCount}</div>
+          <div style={{ color:T.sub, fontSize:9.5 }}>অটো-শিডিউল সক্রিয়</div>
         </div>
       </div>
 
       <div className="qc-gradient-card" style={{ ...S.card, marginTop: 14 }}>
-        <div onClick={() => setShowStaffExpanded(v => !v)} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", cursor:"pointer", userSelect:"none" }}>
-          <div>
-            <div style={{ color: T.text, fontWeight: 700, fontSize: 14, display:"flex", alignItems:"center", gap:8 }}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
-              স্টাফ/সেলসবয় ব্যবস্থাপনা
-            </div>
-            <div style={{ color: T.text, fontSize: 11, marginTop: 2, opacity: 0.65 }}>সেলস বয়ের জন্য আলাদা লগইন তৈরি করুন</div>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}>
+          <div style={{ color: T.text, fontWeight: 700, fontSize: 14, display:"flex", alignItems:"center", gap:8 }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
+            স্টাফ তালিকা
           </div>
-          <span style={{ color: T.sub, fontSize: 12 }}>{showStaffExpanded ? "▲" : "▼"}</span>
-        </div>
-
-        {showStaffExpanded && (<>
-        <div style={{ marginTop: 12, display:"flex", justifyContent:"flex-end" }}>
           <button style={S.linkBtn} onClick={() => { setShowNewUser(v => !v); setUserForm({ name: "", username: "", password: "", pin: "" }); }}>
             {showNewUser ? "Cancel" : "+ যোগ করুন"}
           </button>
         </div>
+
         {showNewUser && (
-          <div style={{ marginTop: 14, background: T.bg, borderRadius: 10, padding: 12, border: `1px solid #6366f133` }}>
+          <div style={{ marginTop: 14, background: T.bg, borderRadius: 10, padding: 12, border: `1px solid #8b5cf633` }}>
             <label style={S.label}>নাম</label>
             <input style={S.input} type="text" placeholder="যেমন: রহিম" value={userForm.name}
               onChange={e => setUserForm(f => ({ ...f, name: e.target.value }))} />
@@ -25113,39 +25313,67 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast })
           </div>
         )}
 
+        {staffList.length > 0 && (
+          <div style={{ marginTop: 12, position:"relative" }}>
+            <input style={{ ...S.input, paddingLeft:32 }} type="text" placeholder="নাম বা ইউজারনেম দিয়ে খুঁজুন..."
+              value={search} onChange={e => setSearch(e.target.value)} />
+            <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", fontSize:13, opacity:0.5 }}>🔍</span>
+          </div>
+        )}
+
         <div style={{ marginTop: 14 }}>
-          {users.filter(u => u.role === "staff").length === 0 ? (
+          {staffList.length === 0 ? (
             <div style={{ color: T.sub, fontSize: 12, textAlign: "center", padding: "12px 0" }}>
               কোনো স্টাফ অ্যাকাউন্ট নেই
             </div>
-          ) : users.filter(u => u.role === "staff").map(u => {
+          ) : filtered.length === 0 ? (
+            <div style={{ color: T.sub, fontSize: 12, textAlign: "center", padding: "12px 0" }}>
+              কোনো ফলাফল পাওয়া যায়নি
+            </div>
+          ) : filtered.map(u => {
             const activePurchasePerm = (u.tempPermissions || []).find(
               p => p.key === "purchase_entry" && new Date(p.expiresAt) > new Date()
             );
+            const schedule = (u.autoSchedules || []).find(s => s.key === "purchase_entry");
+            const scheduleActive = isAutoScheduleActive(schedule);
+            const initials = (u.name || "?").trim().charAt(0).toUpperCase();
             return (
-            <div key={u.id} style={{ background: T.bg, borderRadius: 10, border: "1px solid #6366f133", marginBottom: 8, overflow:"hidden" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px" }}>
-                <div style={{ width: 32, height: 32, borderRadius: 8, background: "linear-gradient(135deg,#4338ca22,#6366f122)", border: "1px solid #6366f133", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, flexShrink: 0 }}>👤</div>
+            <div key={u.id} style={{ background: "linear-gradient(145deg,#171335,#0f172a)", borderRadius: 14, border: "1px solid #8b5cf633", marginBottom: 10, overflow:"hidden", boxShadow:"0 4px 14px #00000033" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px" }}>
+                <div style={{ width: 38, height: 38, borderRadius: 11, background: "linear-gradient(135deg,#8b5cf6,#4338ca)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight:900, color:"#fff", flexShrink: 0, boxShadow:"0 3px 10px #8b5cf655" }}>{initials}</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ color: T.text, fontWeight: 700, fontSize: 12 }}>{u.name}</div>
-                  <div style={{ color: T.sub, fontSize: 10 }}>ইউজারনেম: {u.username}</div>
-                  {activePurchasePerm && (
-                    <div style={{ color:"#a78bfa", fontSize:10, fontWeight:700, marginTop:2 }}>
-                      🔑 ক্রয় এন্ট্রি — {new Date(activePurchasePerm.expiresAt).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",timeZone:"Asia/Dhaka"})} পর্যন্ত
-                    </div>
-                  )}
+                  <div style={{ color: T.text, fontWeight: 800, fontSize: 13 }}>{u.name}</div>
+                  <div style={{ color: T.sub, fontSize: 10.5 }}>@{u.username}</div>
+                  <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginTop:4 }}>
+                    {activePurchasePerm && (
+                      <span style={{ color:"#c4b5fd", fontSize:9.5, fontWeight:700, background:"#7c3aed22", border:"1px solid #7c3aed44", borderRadius:20, padding:"1px 8px" }}>
+                        🔑 {new Date(activePurchasePerm.expiresAt).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",timeZone:"Asia/Dhaka"})} পর্যন্ত
+                      </span>
+                    )}
+                    {schedule?.enabled && (
+                      <span style={{ color: scheduleActive ? "#86efac" : "#94a3b8", fontSize:9.5, fontWeight:700, background: scheduleActive ? "#22c55e22" : "#64748b22", border:`1px solid ${scheduleActive ? "#22c55e44" : "#64748b33"}`, borderRadius:20, padding:"1px 8px" }}>
+                        ⏰ অটো {scheduleActive ? "সক্রিয়" : "নিষ্ক্রিয়"}
+                      </span>
+                    )}
+                    {u.canAddProduct && (
+                      <span style={{ color:"#86efac", fontSize:9.5, fontWeight:700, background:"#22c55e22", border:"1px solid #22c55e44", borderRadius:20, padding:"1px 8px" }}>
+                        📦 পণ্য যোগ
+                      </span>
+                    )}
+                  </div>
                 </div>
-                <button style={{ background: "#ef444415", border: "1px solid #ef444433", color: "#ef4444", borderRadius: 7, padding: "4px 9px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}
+                <button style={{ background: "#ef444415", border: "1px solid #ef444433", color: "#ef4444", borderRadius: 9, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}
                   onClick={() => { if (window.confirm(`${u.name} (${u.username}) অ্যাকাউন্ট মুছবেন?`)) deleteUser(u.id); }}>
                   🗑️
                 </button>
               </div>
-              {/* Temporary Permission Section */}
-              <div style={{ borderTop:"1px solid #6366f122", padding:"8px 10px", background:"#6366f108" }}>
-                <div style={{ color:T.sub, fontSize:10, fontWeight:700, marginBottom:5 }}>🔑 সাময়িক অনুমতি</div>
+
+              {/* সাময়িক অনুমতি */}
+              <div style={{ borderTop:"1px solid #8b5cf622", padding:"10px 12px", background:"#8b5cf608" }}>
+                <div style={{ color:T.sub, fontSize:10.5, fontWeight:800, marginBottom:6 }}>🔑 সাময়িক ক্রয় এন্ট্রি অনুমতি</div>
                 <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
                   {activePurchasePerm ? (
-                    <button style={{ background:"#ef444415", border:"1px solid #ef444433", color:"#ef4444", borderRadius:7, padding:"4px 10px", fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}
+                    <button style={{ background:"#ef444415", border:"1px solid #ef444433", color:"#ef4444", borderRadius:8, padding:"5px 11px", fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}
                       onClick={() => {
                         const updatedUser = { ...u, tempPermissions: (u.tempPermissions||[]).filter(p => p.key !== "purchase_entry") };
                         setUsers(prev => prev.map(x => x.id === u.id ? updatedUser : x));
@@ -25187,15 +25415,25 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast })
                   )}
                 </div>
               </div>
-              {/* স্থায়ী অনুমতি: পণ্য যোগ (এডিট নয়) */}
-              <div style={{ borderTop:"1px solid #6366f122", padding:"8px 10px", background:"#6366f108" }}>
-                <div style={{ color:T.sub, fontSize:10, fontWeight:700, marginBottom:5 }}>📦 পণ্য অনুমতি</div>
+
+              {/* অটো-শিডিউল (দৈনিক) */}
+              <div style={{ borderTop:"1px solid #8b5cf622", padding:"10px 12px", background:"#8b5cf608" }}>
+                <div style={{ color:T.sub, fontSize:10.5, fontWeight:800, marginBottom:6 }}>⏰ দৈনিক অটো ক্রয় এন্ট্রি শিডিউল</div>
+                <StaffAutoScheduler T={T}
+                  schedule={schedule}
+                  onChange={(next) => updateAutoSchedule(u, next)}
+                />
+              </div>
+
+              {/* পণ্য অনুমতি */}
+              <div style={{ borderTop:"1px solid #8b5cf622", padding:"10px 12px", background:"#8b5cf608" }}>
+                <div style={{ color:T.sub, fontSize:10.5, fontWeight:800, marginBottom:6 }}>📦 পণ্য অনুমতি</div>
                 <button
                   style={{
                     background: u.canAddProduct ? "#ef444415" : "#22c55e15",
                     border: `1px solid ${u.canAddProduct ? "#ef444433" : "#22c55e33"}`,
                     color: u.canAddProduct ? "#ef4444" : "#22c55e",
-                    borderRadius:7, padding:"4px 10px", fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit",
+                    borderRadius:8, padding:"5px 11px", fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit",
                   }}
                   onClick={() => {
                     const next = !u.canAddProduct;
@@ -25212,16 +25450,14 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast })
                   }}>
                   {u.canAddProduct ? "✕ পণ্য যোগ অনুমতি বাতিল করুন" : "✓ নতুন পণ্য যোগের অনুমতি দিন"}
                 </button>
-                <div style={{ color:T.sub, fontSize:9, marginTop:4, opacity:0.7 }}>স্টাফ শুধু নতুন পণ্য যোগ করতে পারবে, বিদ্যমান পণ্য এডিট করতে পারবে না।</div>
               </div>
             </div>
           );})}
         </div>
-        <div style={{ color: T.sub, fontSize: 11, marginTop: 10, lineHeight:1.5 }}>
-          স্টাফ লগইন স্ক্রিনে "👤 স্টাফ" ট্যাবে গিয়ে এই ইউজারনেম/পাসওয়ার্ড দিয়ে লগইন করতে পারবে। স্টাফ Settings ও SMS দেখতে পারবে না।
-        </div>
-        </>)}
       </div>
+
+      {/* ── স্টাফ সেটআপ QR ── */}
+      <StaffSetupQrPanel T={T} S={S} recoveryPhone={recoveryPhone} recoveryPinHash={recoveryPinHash} />
     </div>
   );
 }
