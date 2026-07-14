@@ -346,6 +346,20 @@ function HighlightText({ text, query, style, highlightColor = "#22c55e" }) {
   );
 }
 
+// 🔴 ফিক্স: সাপ্লায়ার নাম নরমালাইজেশন — "Square Pharmaceuticals Ltd." আর "Square
+// Pharmaceuticals" এর মতো একই কোম্পানির সামান্য ভিন্ন বানান (Ltd./Limited/
+// Pharmaceuticals/পাংচুয়েশন) আলাদা এন্ট্রি হিসেবে সাজেশনে দুইবার দেখাত। এই
+// ফাংশন একটা "মূল নাম" (normalized key) বের করে — নিচে allSuppliers এই key
+// দিয়ে ডিডুপ্লিকেট করে, তাই একই কোম্পানি এখন থেকে একবারই দেখাবে।
+function normalizeSupplierKey(name) {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/[.,()]/g, "")
+    .replace(/\b(ltd|limited|pharmaceuticals?|pharma|plc|inc|company|corporation|corp|group|bd|bangladesh)\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 // ─── SupplierPicker — টাইপাহেড সার্চ-করে-বাছাই সাপ্লায়ার সিলেক্টর ───────────
 // BD_PHARMA_COMPANIES (MEDICINE_DATASET থেকে ডিরাইভ করা, ২১১টি) এর মধ্যে ফাজি সার্চ (smartMatch),
 // অথবা "নিজে লিখুন" কাস্টম মোড।
@@ -355,12 +369,29 @@ function SupplierPicker({ value, onChange, error, T, S, autoFocus, extraSupplier
   const { companies: BD_PHARMA_COMPANIES } = useMedicineDataset(); // লেজি-লোড — এই পিকার খোলা হলেই ফেচ হয়
   // extraSuppliers = দোকানে আগে ম্যানুয়ালি লেখা কাস্টম সাপ্লায়ারের নাম (products/purchaseOrders থেকে) —
   // এগুলো তালিকায় যুক্ত হবে যাতে একবার লিখলে পরেরবার সাজেশনে দেখা যায় ("অটো-সেভ")
+  // 🔴 ফিক্স: normalizeSupplierKey দিয়ে ডিডুপ্লিকেট — একই কোম্পানির একাধিক
+  // ভ্যারিয়েন্ট (Ltd./পাংচুয়েশন ভিন্নতা) থাকলে একটাই canonical নাম রাখা হয়।
+  // অগ্রাধিকার: (১) দোকানে আগে ব্যবহৃত নাম (extraSuppliers) ডেটাসেটের চেয়ে
+  // প্রাধান্য পায় — কারণ সেটাই আপনার real ব্যবহার, (২) একই সোর্সের মধ্যে বেশি
+  // সম্পূর্ণ (লম্বা) নামটা রাখা হয় (যেমন পূর্ণ "...Ltd." নাম)।
   const allSuppliers = useMemo(() => {
-    const seen = new Set();
-    const out = [];
-    extraSuppliers.forEach(s => { const n = (s || "").trim(); if (n && !seen.has(n)) { seen.add(n); out.push(n); } });
-    BD_PHARMA_COMPANIES.forEach(s => { if (!seen.has(s)) { seen.add(s); out.push(s); } });
-    return out;
+    const groups = new Map(); // normKey -> { name, fromExtra }
+    const addName = (raw, fromExtra) => {
+      const n = (raw || "").trim();
+      if (!n) return;
+      const key = normalizeSupplierKey(n) || n.toLowerCase();
+      const existing = groups.get(key);
+      if (!existing) {
+        groups.set(key, { name: n, fromExtra });
+      } else if (fromExtra && !existing.fromExtra) {
+        groups.set(key, { name: n, fromExtra }); // দোকানের নিজের নামই canonical
+      } else if (fromExtra === existing.fromExtra && n.length > existing.name.length) {
+        groups.set(key, { name: n, fromExtra }); // বেশি সম্পূর্ণ নামটা রাখা
+      }
+    };
+    extraSuppliers.forEach(s => addName(s, true));
+    BD_PHARMA_COMPANIES.forEach(s => addName(s, false));
+    return Array.from(groups.values()).map(g => g.name);
   }, [extraSuppliers, BD_PHARMA_COMPANIES]);
   const [customMode, setCustomMode] = useState(() => !!value && !allSuppliers.includes(value));
 
@@ -4670,10 +4701,29 @@ const ConflictQueue = {
         .filter(c => !(c.collection === conflict.collection && c.recordId === conflict.recordId)); // ডুপ্লিকেট না রেখে সবশেষটাই রাখি
       useAppStore.setState({ pendingConflicts: [...list, conflict] });
       try {
+        // 🔴 ফিক্স (ফেজ ৬): আগে এই entry-তে {id,type,action,at,detail} ছিল —
+        // auditLog() ফাংশনের (App() কম্পোনেন্টে) আসল স্কিমা {id,action,details,
+        // userId,userName,role,date,dateKey,time,createdAt}-এর সাথে না মেলায়
+        // Audit Trail UI userName/date/time না পেয়ে "অজানা" দেখাত। ConflictQueue
+        // module-level object হওয়ায় auditLog() হুক সরাসরি reuse করা যায় না
+        // (React context লাগে) — তাই ফিল্ড স্ট্রাকচার ম্যানুয়ালি মিলিয়ে দেওয়া হলো।
+        const now = new Date();
         const auditEntry = {
-          id: uid(), type: "sync-conflict", action: "sync-conflict",
-          at: new Date().toISOString(),
-          detail: `${BACKUP_FIELD_LABELS_BN[conflict.collection] || conflict.collection}: ${conflict.fields.map(f => f.field).join(", ")}`,
+          id: uid(),
+          action: "sync-conflict",
+          details: {
+            collection: conflict.collection,
+            recordId: conflict.recordId,
+            fields: conflict.fields.map(f => f.field),
+            summary: `${BACKUP_FIELD_LABELS_BN[conflict.collection] || conflict.collection}: ${conflict.fields.map(f => f.field).join(", ")}`,
+          },
+          userId: null, // সিস্টেম-জেনারেটেড, নির্দিষ্ট ইউজার-অ্যাকশন নেই
+          userName: "সিস্টেম (auto-detected)",
+          role: "system",
+          date: now.toLocaleDateString("bn-BD"),
+          dateKey: _dateKeyOf(now),
+          time: now.toLocaleTimeString("bn-BD"),
+          createdAt: now.toISOString(),
         };
         useAppStore.setState({ auditLogs: [...(state.auditLogs || []), auditEntry] });
       } catch {}
@@ -5163,6 +5213,41 @@ const pushCashLog = (entry) => {
   return entry;
 };
 
+// ─── 🔴 ফিক্স (ফেজ ৩): জেনেরিক resync-trigger — শুধু "users" ছাড়া বাকি সব
+// collection mount-এ একবারই সাবস্ক্রাইব হতো, Android background listener-death
+// হলে app resume করলেও আর recover হতো না। এই global pub-sub tick প্রতিটা
+// useFSSCollection instance-কে resume/online/visibility/২-মিনিট-heartbeat-এ
+// শুনিয়ে দেয়, ফলে remote→local effect রি-রান হয়ে subscribeCollection নতুন
+// করে attach হয় — স্টেল listener থাকলেও ঠিক হয়ে যায়। ──────────────────────
+const _resyncListeners = new Set();
+let _resyncTickGlobal = 0;
+function _bumpGlobalResync() {
+  _resyncTickGlobal += 1;
+  _resyncListeners.forEach(fn => { try { fn(_resyncTickGlobal); } catch {} });
+}
+let _resyncGlobalInitDone = false;
+function _initGlobalResyncListenersOnce() {
+  if (_resyncGlobalInitDone) return;
+  _resyncGlobalInitDone = true;
+  const onVisible = () => { if (document.visibilityState === "visible") _bumpGlobalResync(); };
+  document.addEventListener("visibilitychange", onVisible);
+  document.addEventListener("online", _bumpGlobalResync);
+  if (typeof window !== "undefined" && window.Capacitor?.isNativePlatform?.()) {
+    import("@capacitor/app").then(({ App }) => { App.addListener("resume", _bumpGlobalResync); }).catch(() => {});
+  }
+  setInterval(() => { if (document.visibilityState === "visible") _bumpGlobalResync(); }, 120000); // ২ মিনিট heartbeat
+}
+function useResyncTick() {
+  const [tick, setTick] = useState(_resyncTickGlobal);
+  useEffect(() => {
+    _initGlobalResyncListenersOnce();
+    const fn = (t) => setTick(t);
+    _resyncListeners.add(fn);
+    return () => { _resyncListeners.delete(fn); };
+  }, []);
+  return tick;
+}
+
 function useFSSCollection(name, value, setValue, ready, opts = {}) {
   // 🔴 ফিক্স: syncDeletes=false দিলে local→remote diff কোনো রেকর্ড "মিসিং" পেলেও
   // Firestore থেকে সেটা ডিলিট করবে না (শুধু bookkeeping করবে)। কারণ — Firestore-এর
@@ -5177,6 +5262,7 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
   const firstRemote = useRef(false);
   const valueRef    = useRef(value);
   const pending     = useRef(new Map()); // id(string) -> { rec, old, ts } — push হয়েছে, echo বাকি
+  const resyncTick  = useResyncTick(); // 🔴 ফেজ ৩ ফিক্স — resume/online/heartbeat-এ re-subscribe
   useEffect(() => { valueRef.current = value; }, [value]);
 
   // remote → local
@@ -5213,6 +5299,11 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
       }
       // pending local write protection
       const now = Date.now();
+      // 🔴 ফিক্স: "users" কালেকশনে echo দেরি (স্লো নেট) হলে ৫s সেফটি-টাইমআউটে
+      // স্টাফ-পারমিশন local এডিট silently সার্ভার-ভ্যালু দিয়ে ওভাররাইট হয়ে
+      // যাচ্ছিল। verifyPermissionSync (৩ রিট্রাই, ~৩.৬s) ও useStaffPermissionGuard
+      // heartbeat আলাদাভাবে সঠিকতা নিশ্চিত করে বলে users-এর জন্য টাইমআউট বাড়ানো নিরাপদ।
+      const SAFETY_TIMEOUT_MS = name === "users" ? 15000 : 5000;
       let merged = incoming;
       if (pending.current.size) {
         merged = incoming.map(rec => {
@@ -5241,12 +5332,12 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
               return rec; // ডেটা-সেফটি: সার্ভারের ভার্সনই ডিফল্টভাবে প্রয়োগ হয়, ইউজার চাইলে Settings থেকে revert করতে পারবেন
             }
           }
-          if (now - p.ts > 5000) { pending.current.delete(key); return rec; } // safety timeout
+          if (now - p.ts > SAFETY_TIMEOUT_MS) { pending.current.delete(key); return rec; } // safety timeout
           return p.rec; // এখনো echo আসেনি — local pending ভার্সন রাখো
         });
         const seenIds = new Set(merged.map(r => String(r.id)));
         pending.current.forEach((p, key) => {
-          if (!seenIds.has(key) && now - p.ts <= 5000) merged.push(p.rec); // নতুন রেকর্ড, এখনো remote-এ নেই
+          if (!seenIds.has(key) && now - p.ts <= SAFETY_TIMEOUT_MS) merged.push(p.rec); // নতুন রেকর্ড, এখনো remote-এ নেই
         });
       }
       lastSynced.current = merged;
@@ -5255,7 +5346,7 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
     }, (err) => { onSync?.("error"); logErrorToCentral("sync:" + name, err); });
     return () => { FSS.unsubscribe(name); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready]);
+  }, [ready, resyncTick]);
 
   // local → remote (diff by id — reference equality দিয়ে সস্তা, push শুধু বদলানো/নতুন/মুছা রেকর্ড)
   useEffect(() => {
@@ -5381,8 +5472,9 @@ function useStaffPermissionGuard(fssReady, loaded, setCurrentUser, setUsers) {
     // two-wave IndexedDB লোডিং ও অন্যান্য effect-ও একসাথে চলছে থাকে, তাই
     // বাড়তি নেটওয়ার্ক/CPU কাজ যোগ করলে অ্যাপ চালু হওয়ার মুহূর্তে (যেখানে
     // ইউজার ইতিমধ্যে "নিজে থেকে কেঁপে ওঠা"-র মতো অস্থিরতা লক্ষ্য করেছেন)
-    // আরও চাপ পড়ে। ৪ সেকেন্ড দেরি করে বাকি boot কাজ থিতিয়ে যাওয়ার সুযোগ দেওয়া হলো।
-    const bootTimer = setTimeout(forceRefresh, 4000);
+    // আরও চাপ পড়ে। ৮ সেকেন্ড দেরি করে (subscription-check-এর ৬s timeout window
+    // শেষ হওয়ার পরে) বাকি boot কাজ থিতিয়ে যাওয়ার সুযোগ দেওয়া হলো।
+    const bootTimer = setTimeout(forceRefresh, 8000);
 
     return () => {
       document.removeEventListener("visibilitychange", onVisible);
@@ -9877,24 +9969,40 @@ function SmartBusinessMgmt() {
       .catch(() => {});
   }, []);
 
-  // ── Fix 1: useRef-based debounce — timers cleaned up on unmount ──────────────
-  const _debounceTimersRef = useRef({});
+  // ── Fix 1: useRef-based debounce — real flush on unmount/pause/hidden ────────
+  const _debounceTimersRef = useRef({}); // { [key]: { timerId, val } }
   const debouncedSave = useCallback((key, val, delay = 1500) => {
-    if (_debounceTimersRef.current[key]) clearTimeout(_debounceTimersRef.current[key]);
-    _debounceTimersRef.current[key] = setTimeout(() => {
+    const existing = _debounceTimersRef.current[key];
+    if (existing) clearTimeout(existing.timerId);
+    const timerId = setTimeout(() => {
       save(key, val);
       delete _debounceTimersRef.current[key];
     }, delay);
+    _debounceTimersRef.current[key] = { timerId, val };
+  }, []);
+  const flushAllDebounced = useCallback(() => {
+    Object.entries(_debounceTimersRef.current).forEach(([key, entry]) => {
+      clearTimeout(entry.timerId);
+      save(key, entry.val); // ✅ আসল flush — এখন ডেটা সত্যিই সেভ হবে
+    });
+    _debounceTimersRef.current = {};
   }, []);
   useEffect(() => {
+    let appListenerHandle = null;
+    if (typeof window !== "undefined" && window.Capacitor?.isNativePlatform?.()) {
+      import("@capacitor/app").then(({ App }) => {
+        appListenerHandle = App.addListener("pause", flushAllDebounced);
+      }).catch(() => {});
+    }
+    const onHidden = () => { if (document.hidden) flushAllDebounced(); };
+    document.addEventListener("visibilitychange", onHidden);
     return () => {
-      // unmount cleanup — all pending debounced saves flushed immediately
-      Object.entries(_debounceTimersRef.current).forEach(([k, id]) => {
-        clearTimeout(id);
-      });
-      _debounceTimersRef.current = {};
+      // unmount cleanup — সব pending debounced save এখন সত্যিকারের flush হয়
+      flushAllDebounced();
+      document.removeEventListener("visibilitychange", onHidden);
+      if (appListenerHandle) appListenerHandle.remove();
     };
-  }, []);
+  }, [flushAllDebounced]);
 
   // ── safeTimeout: unmount-এ auto-cancel হয় ────────────────────────────────
   const _stRef = useRef({});
@@ -11560,6 +11668,22 @@ function SmartBusinessMgmt() {
               expiryDate: soldItem.expiryDate || "",
             });
           }
+        } else {
+          // 🔴 ফিক্স (ফেজ ৭): batchNo নেই (legacy/batch-tracking-এর আগের ইনভয়েস)
+          // — আগে এই ক্ষেত্রে শুধু stock ফিল্ড বাড়ত, batches[] অপরিবর্তিত থাকত,
+          // ফলে batch-sum ও stock ফিল্ডের মধ্যে গ্যাপ তৈরি হতো। এখন একটা
+          // adjustment ব্যাচ যোগ করে batches[]-কেও stock-এর সাথে sync রাখা হচ্ছে।
+          updatedBatches = [
+            ...updatedBatches,
+            {
+              batchNo: `VOID-ADJ-${inv.id.slice(-6)}`,
+              qty: restoredQty,
+              costPrice: soldItem.costPrice || p.avgCost || p.costPrice || 0,
+              expiryDate: null,
+              addedAt: new Date().toISOString(),
+              note: "voidInvoice legacy-item adjustment",
+            },
+          ];
         }
         return { ...p, stock: (p.stock || 0) + restoredQty, batches: updatedBatches, lastUpdated: new Date().toISOString() };
       }));
@@ -13949,7 +14073,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
   const resetAll = () => {
     setStep(1); setSelCust(null); setCustSearch(""); setItems([]);
     setCatFilter("সব"); setProdSearch(""); setPayType("baki");
-    setPartialAmt(""); setNote(""); setDiscount(""); setDiscountPct(0); setExtraCharge(""); setPrintInv(null); setPrintMode(null); setShowAllSummaryItems(false); setRedeemedPoints(0);
+    setPartialAmt(""); setNote(""); setDiscount(""); setDiscountPct(0); setExtraCharge(""); setPrintInv(null); setPrintMode(null); setShowAllSummaryItems(false);
     onDone?.();
     setTab?.("dashboard");
   };
@@ -14560,7 +14684,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
           }}>
             {filteredCustomers.map((c, idx) => (
               <div key={c.id}
-                onClick={() => { setSelCust(prev => (prev?.id === c.id ? null : c)); setCustSearch(""); setRedeemedPoints(0); }}
+                onClick={() => { setSelCust(prev => (prev?.id === c.id ? null : c)); setCustSearch(""); }}
                 style={{
                   display: "flex", alignItems: "center", gap: 12,
                   padding: "12px 14px", borderRadius: 14, cursor: "pointer",
@@ -18076,8 +18200,6 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
 
     const m = byMonth[selMonthKey] || { key: selMonthKey, qty:0, value:0, rows:[] };
     const sortedRows = [...m.rows].sort((a,b) => (b.dateKey||"").localeCompare(a.dateKey||"") || (b.at||"").localeCompare(a.at||""));
-    const waText = `*${shopName}*\nমেয়াদোত্তীর্ণ পণ্যের মাসিক হিসাব — ${monthLabel(selMonthKey)}\nমোট: ${m.qty}টি · মূল্য ৳${fmt(m.value)}\n\n` +
-      sortedRows.map((r,i) => `${i+1}. ${r.productName}${r.batchNo ? ` (${r.batchNo})` : ""} — ${r.company||r.supplier||"অজ্ঞাত"} — ${r.qty}${r.unit||""} · ৳${fmt(r.value||0)} · মেয়াদ: ${r.expiryDate ? fmtExpiryMonth(r.expiryDate) : "-"} · সরানো: ${r.dateKey}`).join("\n");
     const pdfRows = sortedRows.map((r,i) => `<tr><td class="serial">${i+1}</td><td>${r.productName}${r.batchNo ? ` (${r.batchNo})` : ""}</td><td>${r.company||r.supplier||"অজ্ঞাত"}</td><td class="num">${r.qty}${r.unit||""}</td><td class="num">৳${fmt(r.value||0)}</td><td class="num">${r.expiryDate ? fmtExpiryMonth(r.expiryDate) : "-"}</td><td class="num">${r.dateKey}</td></tr>`).join("");
     const pdfHtml = buildPdfHtml(`<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্য</th><th>সাপ্লায়ার</th><th class="num">পরিমাণ</th><th class="num">মূল্য</th><th class="num">মেয়াদ</th><th class="num">সরানো হয়েছে</th></tr></thead><tbody>${pdfRows}</tbody></table></div>`, shopName, `মেয়াদোত্তীর্ণ পণ্যের হিসাব — ${monthLabel(selMonthKey)}`);
     return (
@@ -18944,10 +19066,6 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
       const totalLoss2   = lossProducts.reduce((s, r) => s + r.totalLoss, 0);
       const netResult    = totalProfit2 + totalLoss2;
 
-      // WhatsApp টেক্সট
-      const waTextPL = `*${shopName}* — লাভ ও লস (${dmRange.label})\n🟢 লাভ: ৳${fmt(Number(totalProfit2.toFixed(2)))} | 🔴 লস: ৳${fmt(Math.abs(Number(totalLoss2.toFixed(2))))}\n\n` +
-        [...profitProducts.map(r=>`✅ ${r.name}: +৳${fmt(Number(r.totalProfit.toFixed(2)))}`), ...lossProducts.map(r=>`❌ ${r.name}: -৳${fmt(Math.abs(Number(r.totalLoss.toFixed(2))))}`)].join("\n");
-
       // Accordion state — top-level এ defined (expandedKeys, toggleExpand)
 
       // একটি পণ্যের accordion row
@@ -19238,9 +19356,6 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
         buildDailyListHtml(rangedItems, "invoices", shopName),
         shopName, `${dashModal.baseTitle || dashModal.title} — ${dmRange.label}`
       );
-      // WhatsApp টেক্সট
-      const waText = `*${shopName}*\n${dashModal.baseTitle || dashModal.title} — ${dmRange.label}\nমোট: ৳${fmt(rangeTotal)} (${rangedItems.length}টি ইনভয়েস)\n\n` +
-        rangedItems.map((inv, i) => `${i+1}. ${inv.customerName} — ৳${fmt(inv.total)} (${inv.payType === "baki" ? "বাকি" : inv.payType === "partial" ? "আংশিক" : "নগদ"}) · ${inv.date}`).join("\n");
       return (
         <div style={S.page}>
           <button style={S.textBtn} onClick={() => setDashModal(null)}>← ড্যাশবোর্ডে ফিরুন</button>
@@ -19401,8 +19516,6 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
         buildDailyListHtml(filteredItems, "payment-receipts", shopName),
         shopName, `${dashModal.title} (${dmRange.label})`
       );
-      const waText = `*${shopName}* — বাকি আদায় (${dmRange.label})\nমোট: ৳${fmt(rangeTotal)} (${filteredItems.length}টি)\n\n` +
-        filteredItems.map((p,i) => `${i+1}. ${p.customerName} — ৳${fmt(p.amount)} · ${p.dateKey}`).join("\n");
       return (
         <div style={S.page}>
           <button style={S.textBtn} onClick={() => setDashModal(null)}>← ড্যাশবোর্ডে ফিরুন</button>
@@ -20359,25 +20472,6 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
 }
 function PaymentInvoiceReceipt({ T, S, inv }) {
   const printRef = useRef(null);
-  const handlePrint = () => {
-    const shopName = inv.shopName || "SBM";
-    const remainingBaki = inv.remainingBalance ?? 0;
-    const prevBakiPrint = remainingBaki + (inv.amount || 0);
-    const content = `
-      <div class="info-row"><span class="info-label">কাস্টমার:</span><span class="info-val">${inv.customerName}</span></div>
-      <div class="info-row"><span class="info-label">মোবাইল:</span><span class="info-val">${inv.customerMobile||"—"}</span></div>
-      <div class="info-row"><span class="info-label">তারিখ:</span><span class="info-val">${inv.date} · ${inv.time||""}</span></div>
-      <div class="info-row"><span class="info-label">রশিদ নং:</span><span class="info-val">#${(inv.id||"").toUpperCase()}</span></div>
-      <div style="text-align:center;background:#22c55e18;border-radius:12px;padding:20px;margin:16px 0;">
-        <div style="color:#22c55e;font-size:12px;font-weight:700;">জমার পরিমাণ</div>
-        <div style="color:#22c55e;font-size:32px;font-weight:900;">৳${(inv.amount||0).toLocaleString("en-US")}</div>
-      </div>
-      <div class="info-row"><span class="info-label" style="color:#f59e0b;font-weight:700;">পূর্বের বাকি:</span><span class="info-val" style="color:#f59e0b;font-weight:700;">৳${prevBakiPrint.toLocaleString("en-US")}</span></div>
-      <div class="info-row"><span class="info-label" style="color:#ef4444;font-weight:700;">বর্তমান বাকি:</span><span class="info-val" style="color:#ef4444;font-size:16px;font-weight:800;">৳${remainingBaki.toLocaleString("en-US")}</span></div>
-      <div style="text-align:center;color:#999;font-size:12px;margin-top:10px;">ধন্যবাদ! জমা নিশ্চিত হয়েছে।</div>`;
-    const html = buildPdfHtml(content, shopName, "জমার রশিদ");
-    printPdfHtml(html);
-  };
   const handleShare = () => {
     const shopName = inv.shopName || "SBM";
     const title = `জমার_রশিদ_${inv.id?.slice(0,6)?.toUpperCase()}`;
@@ -20760,45 +20854,6 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
       </div>`;
     const html = buildPdfHtml(content, shopName, `${isBuyer?"ক্রেতার":"বিক্রেতার"} ইনভয়েস`);
     sharePdfWhatsApp(html, `ইনভয়েস_${(inv.id||"").slice(0,6).toUpperCase()}`);
-  };
-  const handlePrint = () => {
-    const shopName = inv.shopName || "SBM";
-    const itemRows = (inv.items||[]).map((item,i) => {
-      const _g = item.qty*item.price, _d = Math.min(Math.max(parseFloat(item.itemDiscount)||0,0), _g);
-      const _p = _g > 0 ? Math.round((_d / _g) * 10000) / 100 : 0;
-      return `<tr><td class="serial">${i+1}</td><td>${item.name}</td><td class="num">${item.qty}</td><td class="amount">৳${fmtMoney(item.price)}</td><td class="num" style="color:#16a34a;">${_d>0?`–৳${fmtMoney(_d)}${_p>0?` (${_p}%)`:""}`:"—"}</td><td class="amount" style="color:#3b82f6;">৳${fmtMoney(_g-_d)}</td></tr>`;
-    }).join("");
-    const content = `
-      <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
-        <div style="flex:1;background:#0369a115;border-radius:10px;padding:10px 14px;">
-          <div style="color:#666;font-size:11px;">কাস্টমার: ${inv.customerName}</div>
-          <div style="color:#666;font-size:11px;">মোবাইল: ${inv.customerMobile||""}</div>
-          ${customer?.address?`<div style="color:#666;font-size:11px;">ঠিকানা: ${customer.address}</div>`:""}
-        </div>
-        <div style="flex:1;background:#0369a115;border-radius:10px;padding:10px 14px;">
-          <div style="color:#666;font-size:11px;">ইনভয়েস: #${(inv.id||"").toUpperCase()}</div>
-          <div style="color:#666;font-size:11px;">তারিখ: ${inv.date||""}</div>
-        </div>
-      </div>
-      <table><thead><tr><th class="serial">#</th><th>পণ্য</th><th class="num">পরিমাণ</th><th class="num">দাম</th><th class="num">ছাড়</th><th class="num">মোট</th></tr></thead><tbody>${itemRows}</tbody></table>
-      <div style="margin-top:14px;padding:12px 0;">
-        <div class="info-row"><span>সর্বমোট:</span><span>৳${fmtMoney(inv.subtotal||inv.total||0)}</span></div>
-        ${(inv.itemDiscount||0) > 0 ? `<div class="info-row"><span style="color:#22c55e;">পণ্যভিত্তিক ডিসকাউন্ট:</span><span style="color:#22c55e;">– ৳${fmtMoney(inv.itemDiscount||0)}</span></div>` : ""}
-        ${(inv.discount||0) > 0 ? `<div class="info-row"><span style="color:#22c55e;">ডিসকাউন্ট:</span><span style="color:#22c55e;">– ৳${fmtMoney(inv.discount||0)}</span></div>` : ""}
-        ${(inv.extraCharge||0) > 0 ? `<div class="info-row"><span style="color:#f59e0b;">অতিরিক্ত চার্জ:</span><span style="color:#f59e0b;">+ ৳${fmtMoney(inv.extraCharge||0)}</span></div>` : ""}
-        <div class="info-row"><span>মোট খরচ:</span><span style="font-weight:800;font-size:18px;">৳${fmtMoney(inv.total||0)}</span></div>
-        ${inv.payType==="partial"?`
-          <div class="info-row"><span>নগদ:</span><span style="color:#22c55e;font-weight:700;">৳${fmtMoney(inv.paidAmount||0)}</span></div>
-          <div class="info-row"><span>এই বাকি:</span><span style="color:#ef4444;font-weight:700;">৳${fmtMoney(inv.bakiAmount||0)}</span></div>
-        `:""}
-        <div class="info-row"><span>পরিশোধ:</span><span>${inv.payType==="baki"?"বাকি":inv.payType==="partial"?"আংশিক":"নগদ"}</span></div>
-        ${(inv.payType !== "cash" || (inv.prevBalance||0) > 0) ? `
-        <div class="info-row" style="border-top:1px dashed #ccc;padding-top:8px;margin-top:8px;"><span style="color:#f59e0b;font-weight:700;">পূর্বের বাকি:</span><span style="color:#f59e0b;font-weight:700;">৳${fmtMoney(inv.prevBalance||0)}</span></div>
-        <div class="info-row"><span style="color:#ef4444;font-weight:800;">বর্তমান বাকি:</span><span style="color:#ef4444;font-size:16px;font-weight:800;">৳${fmtMoney((inv.prevBalance||0)+(inv.bakiAmount||0)-(inv.overpayAmount||0))}</span></div>
-        ` : ""}
-      </div>`;
-    const html = buildPdfHtml(content, shopName, `${isBuyer?"ক্রেতার":"বিক্রেতার"} ইনভয়েস`);
-    printPdfHtml(html);
   };
   return (
     <div>
@@ -24993,16 +25048,6 @@ function AuditTrailModule({ T, S, currentUser, auditLogs = [], shopName }) {
   const [searchQ,     setSearchQ]     = useState("");
   const [dateRange,   setDateRange]   = useState("all"); // all | today | week | month
 
-  if (currentUser?.role === "staff") {
-    return (
-      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"60vh", gap:12 }}>
-        <div style={{ fontSize:44 }}>🔒</div>
-        <div style={{ color: T.text, fontWeight:800, fontSize:16 }}>এডমিন অ্যাক্সেস প্রয়োজন</div>
-        <div style={{ color: T.sub, fontSize:13, textAlign:"center" }}>এই মডিউল শুধুমাত্র এডমিন দেখতে পারবেন</div>
-      </div>
-    );
-  }
-
   // ── অ্যাকশন লেবেল ম্যাপ — আইকন, লেবেল, রঙ ──────────────────────────────────
   const ACTION_LABELS = {
     INVOICE_VOID:          { icon: "🗑️", label: "ইনভয়েস ভয়েড",       color: "#ef4444" },
@@ -25116,6 +25161,22 @@ function AuditTrailModule({ T, S, currentUser, auditLogs = [], shopName }) {
   }, [filtered, shopName]);
 
   const DATE_RANGES = [["all","সব সময়"], ["today","আজ"], ["week","৭ দিন"], ["month","৩০ দিন"]];
+
+  // 🔴 ফিক্স: এই guard-টা আগে সব হুকের (useMemo/useCallback) আগে ছিল —
+  // React-এর rules-of-hooks ভঙ্গ করছিল (early-return role অনুযায়ী বদলালে
+  // হুক স্কিপ/না-স্কিপ হতো)। ফলে একই সেশনে স্টাফ↔অ্যাডমিন সুইচ হলে এই
+  // মডিউল খোলা অবস্থায় "Rendered more hooks than during the previous
+  // render" এরর দিয়ে অ্যাপ ক্র্যাশ করতে পারত। এখন সব হুক নিঃশর্তভাবে প্রতি
+  // render-এ কল হয়, শুধু JSX আউটপুটটাই role অনুযায়ী বদলায়।
+  if (currentUser?.role === "staff") {
+    return (
+      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"60vh", gap:12 }}>
+        <div style={{ fontSize:44 }}>🔒</div>
+        <div style={{ color: T.text, fontWeight:800, fontSize:16 }}>এডমিন অ্যাক্সেস প্রয়োজন</div>
+        <div style={{ color: T.sub, fontSize:13, textAlign:"center" }}>এই মডিউল শুধুমাত্র এডমিন দেখতে পারবেন</div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ ...S.page, paddingBottom: 100 }}>
@@ -26081,9 +26142,13 @@ function Settings_({ T, S, shopName,
       // ৯গ) ক্যাশ ড্রয়ার হিসাব — ওপেনিং + নগদ বিক্রয় + বাকি আদায় − উত্তোলন − ক্রয়
       // খরচ = প্রত্যাশিত ক্যাশ। এখানে কোনো দ্বিতীয় উৎস নেই (শারীরিক গণনার সাথেই
       // মেলাতে হবে), তাই নেগেটিভ হলেই শুধু fail — নাহলে informational ব্রেকডাউন
-      const s = typeof buildSummary === "function" ? buildSummary() : null;
+      // 🔴 ফিক্স: buildSummary() DailySummaryModule-এর ভিতরের লোকাল ফাংশন —
+      // এই স্কোপে (Settings_ → runSyncDiagnostics) সেটা ধরাই যেত না বলে এই
+      // চেক দুটো চুপচাপ সবসময় "skip" হয়ে যেত, কখনো আসলে চলত না। এখন সরাসরি
+      // গ্লোবাল buildDailySummaryData() কল করে একই হিসাব করা হচ্ছে।
+      const s = buildDailySummaryData({ invoices, txns, customers, products, cashLogs, purchaseOrders });
       if (!s) {
-        add("হিসাব সঠিকতা", "ক্যাশ ড্রয়ার হিসাব", "skip", "buildSummary() পাওয়া যায়নি");
+        add("হিসাব সঠিকতা", "ক্যাশ ড্রয়ার হিসাব", "skip", "buildDailySummaryData() থেকে ফলাফল পাওয়া যায়নি");
       } else {
         const detail = `ওপেনিং ৳${s.openingCash || 0} + নগদ বিক্রয় ৳${s.cashSale || 0} + বাকি আদায় ৳${s.jomaToday || 0} − উত্তোলন ৳${s.cashOutToday || 0} − ক্রয় খরচ ৳${s.todayPurchaseCost || 0} = প্রত্যাশিত ক্যাশ ৳${s.currentCashDrawer || 0} — এবার ড্রয়ারে সত্যিকারের ক্যাশ গুনে এই সংখ্যার সাথে মিলিয়ে দেখুন`;
         add("হিসাব সঠিকতা", "ক্যাশ ড্রয়ার হিসাব (ওপেনিং+বিক্রি+আদায়−উত্তোলন−ক্রয়)",
@@ -26100,7 +26165,7 @@ function Settings_({ T, S, shopName,
       // হয়ে গেলে এটাই একমাত্র জায়গা যেখানে ধরা পড়বে
       const todayKey = todayEn();
       const stats = await FSS.getStats(todayKey);
-      const s2 = typeof buildSummary === "function" ? buildSummary() : null;
+      const s2 = buildDailySummaryData({ invoices, txns, customers, products, cashLogs, purchaseOrders });
       if (!stats) {
         add("হিসাব সঠিকতা", "আজকের Firestore stats doc vs লোকাল ইনভয়েস যোগফল", "skip",
           "আজকের stats doc এখনো তৈরি হয়নি (আজ কোনো বিক্রি হয়নি হতে পারে)");
