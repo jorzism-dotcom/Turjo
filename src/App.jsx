@@ -6422,6 +6422,7 @@ function _showPrintOverlay(htmlContent, onBack) {
   const closeOverlay = (fromPopstate) => {
     overlay.remove();
     window.removeEventListener("popstate", onPopState);
+    window.__closePrintOverlay__ = null; // হার্ডওয়্যার ব্যাক হ্যান্ডলারের জন্য হুক পরিষ্কার
     if (window.__printOverlayPushed__ && !fromPopstate) {
       window.__printOverlayPushed__ = false;
       window.history.back();
@@ -6432,6 +6433,10 @@ function _showPrintOverlay(htmlContent, onBack) {
   };
   const onPopState = () => closeOverlay(true);
   window.addEventListener("popstate", onPopState);
+  // Capacitor নেটিভ প্ল্যাটফর্মে হার্ডওয়্যার ব্যাক বাটন browser popstate দিয়ে না গিয়ে
+  // App প্লাগিনের নিজস্ব "backButton" ইভেন্টের মধ্য দিয়ে যায় (নিচে handleBackButton দ্রষ্টব্য),
+  // তাই এই গ্লোবাল হুক এক্সপোজ করা হলো যাতে সেই হ্যান্ডলার ওভারলে বন্ধ করতে পারে।
+  window.__closePrintOverlay__ = () => closeOverlay(false);
 
   document.getElementById("__print_back__").onclick = () => closeOverlay(false);
   document.getElementById("__print_btn__").onclick = () => { try { frame.contentWindow.print(); } catch {} };
@@ -6547,6 +6552,20 @@ function autoClearPdfUrl(url, delayMs = 30000) {
 function printPdfHtml(htmlContent, onBack) {
   // openPrintWindow ব্যবহার করি — সব environment-এ কাজ করে
   openPrintWindow(htmlContent, onBack);
+}
+
+// টেক্সট (লিস্ট/মেসেজ) থেকে সরাসরি PDF বানিয়ে WhatsApp শেয়ার-শিট খোলে —
+// পুরোনো window.open(`https://wa.me/?text=...`) কলগুলোর বদলে ব্যবহৃত হয় যাতে
+// টেক্সটের বদলে সবসময় একটা PDF ফাইল যায়।
+async function shareTextAsWhatsAppPdf(title, shopName, text, showToast) {
+  const safeText = String(text || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br/>");
+  const html = buildPdfHtml(`<div class="section"><p style="white-space:pre-wrap;font-size:13.5px;line-height:1.9;">${safeText}</p></div>`, shopName, title);
+  try {
+    await sharePdfWhatsApp(html, title);
+    showToast?.("শেয়ার সিট খোলা হয়েছে ✓ সেখান থেকে WhatsApp বেছে নিন");
+  } catch (e) {
+    showToast?.("শেয়ার করতে সমস্যা হয়েছে", "#ef4444");
+  }
 }
 
 async function sharePdfWhatsApp(htmlContent, title) {
@@ -7272,22 +7291,19 @@ function normalizeBDMobile(mobile) {
   return m;
 }
 
-// text + mobile নিয়ে WhatsApp chat খোলে — Capacitor Browser (in-app) দিয়ে,
-// Browser plugin না পেলে সরাসরি window.open fallback
+// message নিয়ে PDF ফাইল বানিয়ে শেয়ার-শিট খোলে (WhatsApp সহ যেকোনো অ্যাপে ফাইল হিসেবে যায়) —
+// আগে এখানে টেক্সট wa.me লিংক দিয়ে সরাসরি চ্যাট খোলা হতো; এখন অ্যাপের সব জায়গায় WhatsApp
+// বাটন থেকে সবসময় শুধু PDF ফাইল যাবে, টেক্সট নয় — তাই এই একটা ফাংশন বদলালেই সব জায়গায় প্রয়োগ হয়।
 async function shareViaWhatsApp(mobile, message, showToast) {
-  const phone = normalizeBDMobile(mobile);
-  if (!phone) { showToast?.("কাস্টমারের মোবাইল নম্বর নেই", "#ef4444"); return; }
-  const url = `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
   try {
-    const Browser = window.Capacitor?.Plugins?.Browser;
-    if (Browser?.open) {
-      await Browser.open({ url, windowName: "_blank" });
-    } else {
-      window.open(url, "_blank");
-    }
+    const shopName = (await load(SK.shopName)) || "SBM";
+    const safeMsg = String(message || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br/>");
+    const html = buildPdfHtml(`<div class="section"><p style="white-space:pre-wrap;font-size:13.5px;line-height:1.9;">${safeMsg}</p></div>`, shopName, "মেসেজ");
+    await sharePdfWhatsApp(html, "SBM_মেসেজ");
+    showToast?.("শেয়ার সিট খোলা হয়েছে ✓ সেখান থেকে WhatsApp বেছে নিন");
   } catch (e) {
-    console.warn("[WhatsApp] open failed:", e);
-    try { window.open(url, "_blank"); } catch {}
+    console.warn("[WhatsApp] share failed:", e);
+    showToast?.("শেয়ার করতে সমস্যা হয়েছে", "#ef4444");
   }
 }
 
@@ -7317,19 +7333,11 @@ function saveWhatsappNumber(type, name, number) {
   all[`${type}:${key}`] = num;
   _saveWaContacts(all);
 }
-// mobile না থাকলে: আগে সংরক্ষিত নম্বর খোঁজে → না পেলে একবার জিজ্ঞেস করে সংরক্ষণ করে →
-// ইউজার বাতিল করলে সাধারণ শেয়ার-শিট খোলে (WhatsApp নিজে কন্টাক্ট বেছে নিতে দেয়)।
+// এখন PDF ফাইল শেয়ার-শিটের মাধ্যমে যায় বলে নির্দিষ্ট চ্যাট টার্গেট করার দরকার নেই,
+// তাই mobile/সংরক্ষিত নম্বর নির্বিশেষে সরাসরি PDF শেয়ার হয়। প্যারামিটারগুলো পুরোনো
+// কল-সাইটের সাথে সামঞ্জস্য রাখতে অপরিবর্তিত রাখা হয়েছে।
 async function shareViaWhatsAppSmart(type, name, mobile, message, showToast) {
-  if (mobile) return shareViaWhatsApp(mobile, message, showToast);
-  const label = type === "supplier" ? "সাপ্লায়ার" : "কাস্টমার";
-  let num = getSavedWhatsappNumber(type, name);
-  if (!num) {
-    const input = window.prompt(`${label} "${name || ""}"-এর WhatsApp নম্বর দিন (একবার দিলে পরেরবার থেকে মনে রাখা হবে):`, "");
-    if (input && input.trim()) { saveWhatsappNumber(type, name, input.trim()); num = input.trim(); }
-  }
-  if (num) return shareViaWhatsApp(num, message, showToast);
-  // নম্বর না দিলে — সাধারণ শেয়ার-শিট (কন্টাক্ট বাছাই WhatsApp-এর হাতে)
-  window.open(`https://wa.me/?text=${encodeURIComponent(message)}`, "_blank");
+  return shareViaWhatsApp(mobile, message, showToast);
 }
 
 // বাংলাদেশ সময় (fixed GMT+6, ডিভাইসের টাইমজোন নির্বিশেষে) অনুযায়ী আজকের dateKey।
@@ -11629,6 +11637,9 @@ function SmartBusinessMgmt() {
   useEffect(() => {
     const handleBackButton = (e) => {
       e.preventDefault();
+      // Print/PDF প্রিভিউ ওভারলে খোলা থাকলে সবার আগে সেটাই বন্ধ করো — এটা React state-এর
+      // বাইরে সরাসরি DOM-এ বসানো, তাই এখানে চেক না করলে ব্যাক বাটন চাপলে ওভারলে আটকে থাকে।
+      if (typeof window !== "undefined" && window.__closePrintOverlay__) { window.__closePrintOverlay__(); return; }
       // If the "অন্যান্য" side drawer is open, close it first
       if (showMoreMenu) { setShowMoreMenu(false); return; }
       // If detail view is open, go back to list
@@ -17563,12 +17574,12 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
           {sortedItems.length > 0 && (
             <div style={{ display:"flex", gap:8, marginBottom:14 }}>
               <button onClick={() => openPrintWindow(buildFlatPdfHtml())}
-                style={{ flex:1, background:"linear-gradient(135deg,#0369a1,#0ea5e9)", border:"none", borderRadius:12, padding:"10px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+                style={{ flex:1, background:"linear-gradient(135deg,#1e40af,#3b82f6)", border:"none", borderRadius:12, padding:"10px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>
                 🖨️ Print
               </button>
-              <button onClick={() => { const lines = sortedItems.map((p,i)=>`${i+1}. ${p.name} (${p.company||p.category||"অজ্ঞাত"}) — ${p.stock||0}${p.unit||""}`).join("\n"); window.open(`https://wa.me/?text=${encodeURIComponent(title+"\n"+shopName+"\n\n"+lines)}`,"_blank"); }}
-                style={{ flex:1, background:"linear-gradient(135deg,#065f46,#10b981)", border:"none", borderRadius:12, padding:"10px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+              <button onClick={() => sharePdfWhatsApp(buildFlatPdfHtml(), title)}
+                style={{ flex:1, background:"linear-gradient(135deg,#065f46,#22c55e)", border:"none", borderRadius:12, padding:"10px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="#fff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
                 📤 WhatsApp
               </button>
@@ -17662,12 +17673,12 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
           {supItems.length > 0 && (
             <div style={{ display:"flex", gap:8, marginBottom:14, marginTop:10 }}>
               <button onClick={() => openPrintWindow(buildSupPdfHtml())}
-                style={{ flex:1, background:"linear-gradient(135deg,#0369a1,#0ea5e9)", border:"none", borderRadius:12, padding:"10px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+                style={{ flex:1, background:"linear-gradient(135deg,#1e40af,#3b82f6)", border:"none", borderRadius:12, padding:"10px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>
                 🖨️ Print
               </button>
               <button onClick={() => { const lines = supItems.map((p,i)=>`${i+1}. ${p.name} — স্টক: ${p.stock||0}${p.unit||""}`).join("\n"); shareViaWhatsAppSmart("supplier", selectedSupplier, "", `${title} — ${selectedSupplier}\n${shopName}\n\n${lines}`); }}
-                style={{ flex:1, background:"linear-gradient(135deg,#065f46,#10b981)", border:"none", borderRadius:12, padding:"10px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+                style={{ flex:1, background:"linear-gradient(135deg,#065f46,#22c55e)", border:"none", borderRadius:12, padding:"10px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="#fff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
                 📤 WhatsApp
               </button>
@@ -17865,12 +17876,12 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
         {items.length > 0 && (
           <div style={{ display:"flex", gap:8, marginBottom:14 }}>
             <button onClick={() => openPrintWindow(buildAllPdfHtml())}
-              style={{ flex:1, background:"linear-gradient(135deg,#0369a1,#0ea5e9)", border:"none", borderRadius:12, padding:"10px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+              style={{ flex:1, background:"linear-gradient(135deg,#1e40af,#3b82f6)", border:"none", borderRadius:12, padding:"10px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>
               🖨️ Print
             </button>
-            <button onClick={() => { const lines = items.map((p,i)=>`${i+1}. ${p.name} (${p.company||p.category||"অজ্ঞাত"}) — ${p.stock||0}${p.unit||""}`).join("\n"); window.open(`https://wa.me/?text=${encodeURIComponent(title+"\n"+shopName+"\n\n"+lines)}`,"_blank"); }}
-              style={{ flex:1, background:"linear-gradient(135deg,#065f46,#10b981)", border:"none", borderRadius:12, padding:"10px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+            <button onClick={() => sharePdfWhatsApp(buildAllPdfHtml(), title)}
+              style={{ flex:1, background:"linear-gradient(135deg,#065f46,#22c55e)", border:"none", borderRadius:12, padding:"10px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="#fff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
               📤 WhatsApp
             </button>
@@ -17975,7 +17986,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
         <div style={{ color:"#64748b", fontSize:12, marginBottom:12 }}>{m.qty}টি পণ্য · মোট মূল্য ৳{fmt(m.value)}</div>
         {sortedRows.length > 0 && (
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:14 }}>
-            <button onClick={() => window.open(`https://wa.me/?text=${encodeURIComponent(waText)}`, "_blank")}
+            <button onClick={() => sharePdfWhatsApp(pdfHtml, "মেয়াদোত্তীর্ণ পণ্যের হিসাব")}
               style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"linear-gradient(135deg,#065f46,#22c55e)", color:"#fff", border:"none", borderRadius:12, padding:"11px 8px", fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}>
               📤 WhatsApp
             </button>
@@ -18120,9 +18131,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
       return buildPdfHtml(`<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্যের নাম</th><th>সাপ্লায়ার</th><th class="num">অর্ডার পরিমাণ</th></tr></thead><tbody>${rows}</tbody><tfoot><tr class="total-row"><td class="serial"></td><td colspan="2"><b>মোট পণ্য</b></td><td class="num">${items.length}</td></tr></tfoot></table></div>`, shopName, `ক্রয় অর্ডার — ${dayLabelPO(dateKey)}`);
     };
     const sendDayWhatsApp = (dateKey) => {
-      const items = mergeItemsForDay(dateKey);
-      const lines = items.map((p,i) => `${i+1}. ${p.name} (${p.supplier}) — অর্ডার: ${p.qty}${p.unit||""}`).join('\n');
-      window.open(`https://wa.me/?text=${encodeURIComponent(`ক্রয় অর্ডার — ${dayLabelPO(dateKey)}\n${shopName}\n\n${lines}`)}`, '_blank');
+      sharePdfWhatsApp(buildDayOrderHtml(dateKey), `ক্রয় অর্ডার — ${dayLabelPO(dateKey)}`);
     };
 
     // ── প্রোডাক্ট কার্ড (শুধু "তৈরি করুন" ফ্লো-তে ব্যবহৃত) ──────────────────────
@@ -18506,8 +18515,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
         return buildPdfHtml(`<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্যের নাম</th><th>সাপ্লায়ার</th><th class="num">অর্ডার পরিমাণ</th></tr></thead><tbody>${rows}</tbody><tfoot><tr class="total-row"><td class="serial"></td><td colspan="2"><b>মোট পণ্য</b></td><td class="num">${items.length}</td></tr></tfoot></table></div>`, shopName, `ক্রয় অর্ডার-${recSerial} — ${dayLabelPO(rec.dateKey)}`);
       };
       const sendRecWhatsApp = () => {
-        const lines = items.map((it,i) => `${i+1}. ${it.name} (${it.supplier}) — অর্ডার: ${it.qty}${it.unit||""}`).join('\n');
-        window.open(`https://wa.me/?text=${encodeURIComponent(`ক্রয় অর্ডার-${recSerial} — ${dayLabelPO(rec.dateKey)}\n${shopName}\n\n${lines}`)}`, '_blank');
+        sharePdfWhatsApp(buildRecOrderHtml(), `ক্রয় অর্ডার-${recSerial} — ${dayLabelPO(rec.dateKey)}`);
       };
       return (
         <div style={{ ...S.page, padding:"0", display:"flex", flexDirection:"column", height:"100%", overflow:"hidden", background:PRINT.pageBg }}>
@@ -18759,20 +18767,19 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
 
   if (dashModal) {
     if (dashModal.type === "customer-breakdown") {
-      const waText = `*${shopName}* — বাকি কাস্টমার তালিকা\nমোট: ${dashModal.rows.length}জন\n\n` +
-        dashModal.rows.map((r,i) => `${i+1}. ${r.name} — বাকি: ৳${fmt(r.balance)}`).join("\n");
+      const custBreakdownHtml = buildPdfHtml(`<div class="section"><table><thead><tr><th>#</th><th>নাম</th><th>মোবাইল</th><th class="num">বাকি</th></tr></thead><tbody>${dashModal.rows.map((r,i)=>`<tr><td>${i+1}</td><td>${r.name}</td><td>${r.mobile||""}</td><td class="num">৳${fmt(r.balance)}</td></tr>`).join("")}</tbody></table></div>`, shopName, "বাকি কাস্টমার তালিকা");
       return (
         <div style={S.page}>
           <button style={S.textBtn} onClick={() => setDashModal(null)}>← ড্যাশবোর্ডে ফিরুন</button>
           <div style={{ color: T.text, fontWeight: 700, fontSize: 16, marginBottom: 10 }}>{dashModal.title}</div>
           {/* WhatsApp + Print */}
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:14 }}>
-            <button onClick={() => window.open(`https://wa.me/?text=${encodeURIComponent(waText)}`, "_blank")}
+            <button onClick={() => sharePdfWhatsApp(custBreakdownHtml, "বাকি কাস্টমার তালিকা")}
               style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"linear-gradient(135deg,#065f46,#22c55e)", color:"#fff", border:"none", borderRadius:12, padding:"11px 8px", fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit", boxShadow:"0 4px 14px rgba(34,197,94,0.35)" }}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="#fff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
               WhatsApp
             </button>
-            <button onClick={() => { const html = buildPdfHtml(`<div class="section"><table><thead><tr><th>#</th><th>নাম</th><th>মোবাইল</th><th class="num">বাকি</th></tr></thead><tbody>${dashModal.rows.map((r,i)=>`<tr><td>${i+1}</td><td>${r.name}</td><td>${r.mobile||""}</td><td class="num">৳${fmt(r.balance)}</td></tr>`).join("")}</tbody></table></div>`, shopName, "বাকি কাস্টমার তালিকা"); printPdfHtml(html); }}
+            <button onClick={() => printPdfHtml(custBreakdownHtml)}
               style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"linear-gradient(135deg,#1e40af,#3b82f6)", color:"#fff", border:"none", borderRadius:12, padding:"11px 8px", fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit", boxShadow:"0 4px 14px rgba(59,130,246,0.35)" }}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>
               Print
@@ -18882,7 +18889,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
 
           {/* WhatsApp + Print বাটন */}
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:14 }}>
-            <button onClick={() => window.open(`https://wa.me/?text=${encodeURIComponent(waTextPL)}`, "_blank")}
+            <button onClick={() => { const rows = [...profitProducts.map(r=>`<tr><td>${r.name}</td><td style="color:#22c55e">+৳${fmt(Number(r.totalProfit.toFixed(2)))}</td></tr>`), ...lossProducts.map(r=>`<tr><td>${r.name}</td><td style="color:#ef4444">-৳${fmt(Math.abs(Number(r.totalLoss.toFixed(2))))}</td></tr>`)].join(""); const html = buildPdfHtml(`<div class="section"><h2>লাভ ও লস — ${dmRange.label}</h2><table><thead><tr><th>পণ্য</th><th class="num">লাভ/লস</th></tr></thead><tbody>${rows}</tbody></table></div>`, shopName, `লাভ ও লস — ${dmRange.label}`); sharePdfWhatsApp(html, `লাভ ও লস — ${dmRange.label}`); }}
               style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"linear-gradient(135deg,#065f46,#22c55e)", color:"#fff", border:"none", borderRadius:12, padding:"11px 8px", fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit", boxShadow:"0 4px 14px rgba(34,197,94,0.35)" }}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="#fff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
               WhatsApp
@@ -19017,15 +19024,8 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
       };
 
       const handleWhatsApp = () => {
-        const lines = filteredPurchases.map((e,i) => {
-          const pName = e.productName || e.product || "—";
-          const qty = e.qty || 0;
-          const unit = e.unit || "";
-          const total = e.totalCost || 0;
-          return `${i+1}. ${pName} — ${qty}${unit} — ৳${fmt2(total)}`;
-        }).join("\n");
-        const msg = encodeURIComponent(`ক্রয় স্টেটমেন্ট — ${shopName || "SBM"}\nতারিখ: ${purchaseDate}\n\n${lines}\n\nমোট: ৳${fmt2(filteredTotal)}`);
-        window.open(`https://wa.me/?text=${msg}`, "_blank");
+        const html = buildPurchaseHtml(filteredPurchases, purchaseDate);
+        sharePdfWhatsApp(html, `ক্রয় স্টেটমেন্ট — ${purchaseDate}`);
       };
 
       return (
@@ -19050,11 +19050,11 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
               <div style={{ color:"#475569", fontSize:11, marginTop:2 }}>{filteredPurchases.length}টি এন্ট্রি</div>
             </div>
             <div style={{ display:"flex", gap:8 }}>
-              <button onClick={handlePrint} style={{ background:"linear-gradient(135deg,#0369a1,#0ea5e9)", border:"none", borderRadius:12, padding:"10px 14px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", gap:6, boxShadow:"0 4px 14px #0ea5e944" }}>
+              <button onClick={handlePrint} style={{ background:"linear-gradient(135deg,#1e40af,#3b82f6)", border:"none", borderRadius:12, padding:"10px 14px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", gap:6, boxShadow:"0 4px 14px #3b82f644" }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>
                 Print
               </button>
-              <button onClick={handleWhatsApp} style={{ background:"linear-gradient(135deg,#065f46,#10b981)", border:"none", borderRadius:12, padding:"10px 14px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", gap:6, boxShadow:"0 4px 14px #22c55e44" }}>
+              <button onClick={handleWhatsApp} style={{ background:"linear-gradient(135deg,#065f46,#22c55e)", border:"none", borderRadius:12, padding:"10px 14px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", gap:6, boxShadow:"0 4px 14px #22c55e44" }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="#fff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413Z"/></svg>
                 WhatsApp
               </button>
@@ -19158,7 +19158,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
           </div>
           {/* WhatsApp + Print */}
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:14 }}>
-            <button onClick={() => window.open(`https://wa.me/?text=${encodeURIComponent(waText)}`, "_blank")}
+            <button onClick={() => sharePdfWhatsApp(pdfHtml, dashModal.baseTitle || dashModal.title)}
               style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"linear-gradient(135deg,#065f46,#22c55e)", color:"#fff", border:"none", borderRadius:12, padding:"11px 8px", fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit", boxShadow:"0 4px 14px rgba(34,197,94,0.35)" }}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="#fff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
               WhatsApp
@@ -19296,7 +19296,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
           </div>
           {/* WhatsApp + Print */}
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:14 }}>
-            <button onClick={() => window.open(`https://wa.me/?text=${encodeURIComponent(waText)}`, "_blank")}
+            <button onClick={() => sharePdfWhatsApp(pdfHtml, dashModal.title)}
               style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"linear-gradient(135deg,#065f46,#22c55e)", color:"#fff", border:"none", borderRadius:12, padding:"11px 8px", fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit", boxShadow:"0 4px 14px rgba(34,197,94,0.35)" }}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="#fff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
               WhatsApp
@@ -21962,17 +21962,32 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                       </table>`;
                     const html = buildPdfHtml(content, shopName || "SBM", `ক্রয় স্টেটমেন্ট — ${dateLabel}`);
                     openPrintWindow(html);
-                  }} style={{ background:"linear-gradient(135deg,#0369a1,#0ea5e9)", border:"1px solid #38bdf855", borderRadius:12, padding:"9px 16px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", gap:6, boxShadow:"0 4px 16px #0ea5e955" }}>
+                  }} style={{ background:"linear-gradient(135deg,#1e40af,#3b82f6)", border:"1px solid #38bdf855", borderRadius:12, padding:"9px 16px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", gap:6, boxShadow:"0 4px 16px #3b82f655" }}>
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>
                     Print
                   </button>
                   {/* WhatsApp */}
                   <button onClick={() => {
                     const dateLabel = peFilter==="today" ? todayKey : peHistDate;
-                    const lines = displayed.map((e,i) => `${i+1}. ${e.productName||"—"} — ${e.qty||0}${e.unit||""} — ৳${fmtMoney(e.totalCost||0)}`).join("\n");
-                    const msg = encodeURIComponent(`ক্রয় স্টেটমেন্ট — ${shopName || "SBM"}\nতারিখ: ${dateLabel}\n\n${lines}\n\nমোট: ৳${fmtMoney(displayedTotal)}`);
-                    window.open(`https://wa.me/?text=${msg}`, "_blank");
-                  }} style={{ background:"linear-gradient(135deg,#065f46,#10b981)", border:"1px solid #34d39955", borderRadius:12, padding:"9px 16px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", gap:6, boxShadow:"0 4px 16px #22c55e55" }}>
+                    const rows = displayed.map((e,i) => `<tr>
+                      <td class="num" style="text-align:center;">${i+1}</td>
+                      <td style="font-weight:600;">${e.productName||"—"}</td>
+                      <td class="num" style="text-align:center;">${e.qty||0}${e.unit||""}</td>
+                      <td class="num">৳${fmtMoney(e.unitCost||0)}</td>
+                      <td class="num" style="font-weight:700;">৳${fmtMoney(e.totalCost||0)}</td>
+                    </tr>`).join("");
+                    const content = `
+                      <p style="font-size:11px;color:#64748b;margin-bottom:12px;">তারিখ: ${dateLabel} | মোট এন্ট্রি: ${displayed.length}টি</p>
+                      <table>
+                        <thead><tr>
+                          <th class="serial">#</th><th>পণ্য</th><th class="num" style="text-align:center;">পরিমাণ</th><th class="num">একক মূল্য</th><th class="num">মোট</th>
+                        </tr></thead>
+                        <tbody>${rows}</tbody>
+                        <tfoot><tr style="background:#f0fdf4;"><td colspan="4" style="padding:10px 16px;font-weight:800;">মোট</td><td class="num" style="font-weight:900;color:#15803d;">৳${fmtMoney(displayedTotal)}</td></tr></tfoot>
+                      </table>`;
+                    const html = buildPdfHtml(content, shopName || "SBM", `ক্রয় স্টেটমেন্ট — ${dateLabel}`);
+                    sharePdfWhatsApp(html, `ক্রয় স্টেটমেন্ট — ${dateLabel}`);
+                  }} style={{ background:"linear-gradient(135deg,#065f46,#22c55e)", border:"1px solid #34d39955", borderRadius:12, padding:"9px 16px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", gap:6, boxShadow:"0 4px 16px #22c55e55" }}>
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="#fff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
                     WhatsApp
                   </button>
