@@ -6439,7 +6439,47 @@ function _showPrintOverlay(htmlContent, onBack) {
   window.__closePrintOverlay__ = () => closeOverlay(false);
 
   document.getElementById("__print_back__").onclick = () => closeOverlay(false);
-  document.getElementById("__print_btn__").onclick = () => { try { frame.contentWindow.print(); } catch {} };
+  document.getElementById("__print_btn__").onclick = async () => {
+    // 🔴 ফিক্স: আগে এখানে সরাসরি frame.contentWindow.print() কল হতো — WebView-এর
+    // নিজস্ব প্রিন্ট ইঞ্জিন ব্যাকগ্রাউন্ড কালার/বক্স-শ্যাডো/বর্ডার-রেডিয়াস প্রিন্ট করতো না
+    // এবং position:fixed ওয়াটারমার্ক প্রতি পেজে ডুপ্লিকেট হয়ে যেত — ফলে PDF/Share
+    // বাটনের তুলনায় Print-এর আউটপুট সাদাকালো ও ভাঙাচোরা দেখাতো। এখন Share/PDF বাটনের
+    // মতোই একই html2canvas রেন্ডারড ছবি ব্যবহার করে প্রিন্ট করা হয় — তিন জায়গাতেই
+    // এখন থেকে হুবহু একই কোয়ালিটি ও লুক থাকবে।
+    const btn = document.getElementById("__print_btn__");
+    const orig = btn.innerHTML;
+    btn.disabled = true;
+    btn.style.opacity = "0.65";
+    btn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" style="animation:__po_spin__ 0.8s linear infinite"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="3" stroke-dasharray="42" stroke-linecap="round"/></svg> প্রস্তুত হচ্ছে`;
+    let printFrame;
+    try {
+      const canvas = await renderHtmlToCanvas(htmlContent);
+      const imgData = canvas.toDataURL("image/jpeg", 0.95);
+      const imgHtml = `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
+        @page { size:A4; margin:8mm; }
+        * { margin:0; padding:0; box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; color-adjust:exact; }
+        html, body { background:#fff; }
+        img { width:100%; height:auto; display:block; }
+        @media print { img { width:100%; } }
+      </style></head><body><img src="${imgData}" /></body></html>`;
+      printFrame = document.createElement("iframe");
+      printFrame.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none;";
+      document.body.appendChild(printFrame);
+      await new Promise(res => { printFrame.onload = res; printFrame.srcdoc = imgHtml; });
+      await new Promise(r => setTimeout(r, 250));
+      printFrame.contentWindow.focus();
+      printFrame.contentWindow.print();
+    } catch (e) {
+      console.error("Print render:", e);
+      // হাই-কোয়ালিটি রেন্ডার ব্যর্থ হলে পুরনো পদ্ধতিতে ফলব্যাক করো, যাতে অন্তত প্রিন্ট হয়
+      try { frame.contentWindow.print(); } catch {}
+    } finally {
+      btn.disabled = false;
+      btn.style.opacity = "1";
+      btn.innerHTML = orig;
+      if (printFrame) setTimeout(() => { try { document.body.removeChild(printFrame); } catch {} }, 3000);
+    }
+  };
 
   document.getElementById("__pdf_dl_btn__").onclick = async () => {
     const btn = document.getElementById("__pdf_dl_btn__");
@@ -6568,6 +6608,49 @@ async function shareTextAsWhatsAppPdf(title, shopName, text, showToast) {
   }
 }
 
+// ── হাই কোয়ালিটি HTML → canvas রেন্ডারার ─────────────────────────────────────
+// PDF ডাউনলোড, WhatsApp শেয়ার এবং Print — এই তিনটে ফিচারই এখন এই একই ফাংশন
+// ব্যবহার করে ছবি বানায়, তাই তিনটে জায়গাতেই সবসময় একই কোয়ালিটি/লুক থাকে।
+// (আগে Print বাটন সরাসরি ব্রাউজার/WebView-এর নিজস্ব print() ব্যবহার করতো, যেটা
+// ব্যাকগ্রাউন্ড কালার/বর্ডার-রেডিয়াস প্রিন্ট করতো না — ফলে ফলাফল সাদাকালো ও ভাঙাচোরা দেখাতো।)
+async function _loadPdfLibs() {
+  if (!window.jspdf) {
+    await new Promise((res, rej) => {
+      const s = document.createElement("script");
+      s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+      s.onload = res; s.onerror = rej; document.head.appendChild(s);
+    });
+  }
+  if (!window.html2canvas) {
+    await new Promise((res, rej) => {
+      const s = document.createElement("script");
+      s.src = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+      s.onload = res; s.onerror = rej; document.head.appendChild(s);
+    });
+  }
+}
+
+async function renderHtmlToCanvas(htmlContent) {
+  await _loadPdfLibs();
+  const safeHtml = htmlContent.replace(/@import url\([^)]+\);?/g, "");
+
+  const iframe = document.createElement("iframe");
+  iframe.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:900px;height:1px;border:none;visibility:hidden;";
+  document.body.appendChild(iframe);
+  await new Promise(res => { iframe.onload = res; iframe.srcdoc = safeHtml; });
+  const iDoc = iframe.contentDocument || iframe.contentWindow.document;
+  iframe.style.height = Math.max(iDoc.body.scrollHeight, 1200) + "px";
+  await new Promise(r => setTimeout(r, 800));
+
+  const canvas = await window.html2canvas(iDoc.body, {
+    scale: 3, useCORS: true, allowTaint: true,
+    backgroundColor: "#ffffff", logging: false,
+    width: 900, windowWidth: 900,
+  });
+  document.body.removeChild(iframe);
+  return canvas;
+}
+
 async function sharePdfWhatsApp(htmlContent, title) {
   const safeTitle = title.replace(/[^\w\u0980-\u09FF]/g, "_");
   const tempName  = "temp_share_" + Date.now() + ".pdf";
@@ -6577,37 +6660,7 @@ async function sharePdfWhatsApp(htmlContent, title) {
 
   // ── হাই কোয়ালিটি PDF base64 ──────────────────────────────────────────────
   const buildBase64Pdf = async () => {
-    const safeHtml = htmlContent.replace(/@import url\([^)]+\);?/g, "");
-
-    if (!window.jspdf) {
-      await new Promise((res, rej) => {
-        const s = document.createElement("script");
-        s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
-        s.onload = res; s.onerror = rej; document.head.appendChild(s);
-      });
-    }
-    if (!window.html2canvas) {
-      await new Promise((res, rej) => {
-        const s = document.createElement("script");
-        s.src = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
-        s.onload = res; s.onerror = rej; document.head.appendChild(s);
-      });
-    }
-
-    const iframe = document.createElement("iframe");
-    iframe.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:900px;height:1px;border:none;visibility:hidden;";
-    document.body.appendChild(iframe);
-    await new Promise(res => { iframe.onload = res; iframe.srcdoc = safeHtml; });
-    const iDoc = iframe.contentDocument || iframe.contentWindow.document;
-    iframe.style.height = Math.max(iDoc.body.scrollHeight, 1200) + "px";
-    await new Promise(r => setTimeout(r, 800));
-
-    const canvas = await window.html2canvas(iDoc.body, {
-      scale: 3, useCORS: true, allowTaint: true,
-      backgroundColor: "#ffffff", logging: false,
-      width: 900, windowWidth: 900,
-    });
-    document.body.removeChild(iframe);
+    const canvas = await renderHtmlToCanvas(htmlContent);
 
     const { jsPDF } = window.jspdf;
     const pdf    = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
@@ -6688,56 +6741,26 @@ async function downloadAsPdf(htmlContent, title) {
   const safeTitle = title.replace(/\s+/g, "_");
 
   try {
-    if (!window.jspdf) {
-      await new Promise((res, rej) => {
-        const s = document.createElement("script");
-        s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
-        s.onload = res; s.onerror = rej;
-        document.head.appendChild(s);
-      });
-    }
-    if (!window.html2canvas) {
-      await new Promise((res, rej) => {
-        const s = document.createElement("script");
-        s.src = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
-        s.onload = res; s.onerror = rej;
-        document.head.appendChild(s);
-      });
-    }
-
-    const container = document.createElement("div");
-    container.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:794px;background:#fff;padding:24px 48px;font-family:Arial,sans-serif;";
-    container.innerHTML = htmlContent
-      .replace(/<!DOCTYPE[^>]*>/i, "")
-      .replace(/<html[^>]*>/i, "")
-      .replace(/<\/html>/i, "")
-      .replace(/<head>[\s\S]*?<\/head>/i, "")
-      .replace(/<body[^>]*>/i, "")
-      .replace(/<\/body>/i, "");
-    document.body.appendChild(container);
-    await new Promise(r => setTimeout(r, 300));
-
-    const canvas = await window.html2canvas(container, {
-      scale: 1.5, useCORS: true, allowTaint: true, backgroundColor: "#ffffff", logging: false,
-    });
-    document.body.removeChild(container);
+    const canvas = await renderHtmlToCanvas(htmlContent);
 
     const { jsPDF } = window.jspdf;
     const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
     const pageW = pdf.internal.pageSize.getWidth();
     const pageH = pdf.internal.pageSize.getHeight();
-    const imgData = canvas.toDataURL("image/jpeg", 0.85);
+    const margin = 8;
+    const imgW = pageW - margin * 2;
+    const imgData = canvas.toDataURL("image/jpeg", 0.95);
     const imgRatio = canvas.height / canvas.width;
-    const imgH = pageW * imgRatio;
+    const imgH = imgW * imgRatio;
 
-    if (imgH <= pageH) {
-      pdf.addImage(imgData, "JPEG", 0, 0, pageW, imgH);
+    if (imgH <= pageH - margin * 2) {
+      pdf.addImage(imgData, "JPEG", margin, margin, imgW, imgH);
     } else {
-      let yPos = 0;
-      while (yPos < imgH) {
-        if (yPos > 0) pdf.addPage();
-        pdf.addImage(imgData, "JPEG", 0, -yPos, pageW, imgH);
-        yPos += pageH;
+      const sliceH = pageH - margin * 2;
+      const pages  = Math.ceil(imgH / sliceH);
+      for (let i = 0; i < pages; i++) {
+        if (i > 0) pdf.addPage();
+        pdf.addImage(imgData, "JPEG", margin, margin - i * sliceH, imgW, imgH);
       }
     }
 
@@ -14183,19 +14206,45 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
         {(c?.mobile || printInv.customerMobile) && (
           <button
             onClick={() => {
-              const mobile = c?.mobile || printInv.customerMobile;
-              const itemLines = (printInv.items || []).slice(0, 5)
-                .map(it => `${it.name} ×${it.qty}`).join(", ");
-              const more = (printInv.items || []).length > 5 ? ` +আরও ${printInv.items.length - 5}টি` : "";
-              const payLabel = printInv.payType === "cash" ? "নগদ" : printInv.payType === "baki" ? "বাকি" : "আংশিক";
-              let msg = `${shopName ? shopName + ": " : ""}${printInv.customerName || "প্রিয় কাস্টমার"}, আপনার ইনভয়েস তৈরি হয়েছে।\n`;
-              msg += `পণ্য: ${itemLines}${more}\n`;
-              msg += `মোট: ৳${fmtMoney(printInv.total)} (${payLabel})`;
-              if (printInv.payType === "partial") {
-                msg += `\nনগদ: ৳${fmtMoney(printInv.paidAmount||0)} · বাকি: ৳${fmtMoney(printInv.bakiAmount||0)}`;
-              }
-              msg += "\nধন্যবাদ।";
-              shareViaWhatsAppSmart("customer", printInv.customerName, mobile, msg, showToast);
+              // 🔴 ফিক্স: আগে এখানে wa.me টেক্সট-লিংক দিয়ে শুধু সারমর্ম টেক্সট পাঠানো হতো
+              // (ইনভয়েস PDF যেত না)। এখন InvoiceReceipt.handleShare-এর মতোই আসল
+              // ইনভয়েস PDF বানিয়ে sharePdfWhatsApp দিয়ে পাঠানো হয় — Print/PDF বাটনের
+              // মতোই একই কোয়ালিটির PDF শেয়ার হয়।
+              const inv = printInv;
+              const shopNameLocal = inv.shopName || shopName || "SBM";
+              const itemRows = (inv.items||[]).map((item,i) => {
+                const _g = item.qty*item.price, _d = Math.min(Math.max(parseFloat(item.itemDiscount)||0,0), _g);
+                const _p = _g > 0 ? Math.round((_d / _g) * 10000) / 100 : 0;
+                return `<tr><td class="serial">${i+1}</td><td>${item.name}</td><td class="num">${item.qty}</td><td class="num">৳${fmtMoney(item.price)}</td><td class="num" style="color:#16a34a;">${_d>0?`–৳${fmtMoney(_d)}${_p>0?` (${_p}%)`:""}`:"—"}</td><td class="amount" style="color:#3b82f6;">৳${fmtMoney(_g-_d)}</td></tr>`;
+              }).join("");
+              const content = `
+                <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+                  <div style="flex:1;background:#0369a115;border-radius:10px;padding:10px 14px;">
+                    <div style="color:#666;font-size:11px;">কাস্টমার</div>
+                    <div style="font-weight:800;font-size:15px;">${inv.customerName}</div>
+                    <div style="color:#666;font-size:11px;">${inv.customerMobile||""}</div>
+                  </div>
+                  <div style="flex:1;background:#0369a115;border-radius:10px;padding:10px 14px;">
+                    <div style="color:#666;font-size:11px;">ইনভয়েস</div>
+                    <div style="font-weight:800;">#${(inv.id||"").slice(-6).toUpperCase()}</div>
+                    <div style="color:#666;font-size:11px;">${inv.date||""}</div>
+                  </div>
+                </div>
+                <table><thead><tr><th class="serial">#</th><th>পণ্য</th><th class="num">পরিমাণ</th><th class="num">দাম</th><th class="num">ছাড়</th><th class="num">মোট</th></tr></thead><tbody>${itemRows}</tbody></table>
+                <div style="margin-top:14px;background:#0369a115;border-radius:10px;padding:12px 16px;">
+                  <div class="info-row"><span class="info-label">মোট খরচ:</span><span class="info-val" style="font-size:18px;font-weight:800;">৳${fmtMoney(inv.total||0)}</span></div>
+                  <div class="info-row"><span class="info-label">পরিশোধ পদ্ধতি:</span><span class="info-val">${inv.payType==="baki"?"বাকি":inv.payType==="partial"?"আংশিক":"নগদ"}</span></div>
+                  ${inv.payType==="partial"?`
+                    <div class="info-row"><span class="info-label">নগদ পেয়েছি:</span><span class="info-val" style="color:#22c55e;">৳${fmtMoney(inv.paidAmount||0)}</span></div>
+                    <div class="info-row"><span class="info-label">এই বাকি:</span><span class="info-val" style="color:#ef4444;">৳${fmtMoney(inv.bakiAmount||0)}</span></div>
+                  `:""}
+                  ${(inv.payType !== "cash" || (inv.prevBalance||0) > 0) ? `
+                  <div class="info-row" style="border-top:1px dashed #ccc;padding-top:8px;margin-top:8px;"><span class="info-label" style="color:#f59e0b;font-weight:700;">পূর্বের বাকি:</span><span class="info-val" style="color:#f59e0b;font-weight:700;">৳${fmtMoney(inv.prevBalance||0)}</span></div>
+                  <div class="info-row"><span class="info-label" style="color:#ef4444;font-weight:800;">বর্তমান বাকি:</span><span class="info-val" style="color:#ef4444;font-size:16px;font-weight:800;">৳${fmtMoney((inv.prevBalance||0)+(inv.bakiAmount||0)-(inv.overpayAmount||0))}</span></div>
+                  ` : ""}
+                </div>`;
+              const html = buildPdfHtml(content, shopNameLocal, "ক্রেতার ইনভয়েস");
+              sharePdfWhatsApp(html, `ইনভয়েস_${(inv.id||"").slice(0,6).toUpperCase()}`);
             }}
             style={{ ...S.saveBtn, width: "100%", marginTop: 10, marginBottom: 4,
               background: "linear-gradient(135deg,#22c55e,#16a34a)",
@@ -17677,7 +17726,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>
                 🖨️ Print
               </button>
-              <button onClick={() => { const lines = supItems.map((p,i)=>`${i+1}. ${p.name} — স্টক: ${p.stock||0}${p.unit||""}`).join("\n"); shareViaWhatsAppSmart("supplier", selectedSupplier, "", `${title} — ${selectedSupplier}\n${shopName}\n\n${lines}`); }}
+              <button onClick={() => sharePdfWhatsApp(buildSupPdfHtml(), `${title} — ${selectedSupplier}`)}
                 style={{ flex:1, background:"linear-gradient(135deg,#065f46,#22c55e)", border:"none", borderRadius:12, padding:"10px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="#fff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
                 📤 WhatsApp
@@ -20431,8 +20480,27 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
           <PaymentInvoiceReceipt T={T} S={S} inv={showInv} />
           <button
             onClick={() => {
-              const msg = `${shopName ? shopName + ": " : ""}${customer.name} ভাই, ৳${fmtMoney(showInv.amount)} জমা নেওয়া হয়েছে। বর্তমান বাকি: ৳${fmtMoney(showInv.remainingBalance || 0)}। ধন্যবাদ।`;
-              shareViaWhatsAppSmart("customer", customer.name, customer.mobile, msg, showToast);
+              // 🔴 ফিক্স: আগে এখানে wa.me টেক্সট-লিংক দিয়ে শুধু সারমর্ম টেক্সট পাঠানো হতো।
+              // এখন PaymentInvoiceReceipt.handleShare-এর মতোই আসল জমার রশিদ PDF বানিয়ে
+              // sharePdfWhatsApp দিয়ে পাঠানো হয়।
+              const inv = showInv;
+              const shopNameLocal = inv.shopName || shopName || "SBM";
+              const remainingBaki = inv.remainingBalance ?? 0;
+              const prevBaki = remainingBaki + (inv.amount || 0);
+              const content = `
+                <div class="info-row"><span class="info-label">কাস্টমার:</span><span class="info-val">${inv.customerName}</span></div>
+                <div class="info-row"><span class="info-label">মোবাইল:</span><span class="info-val">${inv.customerMobile||"—"}</span></div>
+                <div class="info-row"><span class="info-label">তারিখ:</span><span class="info-val">${inv.date} · ${inv.time||""}</span></div>
+                <div class="info-row"><span class="info-label">রশিদ নং:</span><span class="info-val">#${(inv.id||"").toUpperCase()}</span></div>
+                <div style="text-align:center;background:#22c55e18;border-radius:12px;padding:20px;margin:16px 0;">
+                  <div style="color:#22c55e;font-size:12px;font-weight:700;">জমার পরিমাণ</div>
+                  <div style="color:#22c55e;font-size:32px;font-weight:900;">৳${(inv.amount||0).toLocaleString("en-US")}</div>
+                </div>
+                <div class="info-row"><span class="info-label" style="color:#f59e0b;font-weight:700;">পূর্বের বাকি:</span><span class="info-val" style="color:#f59e0b;font-weight:700;">৳${prevBaki.toLocaleString("en-US")}</span></div>
+                <div class="info-row"><span class="info-label" style="color:#ef4444;font-weight:700;">বর্তমান বাকি:</span><span class="info-val" style="color:#ef4444;font-size:16px;font-weight:800;">৳${remainingBaki.toLocaleString("en-US")}</span></div>
+                <div style="text-align:center;color:#999;font-size:12px;margin-top:10px;">ধন্যবাদ! জমা নিশ্চিত হয়েছে।</div>`;
+              const html = buildPdfHtml(content, shopNameLocal, "জমার রশিদ");
+              sharePdfWhatsApp(html, `জমার_রশিদ_${(inv.id||"").slice(0,6).toUpperCase()}`);
             }}
             style={{ ...S.saveBtn, width: "100%", marginTop: 10, background: "linear-gradient(135deg,#22c55e,#16a34a)",
               display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
