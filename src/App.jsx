@@ -16365,6 +16365,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
   const [expRemoveConfirm, setExpRemoveConfirm] = useState(null); // { product, batch }
   const [expRemoveSubmitting, setExpRemoveSubmitting] = useState(false);
   const [poDeleteConfirmId, setPoDeleteConfirmId] = useState(null); // 🆕 ক্রয় অর্ডার লিস্টে ইনলাইন ডিলিট কনফার্মেশন
+  const [poListDayFilter, setPoListDayFilter] = useState(null); // 🆕 "সব ক্রয় অর্ডার" পেজে ডে-নেভিগেটর দিয়ে বাছাই করা দিন (null = সব দিন)
   // 🔍 সাপ্লায়ার তালিকা পেজে পণ্য/সাপ্লায়ার অটো-সাজেস্ট সার্চ
   const [supSearchQuery, setSupSearchQuery] = useState("");
   const [supSearchFocused, setSupSearchFocused] = useState(false);
@@ -17685,18 +17686,30 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
         <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:16, marginBottom:2 }}>{title}</div>
         <div style={{ color:"#64748b", fontSize:12, marginBottom:10 }}>{items.length}টি পণ্য · {supplierList.length}টি সাপ্লায়ার</div>
 
-        {/* 🔍 পণ্য/সাপ্লায়ার সার্চ (অটো-সাজেস্ট সহ) — যেকোনো সাপ্লায়ারের পণ্য খুঁজে বের করুন */}
+        {/* 🔍 পণ্য/সাপ্লায়ার সার্চ (অটো-সাজেস্ট সহ) — সাপ্লায়ার নাম মিললে সাপ্লায়ার কার্ড, পণ্যের নাম মিললে পণ্য দেখায় */}
         {(() => {
           const q = supSearchQuery.trim().toLowerCase();
-          const matches = q.length === 0 ? [] : items
+          // সাপ্লায়ার নাম মিললে — সেই সাপ্লায়ারের কার্ড (পৃথক পণ্য নয়)
+          const supplierMatches = q.length === 0 ? [] : supplierList
+            .filter(sup => sup.name.toLowerCase().includes(q))
+            .slice(0, 8);
+          const matchedSupplierNames = new Set(supplierMatches.map(s => s.name));
+          // পণ্যের নাম মিললে — শুধু সেই পণ্যগুলো (যেসব সাপ্লায়ার আগে থেকেই কার্ড হিসেবে দেখানো হয়নি)
+          const productMatches = q.length === 0 ? [] : items
             .filter(p => {
-              const supName = (p.company || p.category || "অজ্ঞাত");
-              return (p.name || "").toLowerCase().includes(q) || supName.toLowerCase().includes(q);
+              const supName = p.company || p.category || "অজ্ঞাত";
+              if (matchedSupplierNames.has(supName)) return false;
+              return (p.name || "").toLowerCase().includes(q);
             })
             .slice(0, 8);
           const showDropdown = supSearchFocused && q.length > 0;
           const goToSupplierOf = (p) => {
             const supName = p.company || p.category || "অজ্ঞাত";
+            setSupSearchQuery("");
+            setSupSearchFocused(false);
+            openSupplier(supName);
+          };
+          const goToSupplierCard = (supName) => {
             setSupSearchQuery("");
             setSupSearchFocused(false);
             openSupplier(supName);
@@ -17733,26 +17746,51 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
                   background:"#111c33", border:`1.5px solid ${accent}55`, borderRadius:12,
                   boxShadow:"0 8px 24px rgba(0,0,0,0.4)", overflow:"hidden", maxHeight:320, overflowY:"auto",
                 }}>
-                  {matches.length === 0 ? (
+                  {supplierMatches.length === 0 && productMatches.length === 0 ? (
                     <div style={{ padding:"14px", color:"#64748b", fontSize:12.5, textAlign:"center" }}>কোনো ফলাফল পাওয়া যায়নি</div>
-                  ) : matches.map((p, i) => {
-                    const supName = p.company || p.category || "অজ্ঞাত";
-                    return (
-                      <div key={p.id || i}
-                        onMouseDown={() => goToSupplierOf(p)}
-                        style={{
-                          display:"flex", alignItems:"center", justifyContent:"space-between", gap:10,
-                          padding:"10px 14px", cursor:"pointer",
-                          borderBottom: i < matches.length - 1 ? "1px solid #ffffff10" : "none",
-                        }}>
-                        <div style={{ minWidth:0, flex:1 }}>
-                          <div style={{ color:"#e2e8f0", fontWeight:700, fontSize:13, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{p.name}</div>
-                          <div style={{ color:accent, fontSize:11, marginTop:2 }}>🏭 {supName}</div>
-                        </div>
-                        <span style={{ color:"#cbd5e1", fontSize:11.5, fontWeight:700, flexShrink:0 }}>{p.stock||0}{p.unit||""}</span>
-                      </div>
-                    );
-                  })}
+                  ) : (
+                    <>
+                      {supplierMatches.map((sup, i) => {
+                        const supTotal = sup.products.reduce((s,p)=>s+(p.stock||0), 0);
+                        return (
+                          <div key={`sup-${sup.name}`}
+                            onMouseDown={() => goToSupplierCard(sup.name)}
+                            style={{
+                              display:"flex", alignItems:"center", gap:10,
+                              padding:"11px 14px", cursor:"pointer",
+                              borderBottom: (i < supplierMatches.length - 1 || productMatches.length > 0) ? "1px solid #ffffff10" : "none",
+                            }}>
+                            <div style={{ width:34, height:34, borderRadius:9, background:`${accent}26`, border:`1px solid ${accent}55`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                              <span style={{ fontSize:15 }}>🏭</span>
+                            </div>
+                            <div style={{ minWidth:0, flex:1 }}>
+                              <div style={{ color:"#ffffff", fontWeight:800, fontSize:13.5, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{sup.name}</div>
+                              <div style={{ color:accent, fontSize:11, fontWeight:700, marginTop:2 }}>{sup.products.length}টি পণ্য · মোট স্টক: {supTotal}</div>
+                            </div>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={accent} strokeWidth="2.5" strokeLinecap="round" style={{ flexShrink:0 }}><polyline points="9 18 15 12 9 6"/></svg>
+                          </div>
+                        );
+                      })}
+                      {productMatches.map((p, i) => {
+                        const supName = p.company || p.category || "অজ্ঞাত";
+                        return (
+                          <div key={p.id || i}
+                            onMouseDown={() => goToSupplierOf(p)}
+                            style={{
+                              display:"flex", alignItems:"center", justifyContent:"space-between", gap:10,
+                              padding:"10px 14px", cursor:"pointer",
+                              borderBottom: i < productMatches.length - 1 ? "1px solid #ffffff10" : "none",
+                            }}>
+                            <div style={{ minWidth:0, flex:1 }}>
+                              <div style={{ color:"#e2e8f0", fontWeight:700, fontSize:13, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{p.name}</div>
+                              <div style={{ color:accent, fontSize:11, marginTop:2 }}>🏭 {supName}</div>
+                            </div>
+                            <span style={{ color:"#cbd5e1", fontSize:11.5, fontWeight:700, flexShrink:0 }}>{p.stock||0}{p.unit||""}</span>
+                          </div>
+                        );
+                      })}
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -17931,24 +17969,13 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
 
   if (invModal === 'order' || invModal === 'order:list' || invModal === 'order:create' || invModal === 'order:create:review' || (invModal && invModal.startsWith('order:view:day:')) || (invModal && invModal.startsWith('order:rec:'))) {
     const todayKeyPO = todayEn();
-    // ── 🆕 ফিউচারিস্টিক থিম টোকেন — পুরো ক্রয় অর্ডার মডিউলে ব্যবহৃত ──────────
-    const FUT = {
-      pageBg:  "radial-gradient(circle at 12% -10%, #3b1a7a44 0%, transparent 40%), radial-gradient(circle at 90% 110%, #0891b244 0%, transparent 40%), #050414",
-      headBg:  "linear-gradient(180deg,#0a0620 0%,#0d0826 78%,#0d0826ee 100%)",
-      card:    "linear-gradient(135deg,#14113399,#0a082099)",
-      border:  "#7c3aed3d",
-      accent:  "#a78bfa",
-      accent2: "#22d3ee",
-      pink:    "#f472b6",
-      ok:      "#34d399",
-      warn:    "#fbbf24",
-      danger:  "#fb7185",
-    };
-    // 🆕 প্রিন্ট/PDF কপির হুবহু লুক — "রিভিউ" ও "দেখুন" পেজে ব্যবহৃত (হালকা থিম)
+    // ── 🆕 লাইট/প্রিন্ট থিম টোকেন — পুরো ক্রয় অর্ডার মডিউলে (সব পেজে) ব্যবহৃত ──
     const PRINT = {
       pageBg:     "#f8fafc",
       headBg:     "#ffffff",
       headBorder: "#e2e8f0",
+      card:       "#ffffff",
+      border:     "#e2e8f0",
       thBg:       "linear-gradient(135deg,#0369a1,#0284c7)",
       thText:     "#ffffff",
       rowEven:    "#f8faff",
@@ -17956,6 +17983,11 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
       totalBg:    "linear-gradient(135deg,#eff6ff,#dbeafe)",
       totalBorder:"#0369a1",
       accent:     "#0369a1",
+      accent2:    "#0ea5e9",
+      pink:       "#db2777",
+      ok:         "#16a34a",
+      warn:       "#d97706",
+      danger:     "#dc2626",
       textDark:   "#0f172a",
       textMuted:  "#64748b",
       serial:     "#0369a1",
@@ -17975,14 +18007,16 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
 
     // 🆕 সাপ্লায়ার সার্চের জন্য: সব সাপ্লায়ারের নামের একটা ইউনিক তালিকা
     const allSupplierNames = [...new Set(products.map(p => supplierOf(p)).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"bn"));
-    // টাইপ করা টেক্সটের সাথে মিলে এমন সাপ্লায়ার সাজেশন (২ অক্ষর থেকে শুরু)
-    const poSupplierSuggestions = poSupplierQuery.trim().length >= 2
+    // টাইপ করা টেক্সটের সাথে মিলে এমন সাপ্লায়ার সাজেশন (২ অক্ষর থেকে শুরু) — সাপ্লায়ার সিলেক্ট করা না থাকলেই শুধু দেখানো হয়
+    const poSupplierSuggestions = (!poSupplierSelected && poSupplierQuery.trim().length >= 2)
       ? allSupplierNames.filter(s => s.toLowerCase().includes(poSupplierQuery.trim().toLowerCase())).slice(0, 8)
       : [];
-    // সিলেক্ট করা সাপ্লায়ার থাকলে শুধু তার পণ্য — সিরিয়াল অপরিবর্তিত থাকে (স্টক-আউট → ক্রিটিক্যাল → কম স্টক → বেশি স্টক)
-    const poFilteredProducts = poSupplierSelected
-      ? allProductsSorted.filter(p => supplierOf(p) === poSupplierSelected)
-      : allProductsSorted;
+    // সাপ্লায়ার সিলেক্ট করা থাকলে শুধু তার পণ্য, এবং সার্চবারে যা লেখা আছে তা দিয়ে পণ্যের নাম ফিল্টার হয় —
+    // ফলে সাপ্লায়ার সিলেক্ট করার পরও সার্চবার খালি হয়ে যায় এবং পণ্যের নাম দিয়ে আলাদাভাবে খোঁজা যায়
+    const poNameQuery = poSupplierQuery.trim().toLowerCase();
+    const poFilteredProducts = allProductsSorted
+      .filter(p => !poSupplierSelected || supplierOf(p) === poSupplierSelected)
+      .filter(p => !poNameQuery || (p.name||"").toLowerCase().includes(poNameQuery));
 
     // 🆕 একবার কনফার্মে একটাই ইউনিফাইড রেকর্ড (সাপ্লায়ার-গ্রুপড নয়) — প্রতিটি আইটেমে নিজস্ব সাপ্লায়ার সংরক্ষিত থাকে
     const savePOFromSelection = (items, qtys) => {
@@ -18005,11 +18039,6 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     const recTotalQty = (rec) => resolvedItems(rec).reduce((s,it)=>s+(it.qty||0),0);
     const allPOOrders = (purchaseOrders||[]).filter(p => p._type === "purchase_order");
     const deletePOGroup = (id) => setPurchaseOrders(prev => (prev||[]).filter(p => p.id !== id));
-    const loadPOGroupForEdit = (rec) => {
-      setOrderQtysAll(q => { const n = { ...q }; resolvedItems(rec).forEach(it => { n[it.productId] = it.qty; }); return n; });
-      deletePOGroup(rec.id);
-      setInvModal('order:create:review');
-    };
 
     const dayLabelPO = (dk) => { const d = new Date(dk); if (isNaN(d.getTime())) return dk; return `${d.getDate()} ${MONTH_NAMES_BN[d.getMonth()]}, ${d.getFullYear()}`; };
     // 🆕 দিন পাল্টানোর হেল্পার (ডে-নেভিগেটরের জন্য) — dateKey (YYYY-MM-DD) থেকে ±delta দিন
@@ -18044,41 +18073,40 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     const renderOrderProductCard = (p, idx) => {
       const isOut = (p.stock||0)===0;
       const isCrit = !isOut && (p.stock||0)<=(p.minStockAlert||5);
-      const accentC = isOut ? FUT.danger : isCrit ? FUT.warn : FUT.ok;
+      const accentC = isOut ? PRINT.danger : isCrit ? PRINT.warn : PRINT.ok;
       const qty = orderQtysAll[p.id]||0;
       const isOrdered = qty > 0;
       return (
-        <div key={p.id} style={{ position:"relative", background: isOrdered ? "linear-gradient(135deg,#2a1256,#150a30 60%)" : "linear-gradient(135deg,#0d0a24,#0a0720)", border:`1.5px solid ${isOrdered ? FUT.accent2 : "#ffffff14"}`, borderRadius:18, padding:"14px 15px", overflow:"hidden", boxShadow: isOrdered ? `0 0 20px #22d3ee33, 0 2px 10px #00000055` : "0 2px 10px #00000033", transition:"all 0.2s ease" }}>
-          <div style={{ position:"absolute", top:0, left:0, right:0, height:2, background: isOrdered ? "linear-gradient(90deg,transparent,#22d3ee,#a78bfa,transparent)" : "linear-gradient(90deg,transparent,#ffffff10,transparent)" }}/>
+        <div key={p.id} style={{ position:"relative", background: isOrdered ? "#eff6ff" : "#ffffff", border:`1.5px solid ${isOrdered ? PRINT.accent2 : PRINT.headBorder}`, borderRadius:18, padding:"14px 15px", overflow:"hidden", boxShadow: isOrdered ? "0 1px 8px rgba(14,165,233,0.18)" : "0 1px 4px rgba(0,0,0,0.06)", transition:"all 0.2s ease" }}>
           {isOrdered && (
-            <div style={{ position:"absolute", top:10, right:12, background:"linear-gradient(135deg,#22d3ee,#7c3aed)", borderRadius:8, padding:"3px 9px", color:"#03060f", fontWeight:900, fontSize:10.5 }}>
+            <div style={{ position:"absolute", top:10, right:12, background:PRINT.thBg, borderRadius:8, padding:"3px 9px", color:"#fff", fontWeight:900, fontSize:10.5 }}>
               ✓ {qty} যুক্ত
             </div>
           )}
-          {!isOrdered && <div style={{ position:"absolute", top:10, right:12, color:"#ffffff14", fontWeight:900, fontSize:22, fontFamily:"monospace", lineHeight:1, userSelect:"none" }}>{String(idx+1).padStart(2,"0")}</div>}
+          {!isOrdered && <div style={{ position:"absolute", top:10, right:12, color:"#e2e8f0", fontWeight:900, fontSize:22, fontFamily:"monospace", lineHeight:1, userSelect:"none" }}>{String(idx+1).padStart(2,"0")}</div>}
           <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:6, paddingRight:36 }}>
-            <span style={{ color:"#f1f5f9", fontWeight:800, fontSize:14 }}>
-              {p.name}{p.unit && <span style={{ color:"#64748b", fontSize:11, fontWeight:600 }}> ({p.unit})</span>}
+            <span style={{ color:PRINT.textDark, fontWeight:800, fontSize:14 }}>
+              {p.name}{p.unit && <span style={{ color:PRINT.textMuted, fontSize:11, fontWeight:600 }}> ({p.unit})</span>}
             </span>
             {demandBadge(p)}
             <span style={{ background: `${accentC}18`, color: accentC, fontSize:10, fontWeight:800, borderRadius:6, padding:"2px 8px", border:`1px solid ${accentC}44` }}>
               {isOut ? "● স্টক শেষ" : isCrit ? `⚠ ক্রিটিক্যাল · স্টক ${p.stock}` : `স্টক: ${p.stock}`}
             </span>
           </div>
-          <div style={{ color:"#7c8bb0", fontSize:11, fontWeight:700, marginBottom:9, display:"flex", alignItems:"center", gap:4 }}>
+          <div style={{ color:PRINT.textMuted, fontSize:11, fontWeight:700, marginBottom:9, display:"flex", alignItems:"center", gap:4 }}>
             <span style={{ fontSize:11 }}>🏭</span>{supplierOf(p)}
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:7, flexWrap:"wrap" }}>
             {[5,10,25,50,100].map(n => (
               <button key={n} onClick={()=>setOrderQtysAll(q=>({...q,[p.id]:(q[p.id]||0)+n}))}
-                style={{ background: isOrdered ? `linear-gradient(135deg,${accentC}30,${accentC}15)` : "linear-gradient(135deg,#ffffff10,#ffffff06)", border:`1px solid ${isOrdered ? accentC+"55" : "#ffffff18"}`, borderRadius:10, color: isOrdered ? accentC : "#94a3b8", fontSize:12, fontWeight:800, padding:"6px 14px", cursor:"pointer", fontFamily:"inherit", letterSpacing:0.3, transition:"all 0.15s ease" }}>+{n}</button>
+                style={{ background: isOrdered ? `${accentC}18` : "#f8fafc", border:`1px solid ${isOrdered ? accentC+"55" : "#e2e8f0"}`, borderRadius:10, color: isOrdered ? accentC : PRINT.textMuted, fontSize:12, fontWeight:800, padding:"6px 14px", cursor:"pointer", fontFamily:"inherit", letterSpacing:0.3, transition:"all 0.15s ease" }}>+{n}</button>
             ))}
             <input type="number" inputMode="numeric" min="0" value={qty || ""} placeholder="সংখ্যা"
               onChange={(e)=>{ const v = parseInt(e.target.value,10); setOrderQtysAll(q=>({...q,[p.id]: (isNaN(v)||v<0) ? 0 : v})); }}
               onClick={(e)=>e.target.select()}
-              style={{ width:70, background: isOrdered ? "#22d3ee1e" : "#ffffff0d", border:`1px solid ${isOrdered ? "#22d3ee66" : "#ffffff18"}`, borderRadius:10, color: isOrdered ? "#22d3ee" : "#f1f5f9", fontSize:14, fontWeight:900, padding:"9px 6px", textAlign:"center", fontFamily:"inherit" }} />
+              style={{ width:70, background: isOrdered ? "#dbeafe" : "#f8fafc", border:`1px solid ${isOrdered ? PRINT.accent2+"88" : "#e2e8f0"}`, borderRadius:10, color: isOrdered ? PRINT.accent : PRINT.textDark, fontSize:14, fontWeight:900, padding:"9px 6px", textAlign:"center", fontFamily:"inherit" }} />
             {qty > 0 && (
-              <button onClick={()=>setOrderQtysAll(q=>({...q,[p.id]:0}))} style={{ background:"linear-gradient(135deg,#fb718520,#fb718510)", border:"1px solid #fb718544", borderRadius:10, color:"#fb7185", fontSize:12, fontWeight:800, padding:"6px 12px", cursor:"pointer", fontFamily:"inherit" }}>✕ রিসেট</button>
+              <button onClick={()=>setOrderQtysAll(q=>({...q,[p.id]:0}))} style={{ background:"#fef2f2", border:"1px solid #fecaca", borderRadius:10, color:"#dc2626", fontSize:12, fontWeight:800, padding:"6px 12px", cursor:"pointer", fontFamily:"inherit" }}>✕ রিসেট</button>
             )}
           </div>
         </div>
@@ -18089,38 +18117,36 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     if (invModal === 'order') {
       const totalOrderCount = allPOOrders.length;
       return (
-        <div style={{ ...S.page, padding:"0 14px 16px", background:FUT.pageBg, minHeight:"100%" }}>
-          <button style={S.textBtn} onClick={() => { setInvModal(null); setOrderQtysAll({}); }}>← ড্যাশবোর্ডে ফিরুন</button>
-          <div style={{ color:"#f1f5f9", fontWeight:900, fontSize:19, marginBottom:2, letterSpacing:0.2 }}>
-            <span style={{ background:"linear-gradient(90deg,#a78bfa,#22d3ee)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent" }}>⚡ ক্রয় অর্ডার</span>
+        <div style={{ ...S.page, padding:"0 14px 16px", background:PRINT.pageBg, minHeight:"100%" }}>
+          <button style={{ ...S.textBtn, color:PRINT.accent }} onClick={() => { setInvModal(null); setOrderQtysAll({}); }}>← ড্যাশবোর্ডে ফিরুন</button>
+          <div style={{ color:PRINT.textDark, fontWeight:900, fontSize:19, marginBottom:2, letterSpacing:0.2 }}>
+            <span style={{ background:"linear-gradient(90deg,#0369a1,#0ea5e9)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent" }}>📦 ক্রয় অর্ডার</span>
           </div>
-          <div style={{ color:"#64748b", fontSize:12, marginBottom:18 }}>কী করতে চান বেছে নিন</div>
+          <div style={{ color:PRINT.textMuted, fontSize:12, marginBottom:18 }}>কী করতে চান বেছে নিন</div>
 
           <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
             <div className="tap-card" onClick={()=>setInvModal('order:create')}
-              style={{ position:"relative", background:FUT.card, backdropFilter:"blur(14px)", WebkitBackdropFilter:"blur(14px)", border:`1.5px solid ${FUT.accent2}55`, borderRadius:20, padding:"20px", cursor:"pointer", overflow:"hidden" }}>
-              <div style={{ position:"absolute", top:-30, right:-30, width:120, height:120, borderRadius:"50%", background:"radial-gradient(circle,#22d3ee33,transparent 70%)" }}/>
+              style={{ position:"relative", background:PRINT.card, border:`1.5px solid ${PRINT.headBorder}`, borderRadius:20, padding:"20px", cursor:"pointer", overflow:"hidden", boxShadow:"0 1px 4px rgba(0,0,0,0.06)" }}>
               <div style={{ display:"flex", alignItems:"center", gap:14, position:"relative" }}>
-                <div style={{ width:52, height:52, borderRadius:16, background:"linear-gradient(135deg,#22d3ee33,#7c3aed33)", border:"1px solid #22d3ee55", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:24 }}>➕</div>
+                <div style={{ width:52, height:52, borderRadius:16, background:"#0ea5e915", border:`1px solid ${PRINT.accent2}44`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:24 }}>➕</div>
                 <div style={{ flex:1 }}>
-                  <div style={{ color:"#f1f5f9", fontWeight:900, fontSize:16 }}>ক্রয় অর্ডার তৈরি করুন</div>
-                  <div style={{ color:"#94a3b8", fontSize:12, marginTop:3 }}>সব পণ্য থেকে বেছে নতুন অর্ডার বানান</div>
+                  <div style={{ color:PRINT.textDark, fontWeight:900, fontSize:16 }}>ক্রয় অর্ডার তৈরি করুন</div>
+                  <div style={{ color:PRINT.textMuted, fontSize:12, marginTop:3 }}>সব পণ্য থেকে বেছে নতুন অর্ডার বানান</div>
                 </div>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={PRINT.accent2} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
               </div>
             </div>
 
             <div className="tap-card" onClick={()=>setInvModal('order:list')}
-              style={{ position:"relative", background:FUT.card, backdropFilter:"blur(14px)", WebkitBackdropFilter:"blur(14px)", border:`1.5px solid ${FUT.accent}55`, borderRadius:20, padding:"20px", cursor:"pointer", overflow:"hidden" }}>
-              <div style={{ position:"absolute", top:-30, right:-30, width:120, height:120, borderRadius:"50%", background:"radial-gradient(circle,#a78bfa33,transparent 70%)" }}/>
+              style={{ position:"relative", background:PRINT.card, border:`1.5px solid ${PRINT.headBorder}`, borderRadius:20, padding:"20px", cursor:"pointer", overflow:"hidden", boxShadow:"0 1px 4px rgba(0,0,0,0.06)" }}>
               <div style={{ display:"flex", alignItems:"center", gap:14, position:"relative" }}>
-                <div style={{ width:52, height:52, borderRadius:16, background:"linear-gradient(135deg,#a78bfa33,#f472b633)", border:"1px solid #a78bfa55", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:24 }}>📋</div>
+                <div style={{ width:52, height:52, borderRadius:16, background:"#0369a115", border:`1px solid ${PRINT.accent}44`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:24 }}>📋</div>
                 <div style={{ flex:1 }}>
-                  <div style={{ color:"#f1f5f9", fontWeight:900, fontSize:16 }}>ক্রয় অর্ডার দেখুন</div>
-                  <div style={{ color:"#94a3b8", fontSize:12, marginTop:3 }}>সব ক্রয় অর্ডার — আলাদা আলাদা তালিকা</div>
+                  <div style={{ color:PRINT.textDark, fontWeight:900, fontSize:16 }}>ক্রয় অর্ডার দেখুন</div>
+                  <div style={{ color:PRINT.textMuted, fontSize:12, marginTop:3 }}>সব ক্রয় অর্ডার — আলাদা আলাদা তালিকা</div>
                 </div>
-                {totalOrderCount > 0 && <div style={{ background:"linear-gradient(135deg,#a78bfa,#7c3aed)", borderRadius:10, padding:"3px 9px", color:"#fff", fontWeight:800, fontSize:11, flexShrink:0 }}>{totalOrderCount}টি</div>}
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+                {totalOrderCount > 0 && <div style={{ background:PRINT.thBg, borderRadius:10, padding:"3px 9px", color:"#fff", fontWeight:800, fontSize:11, flexShrink:0 }}>{totalOrderCount}টি</div>}
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={PRINT.accent} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
               </div>
             </div>
           </div>
@@ -18134,8 +18160,10 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
       const poOrdersByCreated = [...allPOOrders].sort((a,b) => (a.createdAt||"").localeCompare(b.createdAt||""));
       const poSerialMap = {};
       poOrdersByCreated.forEach((r,i) => { poSerialMap[r.id] = i+1; });
-      // ডিসপ্লে — সবচেয়ে নতুনটা উপরে
-      const poOrdersDesc = [...allPOOrders].sort((a,b) => (b.createdAt||"").localeCompare(a.createdAt||""));
+      // ডিসপ্লে — সবচেয়ে নতুনটা উপরে; ডে-নেভিগেটরে একটা দিন বাছাই করা থাকলে শুধু ওই দিনের অর্ডারগুলো
+      const poOrdersDescAll = [...allPOOrders].sort((a,b) => (b.createdAt||"").localeCompare(a.createdAt||""));
+      const poOrdersDesc = poListDayFilter ? poOrdersDescAll.filter(r => r.dateKey === poListDayFilter) : poOrdersDescAll;
+      const isTodayListDk = poListDayFilter === todayKeyPO;
 
       const handleDeleteTap = (id) => {
         if (poDeleteConfirmId === id) {
@@ -18146,15 +18174,30 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
         }
       };
 
-      return (
-        <div style={{ ...S.page, padding:"0 14px 16px", background:FUT.pageBg, minHeight:"100%" }}
-          onClick={() => { if (poDeleteConfirmId) setPoDeleteConfirmId(null); }}>
-          <button style={S.textBtn} onClick={() => { setInvModal('order'); setPoDeleteConfirmId(null); }}>← ফিরুন</button>
-          <div style={{ color:"#f1f5f9", fontWeight:900, fontSize:16, marginBottom:2 }}>সব ক্রয় অর্ডার</div>
-          <div style={{ color:"#64748b", fontSize:12, marginBottom:14 }}>{allPOOrders.length}টি অর্ডার</div>
+      const navBtnStyleList = { width:34, height:34, borderRadius:10, background:"#f1f5f9", border:"1px solid #e2e8f0", color:PRINT.accent, fontSize:18, fontWeight:900, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontFamily:"inherit", lineHeight:1 };
 
-          {allPOOrders.length === 0 && (
-            <div style={{ color:"#64748b", textAlign:"center", marginTop:50, fontSize:14 }}>এখনো কোনো ক্রয় অর্ডার তৈরি হয়নি</div>
+      return (
+        <div style={{ ...S.page, padding:"0 14px 16px", background:PRINT.pageBg, minHeight:"100%" }}
+          onClick={() => { if (poDeleteConfirmId) setPoDeleteConfirmId(null); }}>
+          <button style={{ ...S.textBtn, color:PRINT.accent }} onClick={() => { setInvModal('order'); setPoDeleteConfirmId(null); }}>← ফিরুন</button>
+          <div style={{ color:PRINT.textDark, fontWeight:900, fontSize:16, marginBottom:2 }}>সব ক্রয় অর্ডার</div>
+          <div style={{ color:PRINT.textMuted, fontSize:12, marginBottom:10 }}>{poOrdersDesc.length}টি অর্ডার{poListDayFilter?" (বাছাইকৃত দিনে)":""}</div>
+
+          {/* 🆕 ডে-নেভিগেটর — নির্দিষ্ট দিনের অর্ডার ফিল্টার করে দেখার জন্য */}
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:14 }}>
+            <button onClick={()=>setPoListDayFilter(shiftDayKey(poListDayFilter || todayKeyPO, -1))} style={navBtnStyleList}>‹</button>
+            <div style={{ flex:1, textAlign:"center", background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:10, padding:"8px 0", color:PRINT.textDark, fontWeight:800, fontSize:13.5, display:"flex", alignItems:"center", justifyContent:"center", gap:7 }}>
+              🗓️ {poListDayFilter ? dayLabelPO(poListDayFilter) : "সব তারিখ"}
+              {isTodayListDk && <span style={{ background:"#dbeafe", color:PRINT.accent, fontSize:9.5, fontWeight:800, borderRadius:6, padding:"2px 7px", border:"1px solid #bfdbfe" }}>আজ</span>}
+            </div>
+            <button onClick={()=>setPoListDayFilter(shiftDayKey(poListDayFilter || todayKeyPO, 1))} style={navBtnStyleList}>›</button>
+            {poListDayFilter && (
+              <button onClick={()=>setPoListDayFilter(null)} style={{ ...navBtnStyleList, width:"auto", padding:"0 10px", fontSize:11.5, fontWeight:800 }}>সব</button>
+            )}
+          </div>
+
+          {poOrdersDesc.length === 0 && (
+            <div style={{ color:PRINT.textMuted, textAlign:"center", marginTop:50, fontSize:14 }}>{poListDayFilter ? "এই দিনে কোনো ক্রয় অর্ডার নেই" : "এখনো কোনো ক্রয় অর্ডার তৈরি হয়নি"}</div>
           )}
 
           <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
@@ -18166,11 +18209,11 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
               return (
                 <div key={rec.id} className="tap-card"
                   onClick={(e) => { e.stopPropagation(); if (!isConfirming) setInvModal(`order:rec:${rec.id}`); }}
-                  style={{ position:"relative", display:"flex", alignItems:"center", gap:12, background:FUT.card, backdropFilter:"blur(12px)", WebkitBackdropFilter:"blur(12px)", border:`1.5px solid ${isConfirming ? "#ef444488" : FUT.accent2+"44"}`, borderRadius:16, padding:"14px 15px", cursor:"pointer", transition:"border-color 0.15s ease" }}>
-                  <div style={{ width:42, height:42, borderRadius:12, background:"linear-gradient(135deg,#22d3ee33,#7c3aed33)", border:"1px solid #22d3ee55", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:18 }}>📦</div>
+                  style={{ position:"relative", display:"flex", alignItems:"center", gap:12, background:PRINT.card, border:`1.5px solid ${isConfirming ? "#fecaca" : PRINT.headBorder}`, borderRadius:16, padding:"14px 15px", cursor:"pointer", boxShadow:"0 1px 4px rgba(0,0,0,0.06)", transition:"border-color 0.15s ease" }}>
+                  <div style={{ width:42, height:42, borderRadius:12, background:"#0ea5e915", border:`1px solid ${PRINT.accent2}44`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:18 }}>📦</div>
                   <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ color:"#f1f5f9", fontWeight:800, fontSize:14 }}>ক্রয় অর্ডার-{serial}</div>
-                    <div style={{ color:"#94a3b8", fontSize:11.5, marginTop:3 }}>🗓️ {dayLabelPO(rec.dateKey)} · {items.length}টি পণ্য · মোট {totalQty}</div>
+                    <div style={{ color:PRINT.textDark, fontWeight:800, fontSize:14 }}>ক্রয় অর্ডার-{serial}</div>
+                    <div style={{ color:PRINT.textMuted, fontSize:11.5, marginTop:3 }}>🗓️ {dayLabelPO(rec.dateKey)} · {items.length}টি পণ্য · মোট {totalQty}</div>
                   </div>
                   {isConfirming ? (
                     <button onClick={(e)=>{ e.stopPropagation(); handleDeleteTap(rec.id); }}
@@ -18179,12 +18222,12 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
                     </button>
                   ) : (
                     <button onClick={(e)=>{ e.stopPropagation(); handleDeleteTap(rec.id); }}
-                      style={{ width:32, height:32, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", background:"#fb718518", border:"1px solid #fb718544", borderRadius:9, color:"#fb7185", fontSize:14, cursor:"pointer", fontFamily:"inherit" }}>
+                      style={{ width:32, height:32, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", background:"#fef2f2", border:"1px solid #fecaca", borderRadius:9, color:"#dc2626", fontSize:14, cursor:"pointer", fontFamily:"inherit" }}>
                       🗑️
                     </button>
                   )}
                   {!isConfirming && (
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={FUT.accent2} strokeWidth="2.5" strokeLinecap="round" style={{ flexShrink:0 }}><polyline points="9 18 15 12 9 6"/></svg>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={PRINT.accent2} strokeWidth="2.5" strokeLinecap="round" style={{ flexShrink:0 }}><polyline points="9 18 15 12 9 6"/></svg>
                   )}
                 </div>
               );
@@ -18197,33 +18240,42 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     // ═══ পণ্য সিলেকশন পেজ ("তৈরি করুন" ফ্লো) ═══════════════════════════════════
     if (invModal === 'order:create') {
       return (
-        <div style={{ ...S.page, padding:"0", display:"flex", flexDirection:"column", height:"100%", overflow:"hidden", background:FUT.pageBg }}>
-          <div style={{ position:"sticky", top:0, zIndex:50, background:FUT.headBg, borderBottom:`1px solid ${FUT.accent2}33`, padding:"12px 14px 10px", backdropFilter:"blur(12px)", WebkitBackdropFilter:"blur(12px)" }}>
-            <button style={S.textBtn} onClick={() => setInvModal('order')}>← ফিরুন</button>
-            <div style={{ color:"#f1f5f9", fontWeight:900, fontSize:16, marginTop:6 }}>পণ্য বেছে নিন</div>
+        <div style={{ ...S.page, padding:"0", display:"flex", flexDirection:"column", height:"100%", overflow:"hidden", background:PRINT.pageBg }}>
+          <div style={{ position:"sticky", top:0, zIndex:50, background:PRINT.headBg, borderBottom:`1px solid ${PRINT.headBorder}`, padding:"12px 14px 10px" }}>
+            <button style={{ ...S.textBtn, color:PRINT.accent }} onClick={() => setInvModal('order')}>← ফিরুন</button>
+            <div style={{ color:PRINT.textDark, fontWeight:900, fontSize:16, marginTop:6 }}>পণ্য বেছে নিন</div>
 
-            {/* 🆕 সাপ্লায়ার সার্চবার — নাম টাইপ করলে (২ অক্ষর থেকে) অটো-সাজেস্ট আসবে */}
-            <div style={{ position:"relative", marginTop:10 }}>
-              <div style={{ display:"flex", alignItems:"center", gap:8, background:"#ffffff0d", border:`1.5px solid ${poSupplierSelected ? FUT.accent2+"88" : "#ffffff20"}`, borderRadius:14, padding:"9px 12px" }}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7c8bb0" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0 }}><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+            {/* 🆕 সাপ্লায়ার নির্বাচিত থাকলে চিপ হিসেবে দেখানো হয় — সার্চবার তখন পণ্যের নাম খোঁজার জন্য মুক্ত থাকে */}
+            {poSupplierSelected && (
+              <div style={{ display:"inline-flex", alignItems:"center", gap:6, marginTop:9, background:"#0369a112", border:`1px solid ${PRINT.accent}44`, borderRadius:10, padding:"5px 10px" }}>
+                <span style={{ fontSize:11.5, fontWeight:800, color:PRINT.accent }}>🏭 {poSupplierSelected}</span>
+                <button onClick={()=>{ setPoSupplierSelected(null); setPoSupplierQuery(""); }}
+                  style={{ width:18, height:18, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", background:"#0369a118", border:"none", borderRadius:"50%", color:PRINT.accent, fontSize:11, fontWeight:900, padding:0, cursor:"pointer" }}>✕</button>
+              </div>
+            )}
+
+            {/* 🆕 সার্চবার — সাপ্লায়ার সিলেক্ট না থাকলে সাপ্লায়ারের নাম অটো-সাজেস্ট করে, সিলেক্ট করা থাকলে এই বারেই পণ্যের নাম দিয়ে খোঁজা যায় */}
+            <div style={{ position:"relative", marginTop:9 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8, background:"#f8fafc", border:`1.5px solid ${poSupplierSelected ? PRINT.accent2+"88" : PRINT.headBorder}`, borderRadius:14, padding:"9px 12px" }}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={PRINT.textMuted} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0 }}><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
                 <input
                   type="text"
                   value={poSupplierQuery}
-                  placeholder="সাপ্লায়ারের নাম লিখে সার্চ করুন..."
-                  onChange={(e)=>{ setPoSupplierQuery(e.target.value); setPoSupplierSelected(null); setPoSupplierSuggestOpen(true); }}
-                  onFocus={()=>setPoSupplierSuggestOpen(true)}
-                  style={{ flex:1, background:"transparent", border:"none", outline:"none", color:"#f1f5f9", fontSize:13.5, fontWeight:700, fontFamily:"inherit" }}
+                  placeholder={poSupplierSelected ? "পণ্যের নাম লিখে খুঁজুন..." : "সাপ্লায়ার বা পণ্যের নাম লিখুন..."}
+                  onChange={(e)=>{ setPoSupplierQuery(e.target.value); if (!poSupplierSelected) setPoSupplierSuggestOpen(true); }}
+                  onFocus={()=>{ if (!poSupplierSelected) setPoSupplierSuggestOpen(true); }}
+                  style={{ flex:1, background:"transparent", border:"none", outline:"none", color:PRINT.textDark, fontSize:13.5, fontWeight:700, fontFamily:"inherit" }}
                 />
-                {(poSupplierQuery || poSupplierSelected) && (
-                  <button onClick={()=>{ setPoSupplierQuery(""); setPoSupplierSelected(null); setPoSupplierSuggestOpen(false); }}
-                    style={{ width:22, height:22, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", background:"#ffffff14", border:"none", borderRadius:"50%", color:"#94a3b8", fontSize:12, fontWeight:900, padding:0, cursor:"pointer" }}>✕</button>
+                {poSupplierQuery && (
+                  <button onClick={()=>{ setPoSupplierQuery(""); setPoSupplierSuggestOpen(false); }}
+                    style={{ width:22, height:22, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", background:"#e2e8f0", border:"none", borderRadius:"50%", color:PRINT.textMuted, fontSize:12, fontWeight:900, padding:0, cursor:"pointer" }}>✕</button>
                 )}
               </div>
               {poSupplierSuggestOpen && poSupplierSuggestions.length > 0 && (
-                <div style={{ position:"absolute", top:"calc(100% + 4px)", left:0, right:0, zIndex:60, background:"#0d0a24", border:`1px solid ${FUT.accent2}44`, borderRadius:12, overflow:"hidden", boxShadow:"0 8px 24px #00000066", maxHeight:220, overflowY:"auto" }}>
+                <div style={{ position:"absolute", top:"calc(100% + 4px)", left:0, right:0, zIndex:60, background:"#ffffff", border:`1px solid ${PRINT.headBorder}`, borderRadius:12, overflow:"hidden", boxShadow:"0 8px 24px rgba(0,0,0,0.12)", maxHeight:220, overflowY:"auto" }}>
                   {poSupplierSuggestions.map((s) => (
-                    <div key={s} onClick={()=>{ setPoSupplierSelected(s); setPoSupplierQuery(s); setPoSupplierSuggestOpen(false); }}
-                      style={{ padding:"10px 14px", fontSize:13, fontWeight:700, color:"#e2e8f0", cursor:"pointer", borderBottom:"1px solid #ffffff0f", display:"flex", alignItems:"center", gap:8 }}>
+                    <div key={s} onClick={()=>{ setPoSupplierSelected(s); setPoSupplierQuery(""); setPoSupplierSuggestOpen(false); }}
+                      style={{ padding:"10px 14px", fontSize:13, fontWeight:700, color:PRINT.textDark, cursor:"pointer", borderBottom:`1px solid ${PRINT.rowBorder}`, display:"flex", alignItems:"center", gap:8 }}>
                       <span style={{ fontSize:12 }}>🏭</span>{s}
                     </div>
                   ))}
@@ -18231,29 +18283,28 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
               )}
             </div>
 
-            <div style={{ color:"#64748b", fontSize:12, marginTop:8 }}>
-              <span style={{ color:FUT.accent2, fontWeight:700 }}>{poFilteredProducts.length}</span>টি পণ্য
-              {poSupplierSelected && <span style={{ color:FUT.accent, fontWeight:800, marginLeft:8 }}>🏭 {poSupplierSelected}</span>}
-              {allSelectedItems.length > 0 && <span style={{ color:FUT.accent, fontWeight:800, marginLeft:8 }}>· {allSelectedItems.length}টি সিলেক্ট করা হয়েছে</span>}
+            <div style={{ color:PRINT.textMuted, fontSize:12, marginTop:8 }}>
+              <span style={{ color:PRINT.accent2, fontWeight:700 }}>{poFilteredProducts.length}</span>টি পণ্য
+              {allSelectedItems.length > 0 && <span style={{ color:PRINT.accent, fontWeight:800, marginLeft:8 }}>· {allSelectedItems.length}টি সিলেক্ট করা হয়েছে</span>}
             </div>
           </div>
           <div style={{ flex:1, overflowY:"auto", padding:"12px 14px 16px" }} onClick={()=>{ if (poSupplierSuggestOpen) setPoSupplierSuggestOpen(false); }}>
-            {poFilteredProducts.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>{poSupplierSelected ? "এই সাপ্লায়ারের কোনো পণ্য নেই" : "কোনো পণ্য নেই"}</div>}
+            {poFilteredProducts.length === 0 && <div style={{ color:PRINT.textMuted, textAlign:"center", marginTop:40, fontSize:14 }}>{poSupplierSelected ? "এই সাপ্লায়ারের কোনো মিলে যাওয়া পণ্য নেই" : "কোনো পণ্য নেই"}</div>}
             <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
               {poFilteredProducts.map((p, idx) => renderOrderProductCard(p, idx))}
             </div>
           </div>
-          <div style={{ position:"sticky", bottom:0, zIndex:50, background:"linear-gradient(0deg,#050414 85%,transparent)", padding:"10px 14px 14px" }}>
+          <div style={{ position:"sticky", bottom:0, zIndex:50, background:"linear-gradient(0deg,#f8fafc 85%,transparent)", padding:"10px 14px 14px" }}>
             {allSelectedItems.length > 0 && (
-              <div style={{ textAlign:"center", color:FUT.accent, fontSize:11.5, fontWeight:700, marginBottom:8 }}>
+              <div style={{ textAlign:"center", color:PRINT.accent, fontSize:11.5, fontWeight:700, marginBottom:8 }}>
                 {allSelectedItems.length}টি পণ্য সিলেক্ট করা হয়েছে
               </div>
             )}
             <button disabled={allSelectedItems.length===0}
               onClick={()=>setInvModal('order:create:review')}
-              style={{ width:"100%", background: allSelectedItems.length===0 ? "#334155" : "linear-gradient(135deg,#22d3ee,#7c3aed)", opacity: allSelectedItems.length===0?0.5:1, border:"none", borderRadius:16, color:"#03060f", fontWeight:900, fontSize:15, padding:"14px 0", cursor: allSelectedItems.length===0?"not-allowed":"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:8, fontFamily:"inherit", boxShadow: allSelectedItems.length===0?"none":"0 2px 20px #22d3ee44" }}>
+              style={{ width:"100%", background: allSelectedItems.length===0 ? "#cbd5e1" : "linear-gradient(135deg,#0369a1,#0ea5e9)", opacity: allSelectedItems.length===0?0.7:1, border:"none", borderRadius:16, color:"#fff", fontWeight:900, fontSize:15, padding:"14px 0", cursor: allSelectedItems.length===0?"not-allowed":"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:8, fontFamily:"inherit", boxShadow: allSelectedItems.length===0?"none":"0 2px 20px rgba(14,165,233,0.35)" }}>
               তালিকা দেখুন ও কনফার্ম করুন{allSelectedItems.length>0?` (${allSelectedItems.length})`:""}
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#03060f" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6"/></svg>
             </button>
           </div>
         </div>
@@ -18393,33 +18444,64 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
       const rec = allPOOrders.find(p => p.id === recId);
       if (!rec) { setInvModal('order:list'); return null; }
       const items = resolvedItems(rec);
+      const totalQty = items.reduce((s,it)=>s+(it.qty||0),0);
       // সিরিয়াল নম্বর — তৈরির ক্রম অনুযায়ী (ক্রয় অর্ডার-১ সবচেয়ে পুরনো)
       const poOrdersByCreated = [...allPOOrders].sort((a,b) => (a.createdAt||"").localeCompare(b.createdAt||""));
       const recSerial = poOrdersByCreated.findIndex(r => r.id === rec.id) + 1;
+      const buildRecOrderHtml = () => {
+        const rows = items.map((it,i) => `<tr><td class="serial">${i+1}</td><td>${it.name}${it.unit?` (${it.unit})`:""}</td><td>${it.supplier}</td><td class="num">${it.qty}</td></tr>`).join('');
+        return buildPdfHtml(`<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্যের নাম</th><th>সাপ্লায়ার</th><th class="num">অর্ডার পরিমাণ</th></tr></thead><tbody>${rows}</tbody><tfoot><tr class="total-row"><td class="serial"></td><td colspan="2"><b>মোট পণ্য</b></td><td class="num">${items.length}</td></tr></tfoot></table></div>`, shopName, `ক্রয় অর্ডার-${recSerial} — ${dayLabelPO(rec.dateKey)}`);
+      };
+      const sendRecWhatsApp = () => {
+        const lines = items.map((it,i) => `${i+1}. ${it.name} (${it.supplier}) — অর্ডার: ${it.qty}${it.unit||""}`).join('\n');
+        window.open(`https://wa.me/?text=${encodeURIComponent(`ক্রয় অর্ডার-${recSerial} — ${dayLabelPO(rec.dateKey)}\n${shopName}\n\n${lines}`)}`, '_blank');
+      };
       return (
-        <div style={{ ...S.page, padding:"0 14px 16px", background:FUT.pageBg, minHeight:"100%" }}>
-          <button style={S.textBtn} onClick={() => setInvModal('order:list')}>← ফিরুন</button>
-          <div style={{ color:"#f1f5f9", fontWeight:900, fontSize:16, marginBottom:2 }}>🧾 ক্রয় অর্ডার-{recSerial}</div>
-          <div style={{ color:"#64748b", fontSize:12, marginBottom:14 }}>{dayLabelPO(rec.dateKey)} · {items.length}টি পণ্য</div>
-          <div style={{ background:FUT.card, backdropFilter:"blur(10px)", border:`1px solid ${FUT.accent2}33`, borderRadius:18, overflow:"hidden", marginBottom:16 }}>
-            {items.map((it, i) => (
-              <div key={it.productId} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"11px 14px", borderBottom: i<items.length-1?"1px solid #ffffff0f":"none" }}>
-                <div>
-                  <div style={{ color:"#f1f5f9", fontWeight:700, fontSize:13 }}>{it.name}{it.unit?` (${it.unit})`:""}</div>
-                  <div style={{ color:"#94a3b8", fontSize:11, marginTop:2 }}>🏭 {it.supplier} · স্টক ছিল {it.stock}</div>
-                </div>
-                <div style={{ color:FUT.accent2, fontWeight:900, fontSize:15 }}>{it.qty}</div>
-              </div>
-            ))}
+        <div style={{ ...S.page, padding:"0", display:"flex", flexDirection:"column", height:"100%", overflow:"hidden", background:PRINT.pageBg }}>
+          <div style={{ position:"sticky", top:0, zIndex:50, background:PRINT.headBg, borderBottom:`1px solid ${PRINT.headBorder}`, padding:"12px 14px 10px" }}>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+              <button style={{ ...S.textBtn, color:PRINT.accent }} onClick={() => setInvModal('order:list')}>← ফিরুন</button>
+              <span style={{ color:PRINT.textMuted, fontSize:11.5, fontWeight:700 }}><span style={{ color:PRINT.accent, fontWeight:800 }}>{items.length}</span>টি পণ্য · মোট পরিমাণ {totalQty}</span>
+            </div>
+            <div style={{ color:PRINT.textDark, fontWeight:900, fontSize:16, marginTop:8 }}>🧾 ক্রয় অর্ডার-{recSerial}</div>
+            <div style={{ color:PRINT.textMuted, fontSize:12, marginTop:2 }}>🗓️ {dayLabelPO(rec.dateKey)}</div>
           </div>
-          <div style={{ display:"flex", gap:10 }}>
-            <button onClick={()=>loadPOGroupForEdit(rec)}
-              style={{ flex:1, background:"linear-gradient(135deg,#7c3aed,#4c1d95)", border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:13.5, padding:"12px 0", cursor:"pointer", fontFamily:"inherit" }}>
-              ✏️ এডিট করুন
+
+          <div style={{ flex:1, overflowY:"auto", padding:"14px 14px 16px" }}>
+            {items.length === 0 ? (
+              <div style={{ color:PRINT.textMuted, textAlign:"center", marginTop:50, fontSize:14 }}>এই অর্ডারে কোনো পণ্য নেই</div>
+            ) : (
+              <div style={{ background:"#fff", borderRadius:12, overflow:"hidden", boxShadow:"0 1px 4px rgba(0,0,0,0.08)" }}>
+                <div style={{ display:"flex", alignItems:"center", background:PRINT.thBg, padding:"10px 12px", gap:8 }}>
+                  <div style={{ width:24, color:PRINT.thText, fontWeight:700, fontSize:12, textAlign:"center", flexShrink:0 }}>#</div>
+                  <div style={{ flex:1, color:PRINT.thText, fontWeight:700, fontSize:12 }}>পণ্যের নাম</div>
+                  <div style={{ flex:1, color:PRINT.thText, fontWeight:700, fontSize:12 }}>সাপ্লায়ার</div>
+                  <div style={{ flex:1, color:PRINT.thText, fontWeight:700, fontSize:12, textAlign:"right" }}>অর্ডার পরিমাণ</div>
+                </div>
+                {items.map((it, i) => (
+                  <div key={it.productId} style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 12px", borderBottom: i<items.length-1?`1px solid ${PRINT.rowBorder}`:"none", background: i%2===1 ? PRINT.rowEven : "#fff" }}>
+                    <div style={{ width:24, color:PRINT.serial, fontWeight:700, fontSize:12.5, textAlign:"center", flexShrink:0 }}>{i+1}</div>
+                    <div style={{ flex:1, minWidth:0, color:PRINT.textDark, fontWeight:700, fontSize:13 }}>{it.name}{it.unit?<span style={{ color:PRINT.textMuted, fontSize:11 }}> ({it.unit})</span>:null}</div>
+                    <div style={{ flex:1, minWidth:0, color:PRINT.textDark, fontSize:12.5 }}>{it.supplier}</div>
+                    <div style={{ flex:1, color:PRINT.textDark, fontWeight:800, fontSize:13.5, textAlign:"right" }}>{it.qty}</div>
+                  </div>
+                ))}
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 12px", background:PRINT.totalBg, borderTop:`2px solid ${PRINT.totalBorder}` }}>
+                  <span style={{ color:PRINT.accent, fontWeight:800, fontSize:12.5 }}>মোট পণ্য</span>
+                  <span style={{ color:PRINT.accent, fontWeight:900, fontSize:14 }}>{items.length}</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div style={{ position:"sticky", bottom:0, zIndex:50, background:"linear-gradient(0deg,#f8fafc 88%,transparent)", padding:"10px 14px 14px", display:"flex", gap:10 }}>
+            <button disabled={items.length===0} onClick={()=>openPrintWindow(buildRecOrderHtml())}
+              style={{ flex:1, background: items.length===0 ? "#cbd5e1" : "linear-gradient(135deg,#0369a1,#0ea5e9)", opacity: items.length===0?0.7:1, border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:13, padding:"12px 0", cursor: items.length===0?"not-allowed":"pointer", fontFamily:"inherit" }}>
+              🖨️ প্রিন্ট
             </button>
-            <button onClick={()=>{ deletePOGroup(rec.id); setInvModal('order:list'); }}
-              style={{ flex:1, background:"linear-gradient(135deg,#b91c1c,#7f1d1d)", border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:13.5, padding:"12px 0", cursor:"pointer", fontFamily:"inherit" }}>
-              🗑️ মুছুন
+            <button disabled={items.length===0} onClick={sendRecWhatsApp}
+              style={{ flex:1, background: items.length===0 ? "#cbd5e1" : "linear-gradient(135deg,#15803d,#22c55e)", opacity: items.length===0?0.7:1, border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:13, padding:"12px 0", cursor: items.length===0?"not-allowed":"pointer", fontFamily:"inherit" }}>
+              💬 WhatsApp
             </button>
           </div>
         </div>
