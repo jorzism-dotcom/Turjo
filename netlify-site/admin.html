@@ -1844,13 +1844,13 @@ async function fbRunDeploySteps(projectId) {
   fbLog('Deploy শুরু হচ্ছে — Project: ' + projectId);
 
   try {
-    await fbDeployFirestoreRules(projectId, rulesText);
+    await fbWithRetry(() => fbDeployFirestoreRules(projectId, rulesText), 'Firestore Rules deploy', 3, 8000);
   } catch (e) {
     fbLog('Firestore Rules deploy ব্যর্থ: ' + e.message, 'err');
   }
 
   try {
-    await fbDeployIndexes(projectId, indexesText);
+    await fbWithRetry(() => fbDeployIndexes(projectId, indexesText), 'Indexes deploy', 3, 8000);
   } catch (e) {
     fbLog('Indexes deploy ব্যর্থ: ' + e.message, 'err');
   }
@@ -1906,36 +1906,99 @@ async function fbPollLRO(opGetUrl, label, maxTries) {
   throw new Error(label + ' — সময় বেশি লাগছে, একটু পরে Firebase Console-এ গিয়ে ম্যানুয়ালি চেক করুন।');
 }
 
+// ── একটা ফাংশনকে সাময়িক (transient) ব্যর্থতায় কয়েকবার আবার চেষ্টা করা ──
+async function fbWithRetry(fn, label, maxRetries, delayMs) {
+  maxRetries = maxRetries || 4;
+  delayMs = delayMs || 8000;
+  let lastErr;
+  for (let i = 0; i <= maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      const msg = (e.message || '').toLowerCase();
+      const transient = msg.includes('permission') || msg.includes('has not been used')
+        || msg.includes('disabled') || msg.includes('not found') || msg.includes('does not exist');
+      if (!transient || i === maxRetries) throw e;
+      fbLog(label + ' — প্রজেক্ট এখনো পুরোপুরি প্রস্তুত হয়নি, ' + Math.round(delayMs / 1000) + ' সেকেন্ড পর আবার চেষ্টা করা হচ্ছে... (' + (i + 1) + '/' + maxRetries + ')', 'warn');
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+  throw lastErr;
+}
+
 // ── ধাপ ১: GCP Project তৈরি ──
 async function fbCreateGcpProject(projectId, displayName) {
   fbLog('GCP Project তৈরি হচ্ছে: ' + projectId + ' ...');
-  const op = await fbApiFetch('https://cloudresourcemanager.googleapis.com/v1/projects', {
-    method: 'POST',
-    body: JSON.stringify({ projectId: projectId, name: (displayName || projectId).slice(0, 30) })
-  });
-  await fbPollLRO('https://cloudresourcemanager.googleapis.com/v1/' + op.name, 'GCP Project তৈরি');
-  fbLog('GCP Project তৈরি হয়েছে।', 'ok');
+  try {
+    const op = await fbApiFetch('https://cloudresourcemanager.googleapis.com/v1/projects', {
+      method: 'POST',
+      body: JSON.stringify({ projectId: projectId, name: (displayName || projectId).slice(0, 30) })
+    });
+    await fbPollLRO('https://cloudresourcemanager.googleapis.com/v1/' + op.name, 'GCP Project তৈরি');
+    fbLog('GCP Project তৈরি হয়েছে।', 'ok');
+  } catch (e) {
+    if ((e.message || '').toLowerCase().includes('already exists')) {
+      fbLog('এই Project ID আগে থেকেই আছে (সম্ভবত আগের কোনো চেষ্টা থেকে) — সেটাই ব্যবহার করে এগোনো হচ্ছে।', 'warn');
+      return;
+    }
+    throw e;
+  }
 }
 
 // ── ধাপ ২: Firebase enable করা ──
 async function fbAddFirebaseToProject(projectId) {
   fbLog('Project-এ Firebase enable হচ্ছে...');
-  const op = await fbApiFetch('https://firebase.googleapis.com/v1beta1/projects/' + projectId + ':addFirebase', {
-    method: 'POST',
-    body: JSON.stringify({})
-  });
-  await fbPollLRO('https://firebase.googleapis.com/v1beta1/' + op.name, 'Firebase enable');
-  fbLog('Firebase enable হয়েছে।', 'ok');
+  try {
+    const op = await fbApiFetch('https://firebase.googleapis.com/v1beta1/projects/' + projectId + ':addFirebase', {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+    await fbPollLRO('https://firebase.googleapis.com/v1beta1/' + op.name, 'Firebase enable');
+    fbLog('Firebase enable হয়েছে।', 'ok');
+  } catch (e) {
+    if ((e.message || '').toLowerCase().includes('already')) {
+      fbLog('Firebase আগে থেকেই enable করা আছে।', 'warn');
+      return;
+    }
+    throw e;
+  }
+}
+
+// ── ধাপ ২.৫: প্রয়োজনীয় API-গুলো নতুন Project-এ enable করা ──
+async function fbEnableRequiredApis(projectId) {
+  fbLog('প্রয়োজনীয় API enable করা হচ্ছে (Firestore, RTDB, Rules)...');
+  const serviceIds = [
+    'firebase.googleapis.com',
+    'firebaserules.googleapis.com',
+    'firestore.googleapis.com',
+    'firebasedatabase.googleapis.com'
+  ];
+  try {
+    const op = await fbApiFetch('https://serviceusage.googleapis.com/v1/projects/' + projectId + '/services:batchEnable', {
+      method: 'POST',
+      body: JSON.stringify({ serviceIds: serviceIds })
+    });
+    if (op && op.name && !op.done) {
+      await fbPollLRO('https://serviceusage.googleapis.com/v1/' + op.name, 'API enable');
+    }
+    fbLog('API enable সম্পন্ন — নতুন প্রজেক্টে প্রস্তুত হতে কিছু সময় লাগে, একটু অপেক্ষা করা হচ্ছে...', 'ok');
+  } catch (e) {
+    fbLog('API enable-এ সমস্যা হয়েছে (হয়ত আগে থেকেই enable ছিল): ' + e.message, 'warn');
+  }
+  await new Promise(r => setTimeout(r, 12000));
 }
 
 // ── ধাপ ৩: Firestore Database তৈরি ──
 async function fbCreateFirestoreDb(projectId, locationId) {
   fbLog('Firestore Database তৈরি হচ্ছে (' + locationId + ')...');
-  const op = await fbApiFetch('https://firestore.googleapis.com/v1/projects/' + projectId + '/databases?databaseId=(default)', {
-    method: 'POST',
-    body: JSON.stringify({ type: 'FIRESTORE_NATIVE', locationId: locationId })
-  });
-  await fbPollLRO('https://firestore.googleapis.com/v1/' + op.name, 'Firestore Database তৈরি');
+  await fbWithRetry(async () => {
+    const op = await fbApiFetch('https://firestore.googleapis.com/v1/projects/' + projectId + '/databases?databaseId=(default)', {
+      method: 'POST',
+      body: JSON.stringify({ type: 'FIRESTORE_NATIVE', locationId: locationId })
+    });
+    await fbPollLRO('https://firestore.googleapis.com/v1/' + op.name, 'Firestore Database তৈরি');
+  }, 'Firestore Database তৈরি', 4, 8000);
   fbLog('Firestore Database তৈরি হয়েছে।', 'ok');
 }
 
@@ -1943,9 +2006,12 @@ async function fbCreateFirestoreDb(projectId, locationId) {
 async function fbCreateRtdbInstanceNew(projectId, locationId) {
   fbLog('Realtime Database Instance তৈরি হচ্ছে...');
   const dbId = (projectId + '-default-rtdb').slice(0, 60);
-  const data = await fbApiFetch(
-    'https://firebasedatabase.googleapis.com/v1beta/projects/' + projectId + '/locations/' + locationId + '/instances?databaseId=' + dbId,
-    { method: 'POST', body: JSON.stringify({}) }
+  const data = await fbWithRetry(
+    () => fbApiFetch(
+      'https://firebasedatabase.googleapis.com/v1beta/projects/' + projectId + '/locations/' + locationId + '/instances?databaseId=' + dbId,
+      { method: 'POST', body: JSON.stringify({}) }
+    ),
+    'Realtime Database Instance তৈরি', 4, 8000
   );
   fbLog('Realtime Database Instance তৈরি হয়েছে।', 'ok');
   return data.databaseUrl || ('https://' + dbId + '.firebaseio.com');
@@ -1954,13 +2020,25 @@ async function fbCreateRtdbInstanceNew(projectId, locationId) {
 // ── ধাপ ৫: Web App রেজিস্টার করে config বের করা ──
 async function fbRegisterWebAppNew(projectId) {
   fbLog('Web App রেজিস্টার হচ্ছে...');
-  await fbApiFetch('https://firebase.googleapis.com/v1beta1/projects/' + projectId + '/webApps', {
-    method: 'POST',
-    body: JSON.stringify({ displayName: 'SBM' })
-  });
-  await new Promise(r => setTimeout(r, 4000));
-  const webApps = await fbApiFetch('https://firebase.googleapis.com/v1beta1/projects/' + projectId + '/webApps');
-  const appId = webApps.apps[0].appId;
+  try {
+    await fbApiFetch('https://firebase.googleapis.com/v1beta1/projects/' + projectId + '/webApps', {
+      method: 'POST',
+      body: JSON.stringify({ displayName: 'SBM' })
+    });
+  } catch (e) {
+    fbLog('Web App তৈরির অনুরোধে সমস্যা (আগে থেকেই থাকতে পারে): ' + e.message, 'warn');
+  }
+  let appId = null;
+  for (let i = 0; i < 8; i++) {
+    await new Promise(r => setTimeout(r, 3000));
+    try {
+      const webApps = await fbApiFetch('https://firebase.googleapis.com/v1beta1/projects/' + projectId + '/webApps');
+      if (webApps.apps && webApps.apps.length > 0) { appId = webApps.apps[0].appId; break; }
+    } catch (e) { /* চেষ্টা চলতে থাকুক */ }
+  }
+  if (!appId) {
+    throw new Error('Web App তৈরি হতে বেশি সময় নিচ্ছে — একটু পরে ম্যানুয়ালি "Project থেকে Config খুঁজে বের করুন" চেপে দেখুন।');
+  }
   const config = await fbApiFetch('https://firebase.googleapis.com/v1beta1/projects/' + projectId + '/webApps/' + appId + '/config');
   fbLog('Web App config পাওয়া গেছে।', 'ok');
   return config;
@@ -1990,6 +2068,8 @@ window.fbCreateAndDeployAll = async function() {
   try {
     await fbAddFirebaseToProject(projectId);
   } catch (e) { fbLog('Firebase enable ব্যর্থ: ' + e.message, 'err'); return; }
+
+  await fbEnableRequiredApis(projectId);
 
   try {
     await fbCreateFirestoreDb(projectId, locationId);
