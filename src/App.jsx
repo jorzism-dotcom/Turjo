@@ -3,7 +3,7 @@ import ReactDOM from "react-dom";
 import { initializeApp, getApps, deleteApp } from "firebase/app";
 import { initializeAppCheck, ReCaptchaV3Provider } from "firebase/app-check";
 import {
-  getFirestore, doc, getDoc, getDocFromServer, updateDoc, setDoc, deleteDoc,
+  getFirestore, initializeFirestore, doc, getDoc, getDocFromServer, updateDoc, setDoc, deleteDoc,
   collection, onSnapshot, getDocs, enableIndexedDbPersistence,
   query, where, orderBy, limit, startAfter, increment, runTransaction,
   writeBatch, serverTimestamp,
@@ -42,6 +42,7 @@ const useAppStore = create(subscribeWithSelector((set) => ({
 
   // ── Shop / Auth ───────────────────────────────────────────────────────────
   shopName:          "SBM",
+  businessType:      "pharmacy", // "pharmacy" | "veterinary" — দোকানের ধরন, ডেটাসেট/লেবেল এটার উপর নির্ভর করে
   currentUser:       null,
   authSession:       null,
   devContact:        null,
@@ -438,10 +439,10 @@ function normalizeSupplierKey(name) {
 // ─── SupplierPicker — টাইপাহেড সার্চ-করে-বাছাই সাপ্লায়ার সিলেক্টর ───────────
 // BD_PHARMA_COMPANIES (MEDICINE_DATASET থেকে ডিরাইভ করা, ২১১টি) এর মধ্যে ফাজি সার্চ (smartMatch),
 // অথবা "নিজে লিখুন" কাস্টম মোড।
-function SupplierPicker({ value, onChange, error, T, S, autoFocus, extraSuppliers = [] }) {
+function SupplierPicker({ value, onChange, error, T, S, autoFocus, extraSuppliers = [], businessType = "pharmacy" }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const { companies: BD_PHARMA_COMPANIES } = useMedicineDataset(); // লেজি-লোড — এই পিকার খোলা হলেই ফেচ হয়
+  const { companies: BD_PHARMA_COMPANIES } = useMedicineDataset(businessType); // লেজি-লোড — এই পিকার খোলা হলেই ফেচ হয়
   // extraSuppliers = দোকানে আগে ম্যানুয়ালি লেখা কাস্টম সাপ্লায়ারের নাম (products/purchaseOrders থেকে) —
   // এগুলো তালিকায় যুক্ত হবে যাতে একবার লিখলে পরেরবার সাজেশনে দেখা যায় ("অটো-সেভ")
   // 🔴 ফিক্স: normalizeSupplierKey দিয়ে ডিডুপ্লিকেট — একই কোম্পানির একাধিক
@@ -4050,7 +4051,7 @@ const GDRIVE_REFRESH_ENDPOINT = "https://melodious-axolotl-00b2e7.netlify.app/.n
 const SK = {
   customers: "sbm-customers", products: "sbm-products", invoices: "sbm-invoices",
   smsLog: "sbm-smslog", txns: "sbm-txns", users: "sbm-users",
-  shopName: "sbm-shopname", darkMode: "sbm-darkmode", activeTheme: "sbm-active-theme", fontSize: "sbm-font-size", deletedCustomers: "sbm-deleted-customers", deletedProducts: "sbm-deleted-products",
+  shopName: "sbm-shopname", businessType: "sbm-business-type", darkMode: "sbm-darkmode", activeTheme: "sbm-active-theme", fontSize: "sbm-font-size", deletedCustomers: "sbm-deleted-customers", deletedProducts: "sbm-deleted-products",
   paymentInvoices: "sbm-payment-invoices", smsGateway: "sbm-sms-gateway",
   lastAutoBackup: "sbm-last-auto-backup", anthropicKey: "sbm-anthropic-key",
   lastLocalBackup: "sbm-last-local-backup",
@@ -5003,8 +5004,27 @@ const FSS = {
       // Firestore app-এর সাথে কখনো কলিশন করবে না
       const appName = "sbm-fss-" + (cfg.projectId || "default");
       const existing = getApps().find(a => a.name === appName);
+      const isNewApp = !existing;
       this._app = existing || initializeApp(cfg, appName);
-      this._db = getFirestore(this._app);
+      // 🔴 ফিক্স (ডিফেন্সিভ নেট): Firestore SDK ডিফল্টভাবে কোনো ফিল্ডে
+      // `undefined` ভ্যালু পেলে setDoc()-এ exception থ্রো করে পুরো write বাতিল
+      // করে দেয় — কোনো visible error ছাড়াই record চুপচাপ Firestore-এ পৌঁছায় না
+      // (দেখা গেছে: products-এ spPrice খালি রাখলে ঠিক এভাবেই write ব্যর্থ হতো,
+      // অথচ UI-তে "পণ্য যোগ হয়েছে" দেখাত কারণ local state ঠিকই আপডেট হয়)।
+      // ignoreUndefinedProperties: true দিলে Firestore নিজে থেকে undefined
+      // ফিল্ড বাদ দিয়ে বাকি ডেটা লিখে ফেলবে — ভবিষ্যতে কোথাও নতুন ফিল্ড যোগ
+      // করার সময় ভুলে undefined গেলেও পুরো record হারিয়ে যাবে না।
+      // initializeFirestore() একটা app-এ একবারই কল করা যায় (নাহলে থ্রো করে),
+      // তাই শুধু নতুন app instance-এর ক্ষেত্রে এটা ব্যবহার করা হচ্ছে — বিদ্যমান
+      // app পুনরায় ব্যবহার হলে (existing) সেটার Firestore ইতিমধ্যে init করা,
+      // তখন সাধারণ getFirestore() দিয়ে সেই একই instance আবার ধরা হয়।
+      try {
+        this._db = isNewApp
+          ? initializeFirestore(this._app, { ignoreUndefinedProperties: true })
+          : getFirestore(this._app);
+      } catch (e) {
+        this._db = getFirestore(this._app); // fallback — কোনো কারণে initializeFirestore ব্যর্থ হলেও অ্যাপ যেন বন্ধ না হয়ে যায়
+      }
       // 🔴 App Check — নিশ্চিত করে শুধু আসল অ্যাপ (আপনার signed build) Firestore-এ
       // read/write করতে পারবে, কেউ config কপি করে ভুয়া client বানালেও block হবে।
       // `cfg.appCheckSiteKey` না থাকলে এটা সম্পূর্ণ no-op (backward compatible) —
@@ -5229,6 +5249,116 @@ const FSS = {
       return result;
     } catch (e) {
       logErrorToCentral?.("transaction:restoreStock", e, { productId, restoreQty });
+      return null; // ব্যর্থ হলে caller local fallback ব্যবহার করবে
+    }
+  },
+
+  // 🔴 এন্টারপ্রাইজ-লেভেল ফিক্স (পার্চেজ এন্ট্রি স্টক race condition) —
+  // transactionUpdateStock()/transactionRestoreStock()-এর একই প্যাটার্ন, কিন্তু
+  // purchase entry (স্টক বৃদ্ধি + নতুন ব্যাচ)-এর জন্য। আগে applyPurchaseBatch()
+  // (আর DashPurchaseEntryModal-এর savePE()) লোকাল React state (`products`)
+  // থেকে stock/costPrice হিসেব করে setProducts দিয়ে বসাত, যেটা generic
+  // diff-push দিয়ে Firestore-এ পুরো ডকুমেন্ট absolute value হিসেবে ওভাররাইট
+  // (setDoc, merge ছাড়া) হয়ে যেত। মালিক ও স্টাফ প্রায় একই সময়ে একই পণ্যে
+  // আলাদা পার্চেজ এন্ট্রি দিলে — একজনের write আরেকজনের stock-addition সম্পূর্ণ
+  // মুছে দিতে পারত (lost update), ব্যাচও হারিয়ে যেতে পারত। batchNo কলিশন-এড়ানোর
+  // লজিক (linear probing, ফিক্স #৮) আগে লোকাল React state (`p.batches`) দিয়ে
+  // হতো — এখন runTransaction()-এর ভেতরে সার্ভারের *সেই মুহূর্তের* product doc
+  // (stock+batches+costPrice) পড়ে তার ওপর atomically stock/cost/batch যোগ হয়,
+  // batchNo কলিশনও একই transaction-এর ভেতরে সার্ভারের লাইভ batches দিয়ে resolve
+  // হয় — তাই দুটো সমস্যাই (lost stock update + batchNo কলিশন) একই সাথে সমাধান
+  // হলো। batchNoHint caller-এর সবচেয়ে ভালো "পরবর্তী ব্যাচ" অনুমান (calcNextBatch
+  // থেকে) — কলিশন হলে সংখ্যা বাড়িয়ে একটা ফাঁকা suffix বেছে নেওয়া হয়। চূড়ান্ত
+  // stock/batches/batchNo/costPrice ফেরত দেয়, caller সেটাই local state ও
+  // রিসিট/এন্ট্রিতে ব্যবহার করবে (নিজের stale guess না)। Firebase বন্ধ/ব্যর্থ
+  // হলে null — caller আগের মতো synchronous local calculation-এ fallback করবে।
+  async transactionAddStock(productId, { qty, unitCost, unitSell, expiryDate, supplier, note, isFreeStock, batchNoHint } = {}) {
+    if (!this._db || !productId || !qty) return null;
+    try {
+      const ref = doc(this._db, "products", String(productId));
+      const result = await runTransaction(this._db, async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists()) return null;
+        const serverProduct = { id: snap.id, ...snap.data() };
+        const cost = isFreeStock ? 0 : (unitCost || serverProduct.costPrice || 0);
+        const sell = unitSell || serverProduct.price || 0;
+        const existingBatchNos = new Set((serverProduct.batches || []).map(b => b.batchNo));
+        let batchNo = batchNoHint;
+        if (batchNo && existingBatchNos.has(batchNo)) {
+          const m = /^(.*-)(\d+)$/.exec(batchNo);
+          if (m) {
+            let n = parseInt(m[2], 10);
+            let candidate;
+            do { n += 1; candidate = `${m[1]}${n}`; } while (existingBatchNos.has(candidate));
+            batchNo = candidate;
+          }
+        }
+        const oldStock = serverProduct.stock || 0;
+        const oldCost  = serverProduct.costPrice || 0;
+        const newStock = oldStock + qty;
+        const newCostPrice = oldStock + qty > 0
+          ? (oldStock * oldCost + qty * cost) / (oldStock + qty)
+          : cost;
+        const roundedCost = Math.round(newCostPrice * 10000) / 10000;
+        const newBatch = {
+          batchNo, qty, costPrice: cost, sellPrice: sell,
+          expiryDate: expiryDate || "", supplier: supplier || "", note: note || "",
+          at: new Date().toISOString(),
+        };
+        const updatedBatches = [...(serverProduct.batches || []), newBatch];
+        tx.update(ref, {
+          stock: newStock, costPrice: roundedCost,
+          price: sell || serverProduct.price || 0,
+          expiryDate: expiryDate || serverProduct.expiryDate || "",
+          lastUpdated: new Date().toISOString(), _updatedAt: Date.now(),
+          batches: updatedBatches,
+        });
+        return { stock: newStock, batches: updatedBatches, batchNo, costPrice: roundedCost };
+      });
+      return result;
+    } catch (e) {
+      logErrorToCentral?.("transaction:addStock", e, { productId, qty });
+      return null; // ব্যর্থ হলে caller local fallback ব্যবহার করবে
+    }
+  },
+
+  // 🔴 এন্টারপ্রাইজ-লেভেল ফিক্স (মেয়াদোত্তীর্ণ ব্যাচ সরানো — স্টক race condition):
+  // transactionAddStock()-এর একই প্যাটার্ন, কিন্তু ব্যাচ *সরানো*-র জন্য। আগে
+  // removeExpiredBatch() লোকাল React state (`products`) থেকে batches ফিল্টার
+  // করে নতুন stock (= বাকি batches-এর যোগফল) হিসেব করে setProducts দিয়ে বসাত
+  // — সেই মুহূর্তে অন্য ডিভাইস থেকে ঠিক একই পণ্যে কোনো বিক্রি/পার্চেজ/রিটার্ন
+  // সিঙ্ক হয়ে এই ডিভাইসে এখনো না পৌঁছালে, generic diff-push সেই কনকারেন্ট
+  // পরিবর্তনটা পুরো ডকুমেন্ট ওভাররাইট করে মুছে দিতে পারত। এখন সার্ভারের *সেই
+  // মুহূর্তের* batches থেকে ম্যাচিং ব্যাচ (batchNo+expiryDate দিয়ে identify)
+  // বাদ দিয়ে নতুন stock/batches atomically বসানো হয়। ব্যর্থ/অফলাইন হলে null —
+  // caller আগের মতো synchronous local calculation-এ fallback করবে।
+  async transactionRemoveBatch(productId, batchNo, expiryDate) {
+    if (!this._db || !productId) return null;
+    try {
+      const ref = doc(this._db, "products", String(productId));
+      const result = await runTransaction(this._db, async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists()) return null;
+        const serverProduct = { id: snap.id, ...snap.data() };
+        let newStock, updatedBatches, newExpiryDate;
+        if (serverProduct.batches && serverProduct.batches.length > 0) {
+          updatedBatches = serverProduct.batches.filter(b => !(((b.batchNo || "") === (batchNo || "")) && b.expiryDate === expiryDate));
+          newStock = updatedBatches.reduce((s, b) => s + (b.qty || 0), 0);
+          newExpiryDate = serverProduct.expiryDate;
+        } else {
+          updatedBatches = [];
+          newStock = 0;
+          newExpiryDate = "";
+        }
+        tx.update(ref, {
+          stock: newStock, batches: updatedBatches, expiryDate: newExpiryDate,
+          lastUpdated: new Date().toISOString(), _updatedAt: Date.now(),
+        });
+        return { stock: newStock, batches: updatedBatches };
+      });
+      return result;
+    } catch (e) {
+      logErrorToCentral?.("transaction:removeBatch", e, { productId, batchNo });
       return null; // ব্যর্থ হলে caller local fallback ব্যবহার করবে
     }
   },
@@ -5526,15 +5656,16 @@ const effectiveTs = (rec) => (rec?._serverTs != null ? rec._serverTs : (rec?._up
 // useFSSCollection আর local→remote push করে না। প্রতিটা নতুন movement তৈরির
 // সময় এই হেল্পার দিয়ে সরাসরি Firestore-এ push করতে হয় (fire-and-forget)।
 const pushStockMovement = (entry) => {
-  if (FSS.isReady()) FSS.setRecord("stockMovements", entry.id, withTs(entry));
+  if (FSS.isReady()) pushDurable("stockMovements", entry.id, withTs(entry));
   return entry;
 };
 
 // ── cashLogs-ও এখন windowed real-time sync (৩৫ দিন), একই কারণে useFSSCollection
-// আর local→remote push করে না। একমাত্র creation site (Dashboard-এর addCashLog)
-// থেকে এই হেল্পার দিয়ে সরাসরি Firestore-এ push করা হয়।
+// আর local→remote push করে না। creation site গুলো (Dashboard-এর addCashLog, আর
+// ReturnModule-এর processReturn-এ নগদ রিফান্ডের সময়) এই হেল্পার দিয়ে সরাসরি
+// Firestore-এ push করে।
 const pushCashLog = (entry) => {
-  if (FSS.isReady()) FSS.setRecord("cashLogs", entry.id, withTs(entry));
+  if (FSS.isReady()) pushDurable("cashLogs", entry.id, withTs(entry));
   return entry;
 };
 
@@ -5662,6 +5793,24 @@ const SyncOutbox = {
   },
 };
 
+// 🔴 ফিক্স (durability গ্যাপ — invoices/txns/stockMovements/cashLogs): এই ৪টা
+// windowed কালেকশন এতদিন সরাসরি fire-and-forget FSS.setRecord() কল করত, কোনো
+// app-level retry/outbox ছাড়াই — পুরোপুরি Firestore SDK-এর নিজস্ব
+// enableIndexedDbPersistence-এর ওপর নির্ভরশীল ছিল। সেই persistence-enable কল
+// silently fail করতে পারে (একাধিক ট্যাব/WebView instance একই IndexedDB
+// ব্যবহার করলে Firestore নিজেই এটা reject করে, আর কোডে সেটা .catch(()=>{})
+// দিয়ে গেলা হয়েছে) — ব্যর্থ হলে অফলাইনে অ্যাপ কিল হলে সেই এন্ট্রি স্থায়ীভাবে
+// হারিয়ে যেতে পারত। customers/products-এর মতো এখন এই ৪টাও IndexedDB
+// SyncOutbox-এ প্রথমে persist হয়ে তারপর পাঠানোর চেষ্টা করে — সফল হলে outbox
+// থেকে সরে যায়, ব্যর্থ/অফলাইন থাকলে outbox-এই থেকে যায় ও পরের boot/resume/
+// online/heartbeat-এ (নিচের flush effect) আবার পাঠানোর চেষ্টা হয়।
+async function pushDurable(coll, id, rec) {
+  await SyncOutbox.put(coll, id, rec);
+  const res = await FSS.setRecord(coll, id, rec);
+  if (res && res.ok !== false) SyncOutbox.remove(coll, id);
+  return res;
+}
+
 function useFSSCollection(name, value, setValue, ready, opts = {}) {
   // 🔴 ফিক্স: syncDeletes=false দিলে local→remote diff কোনো রেকর্ড "মিসিং" পেলেও
   // Firestore থেকে সেটা ডিলিট করবে না (শুধু bookkeeping করবে)। কারণ — Firestore-এর
@@ -5715,7 +5864,7 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
     firstRemote.current = false;
     pending.current = new Map();
     const unsub = FSS.subscribeCollection(name, (arr, fromCache) => {
-      const incoming = filterIncoming ? filterIncoming(arr) : arr;
+      let incoming = filterIncoming ? filterIncoming(arr) : arr;
       // 🔴 ফিক্স (মাল্টি-ডিভাইস sync স্থায়ী ব্লকেজ — root cause of "স্টাফ থেকে
       // পণ্য/কাস্টমার অ্যাডমিনে যাচ্ছে না, উল্টো অ্যাডমিন থেকে যোগ করলে স্টাফের
       // ডেটা হারিয়ে যাচ্ছে" বাগ): আগে এই listener-এর একদম প্রথম স্ন্যাপশট যদি
@@ -5764,6 +5913,43 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
           lastSynced.current = valueRef.current;
           valueRef.current.forEach(rec => { if (rec?.id != null) FSS.setRecord(name, rec.id, rec); });
           return;
+        }
+        // 🆕 ফিক্স (root cause — "প্রোডাক্ট/কাস্টমার এড করলে Firestore-এ যাচ্ছে
+        // না"): আগের seed-on-empty branch শুধু তখনই কাজ করত যখন গোটা remote
+        // collection খালি। বাস্তবে দোকানে আগে থেকেই পণ্য/কাস্টমার থাকে (collection
+        // খালি না), কিন্তু app boot হওয়ার পর প্রথম remote snapshot আসার *আগেই*
+        // যদি ইউজার তাড়াতাড়ি নতুন প্রোডাক্ট/কাস্টমার এড করে ফেলেন — তাহলে
+        // local→remote push effect (নিচে) তখনো `firstRemote.current` false
+        // দেখে সেটা নীরবে স্কিপ করত (কোনো pending/outbox এন্ট্রি ছাড়াই)। তারপর
+        // এই প্রথম remote snapshot (যেখানে নতুন রেকর্ডটা নেই, কারণ সেটা কখনো
+        // Firestore-এ push-ই হয়নি) সরাসরি local state রিপ্লেস করে দিত
+        // (`setValue(merged)`) — ফলে রেকর্ডটা শুধু Firestore-এ যায়নি তাই না,
+        // লোকাল থেকেও হারিয়ে যেত। এটাই আসল কারণ ছিল এই বাগের।
+        // এই ফিক্স শুধু syncDeletes:false কালেকশনে (products/customers ইত্যাদি)
+        // প্রযোজ্য — ওগুলোতে ইচ্ছাকৃত ডিলিট সবসময় সরাসরি FSS.deleteRecord() কল
+        // করে হয় (diff দেখে না), তাই "লোকালে আছে কিন্তু প্রথম snapshot-এ নেই"
+        // মানে নিশ্চিতভাবেই "এখনো push হয়নি" — কখনো "অন্য ডিভাইস মুছে দিয়েছে" না।
+        // syncDeletes:true কালেকশনে (users/auditLogs/ইত্যাদি) এই ধরনের merge
+        // বিপজ্জনক (আসল delete resurrect হয়ে যেতে পারে), তাই সেখানে প্রযোজ্য না।
+        if (!syncDeletes && !justReset) {
+          const incomingIds = new Set(incoming.map(r => String(r.id)));
+          const localOnly = (valueRef.current || []).filter(rec => rec?.id != null && !incomingIds.has(String(rec.id)));
+          if (localOnly.length) {
+            const ts = Date.now();
+            localOnly.forEach(rec => {
+              pending.current.set(String(rec.id), { rec, old: null, ts });
+              SyncOutbox.put(name, rec.id, rec);
+              FSS.setRecord(name, rec.id, rec).then(res => {
+                if (res && res.ok === false) {
+                  onSync?.("error");
+                  logErrorToCentral?.(`fss-write:${name}`, new Error(res.msg || "write failed"), { id: rec.id });
+                } else {
+                  SyncOutbox.remove(name, rec.id);
+                }
+              });
+            });
+            incoming = [...incoming, ...localOnly];
+          }
         }
       }
       // pending local write protection
@@ -6020,7 +6206,14 @@ function isAutoScheduleActive(schedule) {
 }
 
 // ─── useFSSSettings — shopName/smsTemplates/smsGateway ↔ firestore/settings/main ─
-function useFSSSettings(ready, shopName, setShopName, smsTemplates, setSmsTemplates, smsGateway, setSmsGateway, googleDriveToken, setGoogleDriveToken) {
+// 🔴 ফিক্স #৭ (heartbeat-coverage গ্যাপ): আগে এই হুকের remote-listen effect শুধু
+// [ready]-এর ওপর নির্ভর করত — App()-লেভেল ২০-সেকেন্ড heartbeat/resume/online
+// resync (resyncTick) coverage-এর বাইরে ছিল। ফলে shopName/smsTemplates/
+// smsGateway/googleDriveToken-এর listener Android background-এ মরে গেলে
+// invoices/txns/stockMovements/cashLogs/resetMarker-এর আগের বাগটার মতোই
+// exit+login ছাড়া recover হতো না। এখন resyncTick param নেওয়া হচ্ছে এবং
+// dependency-তে যোগ করা হয়েছে — বাকি সব listener-এর মতোই auto-recover করবে।
+function useFSSSettings(ready, shopName, setShopName, smsTemplates, setSmsTemplates, smsGateway, setSmsGateway, googleDriveToken, setGoogleDriveToken, resyncTick) {
   const lastSynced  = useRef(null);
   const firstRemote = useRef(false);
   const localRef    = useRef({ shopName, smsTemplates, smsGateway, googleDriveToken });
@@ -6046,7 +6239,7 @@ function useFSSSettings(ready, shopName, setShopName, smsTemplates, setSmsTempla
     });
     return () => FSS.unsubscribe("__settings");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready]);
+  }, [ready, resyncTick]);
 
   useEffect(() => {
     if (!ready || !firstRemote.current) return;
@@ -7867,7 +8060,56 @@ let _medCompanies = null;
 const _medListeners = new Set();
 const EMPTY_MED_ARR = [];
 
-function ensureMedicineDataset() {
+// ─── 🐄 ভেটেরিনারি মোড — সেলফ-লার্নিং ডেটাসেট ──────────────────────────────
+// বাংলাদেশে পাবলিকলি উপলব্ধ কোনো ভেরিফায়েড ভেটেরিনারি মেডিসিন ব্র্যান্ড
+// ডেটাসেট পাওয়া যায়নি (Medex-ভিত্তিক ওপেন ডেটাসেটগুলো শুধু মানুষের ওষুধের)।
+// তাই প্রোডাক্টের নাম হাতে-বানানো/অনুমাননির্ভর না রেখে — দোকানদার যা যা
+// এন্ট্রি করবেন (নতুন পণ্য/পারচেজ) তা থেকেই ধীরে ধীরে সাজেশন লিস্ট গড়ে ওঠে
+// (localStorage-এ সেভ থাকে, ডিভাইসেই)। শুধু সাপ্লায়ার/কোম্পানির একটা সীড
+// লিস্ট দেওয়া আছে — বাংলাদেশের পরিচিত ভেটেরিনারি ওষুধ প্রস্তুতকারক কোম্পানি
+// (সোর্স: The Business Standard-এর প্রতিবেদন, AHCAB রেফারেন্স সহ), কোনো
+// নির্দিষ্ট প্রোডাক্ট/ব্র্যান্ড নাম নয় — সেগুলো সম্পূর্ণ সেলফ-লার্নড।
+const VET_SEED_COMPANIES = [
+  "এসিআই এনিমেল হেলথ", "রেনাটা এনিমেল হেলথ", "স্কয়ার ফার্মাসিউটিক্যালস (এনিমেল হেলথ)",
+  "এসকায়েফ (SK+F) এনিমেল হেলথ", "অপসোনিন ফার্মা", "নাভানা ফার্মাসিউটিক্যালস",
+  "পপুলার ফার্মাসিউটিক্যালস", "ইনসেপ্টা ফার্মাসিউটিক্যালস", "এসিএমই ল্যাবরেটরিজ (এগ্রোভেট)", "এল্যানকো বাংলাদেশ",
+];
+const VET_LEARNED_KEY = "sbm-vet-med-learned";
+let _vetLearned = null; // null = এখনো localStorage থেকে পড়া হয়নি
+function ensureVetLearnedLoaded() {
+  if (_vetLearned === null) {
+    try {
+      const raw = localStorage.getItem(VET_LEARNED_KEY);
+      _vetLearned = raw ? JSON.parse(raw) : [];
+    } catch { _vetLearned = []; }
+  }
+  return _vetLearned;
+}
+function saveVetLearned() {
+  try { localStorage.setItem(VET_LEARNED_KEY, JSON.stringify(_vetLearned || [])); } catch {}
+}
+// দোকানদার নতুন পণ্য/পারচেজ এন্ট্রি করলে এখান থেকে কল হয় — [নাম, একক, কোম্পানি]
+// আকারে সেভ হয়, পরের বার টাইপ করলেই সাজেশনে দেখাবে (কোনো ডুপ্লিকেট রাখা হয় না)
+function vetLearnEntry(name, unit, company) {
+  const n = String(name || "").trim();
+  if (!n) return;
+  const u = unit ? String(unit).trim() : "";
+  const c = company ? String(company).trim() : "";
+  const list = ensureVetLearnedLoaded();
+  const row = list.find(([en, eu]) => en === n && (eu || "") === u);
+  if (!row) {
+    list.unshift([n, u, c]);
+    if (list.length > 5000) list.length = 5000; // নিরাপত্তা সীমা
+    saveVetLearned();
+    _medListeners.forEach(fn => fn());
+  } else if (c && !row[2]) {
+    row[2] = c; // নাম আগে থেকেই আছে কিন্তু কোম্পানি ফাঁকা ছিল — এখন যোগ হলো
+    saveVetLearned();
+  }
+}
+
+function ensureMedicineDataset(businessType = "pharmacy") {
+  if (businessType === "veterinary") { ensureVetLearnedLoaded(); return; } // সিঙ্ক্রোনাস, প্রমিজ লাগে না
   if (_medDataset || _medPromise) return;
   _medPromise = import("./medicineDataset.json")
     .then(mod => {
@@ -7885,15 +8127,30 @@ function ensureMedicineDataset() {
     });
 }
 // কম্পোনেন্ট থেকে ব্যবহারের জন্য হুক — প্রথমবার কল হলেই লেজি-লোড ট্রিগার হয়, লোড শেষ হলে re-render
-function useMedicineDataset() {
+// businessType === "veterinary" হলে pharmacy JSON-এর বদলে সেলফ-লার্নড লোকাল ডেটাসেট ফেরত দেয়
+function useMedicineDataset(businessType = "pharmacy") {
   const [, force] = useState(0);
   useEffect(() => {
+    if (businessType === "veterinary") {
+      ensureVetLearnedLoaded();
+      const listener = () => force(v => v + 1);
+      _medListeners.add(listener);
+      return () => { _medListeners.delete(listener); };
+    }
     if (_medDataset) return;
-    ensureMedicineDataset();
+    ensureMedicineDataset(businessType);
     const listener = () => force(v => v + 1);
     _medListeners.add(listener);
     return () => { _medListeners.delete(listener); };
-  }, []);
+  }, [businessType]);
+
+  if (businessType === "veterinary") {
+    const learned = _vetLearned || EMPTY_MED_ARR;
+    const labelsLC = learned.map(([n, p]) => (p ? `${n} ${p}` : n).toLowerCase());
+    const learnedCompanies = [...new Set(learned.map(([, , c]) => c).filter(Boolean))];
+    const companies = [...new Set([...VET_SEED_COMPANIES, ...learnedCompanies])].sort((a, b) => a.localeCompare(b, "bn"));
+    return { dataset: learned, labelsLC, companies, ready: true };
+  }
   return {
     dataset:   _medDataset   || EMPTY_MED_ARR,
     labelsLC:  _medLabelsLC  || EMPTY_MED_ARR,
@@ -10564,6 +10821,7 @@ function SmartBusinessMgmt() {
   const deletedProducts  = useAppStore(s => s.deletedProducts);
   // Group B: Auth / shop
   const shopName         = useAppStore(s => s.shopName);
+  const businessType     = useAppStore(s => s.businessType);
   const currentUser      = useAppStore(s => s.currentUser);
   const authSession      = useAppStore(s => s.authSession);
   const devContact       = useAppStore(s => s.devContact);
@@ -10628,6 +10886,7 @@ function SmartBusinessMgmt() {
   const setSmsLog           = useCallback((v) => _set("smsLog",           v), [_set]);
   const setUsers            = useCallback((v) => _set("users",            v), [_set]);
   const setShopName         = useCallback((v) => _set("shopName",         v), [_set]);
+  const setBusinessType     = useCallback((v) => _set("businessType",     v), [_set]);
   const setLoaded           = useCallback((v) => _set("loaded",           v), [_set]);
   const setAuthChecked      = useCallback((v) => _set("authChecked",      v), [_set]);
   const setToast            = useCallback((v) => _set("toast",            v), [_set]);
@@ -10706,7 +10965,7 @@ function SmartBusinessMgmt() {
 
   // ── tab setter — route guard সহ ───────────────────────────────────────────
   const setTab = (newTab) => {
-    const STAFF_RESTRICTED = ["sms", "ai"];
+    const STAFF_RESTRICTED = ["sms", "ai", "returns", "supplier"];
     if (currentUser?.role === "staff" && STAFF_RESTRICTED.includes(newTab)) {
       showToast?.("স্টাফ অ্যাকাউন্টে এই পেজ অ্যাক্সেস নেই", "error");
       return;
@@ -10874,7 +11133,7 @@ function SmartBusinessMgmt() {
         SK.lastAutoBackup, SK.anthropicKey, SK.smsTemplates, SK.autoBackupEnabled,
         SK.lastMasterSync, SK.autoMasterSyncEnabled, SK.suppliers, SK.purchaseOrders,
         SK.stockMovements, SK.cashLogs, SK.expenses, SK.returns, SK.auditLogs,
-        SK.quotations, SK.supplierPayments,
+        SK.quotations, SK.supplierPayments, SK.businessType,
       ];
       const boot1 = await loadMany(CRITICAL_KEYS);
       const rawCustomers    = boot1[SK.customers];
@@ -10992,6 +11251,7 @@ function SmartBusinessMgmt() {
           auditLogs:             boot2[SK.auditLogs]            || [],
           quotations:            boot2[SK.quotations]           || [],
           supplierPayments:      boot2[SK.supplierPayments]     || [],
+          businessType:          boot2[SK.businessType]         || "pharmacy",
           settingsLoaded:        true, // 🔴 এখন থেকেই autoBackupEnabled/autoMasterSyncEnabled-এর real value store-এ বসলো — persistence effect চালু করা নিরাপদ
         });
       }, 0);
@@ -11055,6 +11315,46 @@ function SmartBusinessMgmt() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, firebaseEnabled, firebaseConfig]);
 
+  // 🔴 ফিক্স (হার্টবিট/resync কভারেজ গ্যাপ): useFSSCollection-এর ভেতরের ২০-সেকেন্ড
+  // heartbeat + resume/online resync (useResyncTick) শুধু সেই হুক ব্যবহার করা
+  // কালেকশনগুলোতেই (customers/products/ইত্যাদি) কাজ করত। কিন্তু resetMarker,
+  // invoices, txns, stockMovements, cashLogs — এই ৫টার নিজস্ব কাস্টম onSnapshot
+  // effect আগে শুধু [fssReady]-এর ওপর নির্ভর করত, resyncTick ছিল না — মানে
+  // Android background-এ এই listener-গুলোর কানেকশন নীরবে মরে গেলে ২০ সেকেন্ডে
+  // নিজে থেকে সারত না (exit+login লাগত), ঠিক আগের products/customers বাগটার
+  // মতোই। এখন App()-লেভেলে একই resyncTick নিচের সবগুলো effect-এর dependency-তে
+  // যোগ করা হচ্ছে, যাতে এরাও heartbeat/resume/online-এ পুরোপুরি re-subscribe হয়।
+  const appResyncTick = useResyncTick();
+
+  // 🔴 ফিক্স (durability গ্যাপ, পার্ট ২): pushDurable() দিয়ে SyncOutbox-এ persist
+  // হওয়া invoices/txns/stockMovements/cashLogs এন্ট্রি এই effect ছাড়া কখনো
+  // retry হতো না (useFSSCollection-এর ভেতরের flush logic শুধু সেই হুক-ব্যবহারকারী
+  // কালেকশনগুলোর জন্যই)। boot/resume/online/heartbeat-এ (fssReady বা
+  // appResyncTick বদলালে) এই ৪টা কালেকশনের বাকি-থাকা outbox এন্ট্রি আবার
+  // Firestore-এ পাঠানোর চেষ্টা করা হয়।
+  useEffect(() => {
+    if (!fssReady) return;
+    let cancelled = false;
+    (async () => {
+      if (GLOBAL_RESET_MARKER_AT && (Date.now() - GLOBAL_RESET_MARKER_AT < 120000)) return;
+      for (const coll of ["invoices", "txns", "stockMovements", "cashLogs"]) {
+        const items = await SyncOutbox.getAll(coll);
+        if (cancelled || !items.length) continue;
+        items.forEach(it => {
+          FSS.setRecord(coll, it.recordId, it.rec).then(res => {
+            if (res && res.ok === false) {
+              logErrorToCentral?.(`windowed-outbox-flush:${coll}`, new Error(res.msg || "flush failed"), { id: it.recordId });
+              // ব্যর্থ হলে outbox-এ থেকেই যায় — পরের flush সাইকেলে আবার চেষ্টা হবে
+            } else {
+              SyncOutbox.remove(coll, it.recordId);
+            }
+          });
+        });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [fssReady, appResyncTick]);
+
   // 🔴 ফিক্স (multi-device data-resurrection bug): অন্য কোনো ডিভাইস থেকে চালানো
   // Master Reset-ও যেন এই ডিভাইসের useFSSCollection-গুলোর seed-on-empty চেকে
   // ধরা পড়ে (আগে শুধু নিজের localStorage-এর "sbm_just_reset" চেক হতো, যেটা
@@ -11064,7 +11364,7 @@ function SmartBusinessMgmt() {
     if (!fssReady || !FSS._db) return;
     const unsub = FSS.subscribeResetMarker((at) => { GLOBAL_RESET_MARKER_AT = at || 0; });
     return () => unsub();
-  }, [fssReady]);
+  }, [fssReady, appResyncTick]);
 
   // ── প্রতিটা collection — local array ↔ Firestore (record-level, real-time) ──
   // 🔴 ফিক্স: customers-এও products-এর মতো একই bug ছিল — diff-ভিত্তিক অটো-ডিলিট
@@ -11101,12 +11401,22 @@ function SmartBusinessMgmt() {
     let first = true;
     const unsub = onSnapshot(q, (snap) => {
       const recent = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setInvoices(recent);
+      // 🔴 ফিক্স (windowed listener merge — blind replace বাগ): আগে setInvoices(recent)
+      // প্রতিটা snapshot-এ পুরো local state সার্ভার-রেজাল্ট দিয়ে প্রতিস্থাপন করত।
+      // এই ডিভাইসে সদ্য তৈরি কিন্তু এখনো সার্ভার-কনফার্ম হয়নি এমন ইনভয়েস (_serverTs
+      // নেই — সেটা শুধু Firestore নিজে write-confirm করার পরই বসে) snapshot রিফ্রেশ
+      // হলে (অন্য কোনো কারণে, যেমন অন্য একটা ইনভয়েস সেভ/ভয়েড) সাময়িকভাবে UI থেকে
+      // হারিয়ে যেতে পারত। এখন অ-কনফার্মড লোকাল এন্ট্রি সংরক্ষণ করে merge করা হয়।
+      setInvoices(prev => {
+        const recentIds = new Set(recent.map(r => r.id));
+        const unconfirmedLocal = prev.filter(p => !recentIds.has(p.id) && !p._serverTs);
+        return [...unconfirmedLocal, ...recent];
+      });
       if (first) { first = false; setSyncToast?.({ msg: "ইনভয়েস sync হয়েছে", ok: true }); }
     }, () => { /* offline — Firestore cache থেকে কাজ চলবে */ });
 
     return () => unsub();
-  }, [fssReady]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [fssReady, appResyncTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── txns Windowed Sync — শুধু শেষ ৩০ দিনের লেনদেন real-time ("আজকের বাকি/জমা"
   // ড্যাশবোর্ড হিসাবের জন্য এতটুকুই যথেষ্ট)। আগে: পুরো collection pull, ১০ লাখ
@@ -11123,11 +11433,18 @@ function SmartBusinessMgmt() {
 
     const unsub = onSnapshot(q, (snap) => {
       const recent = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setTxns(recent);
+      // 🔴 ফিক্স (windowed listener merge — invoices-এর প্যারালাল): অ-কনফার্মড
+      // (_serverTs নেই) লোকাল txn এন্ট্রি সংরক্ষণ করে merge করা হচ্ছে, blind
+      // replace-এ হারিয়ে যাওয়া ঠেকাতে।
+      setTxns(prev => {
+        const recentIds = new Set(recent.map(r => r.id));
+        const unconfirmedLocal = prev.filter(p => !recentIds.has(p.id) && !p._serverTs);
+        return [...unconfirmedLocal, ...recent];
+      });
     }, () => { /* offline — Firestore cache থেকে কাজ চলবে */ });
 
     return () => unsub();
-  }, [fssReady]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [fssReady, appResyncTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── কাস্টমার ডিটেইল পেজে পূর্ণ লেনদেন-ইতিহাস — windowed txns (৩০ দিন) যথেষ্ট না,
   // তাই কাস্টমার ডিটেইল খোলার সময় সেই নির্দিষ্ট কাস্টমারের জন্য আলাদা Firestore
@@ -11188,11 +11505,16 @@ function SmartBusinessMgmt() {
 
     const unsub = onSnapshot(q, (snap) => {
       const recent = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setStockMovements(recent);
+      // 🔴 ফিক্স (windowed listener merge — invoices-এর প্যারালাল)
+      setStockMovements(prev => {
+        const recentIds = new Set(recent.map(r => r.id));
+        const unconfirmedLocal = prev.filter(p => !recentIds.has(p.id) && !p._serverTs);
+        return [...unconfirmedLocal, ...recent];
+      });
     }, () => { /* offline — Firestore cache থেকে কাজ চলবে */ });
 
     return () => unsub();
-  }, [fssReady]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [fssReady, appResyncTick]); // eslint-disable-line react-hooks/exhaustive-deps
   // ── cashLogs Windowed Sync — শুধু শেষ ৩৫ দিনের ক্যাশ লগ real-time (Dashboard-এর
   // "আজকের ওপেনিং/উইথড্রয়াল" হিসাবের জন্য এতটুকুই যথেষ্ট)। আগে: পুরো collection
   // pull, বছরের পর বছর ওপেনিং/উইথড্রয়াল এন্ট্রি জমে বড় দোকানে বাড়তেই থাকত।
@@ -11211,11 +11533,16 @@ function SmartBusinessMgmt() {
 
     const unsub = onSnapshot(q, (snap) => {
       const recent = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setCashLogs(recent);
+      // 🔴 ফিক্স (windowed listener merge — invoices-এর প্যারালাল)
+      setCashLogs(prev => {
+        const recentIds = new Set(recent.map(r => r.id));
+        const unconfirmedLocal = prev.filter(p => !recentIds.has(p.id) && !p._serverTs);
+        return [...unconfirmedLocal, ...recent];
+      });
     }, () => { /* offline — Firestore cache থেকে কাজ চলবে */ });
 
     return () => unsub();
-  }, [fssReady]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [fssReady, appResyncTick]); // eslint-disable-line react-hooks/exhaustive-deps
   // 🔴 ফিক্স: expenses-এও একই প্যাটার্ন — auto-delete বন্ধ, ইচ্ছাকৃত ডিলিট এখন
   // সরাসরি FSS.deleteRecord("expenses", id) কল করে (দেখুন Expenses পেজ)।
   useFSSCollection("expenses", expenses, setExpenses, fssReady, { onSync: setSyncToast, syncDeletes: false });
@@ -11248,7 +11575,7 @@ function SmartBusinessMgmt() {
     onSync: (v) => { setSyncToast?.(v); if (v === "error") showToast?.("⚠️ স্টাফ/পারমিশন সিঙ্ক ব্যর্থ হয়েছে — Firestore Rules চেক করুন", "#ef4444"); },
     syncDeletes: false,
   });
-  useFSSSettings(fssReady, shopName, setShopName, smsTemplates, setSmsTemplates, smsGateway, setSmsGateway, googleDriveToken, setGoogleDriveToken);
+  useFSSSettings(fssReady, shopName, setShopName, smsTemplates, setSmsTemplates, smsGateway, setSmsGateway, googleDriveToken, setGoogleDriveToken, appResyncTick);
 
   // ── Phase 1.3: Stats doc real-time subscribe — Dashboard আজকের totals ───────
   // todayInvs.reduce() এর বদলে একটা ছোট Firestore doc থেকে instant read।
@@ -11263,7 +11590,7 @@ function SmartBusinessMgmt() {
       if (data) setSyncToast?.({ msg: null, ok: true }); // silent — no UI noise
     });
     return () => unsub();
-  }, [fssReady]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [fssReady, appResyncTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 🔑 admin কোনো স্টাফের permission বদলালে/মুছলে — Firestore থেকে users
   // আপডেট হওয়ার সাথে সাথেই (millisecond-এ) এই ডিভাইসের currentUser-এ প্রতিফলিত
@@ -11357,6 +11684,7 @@ function SmartBusinessMgmt() {
   // (false) value দিয়ে disk-এর real saved (true) value ওভাররাইট হয়ে যেতে
   // পারত — এটাই ছিল "Auto Sync/Auto Backup টগল নিজে নিজে অফ হয়ে যাওয়া"র কারণ।
   useEffect(() => { if (settingsLoaded) save(SK.autoBackupEnabled, autoBackupEnabled); }, [autoBackupEnabled, settingsLoaded]);
+  useEffect(() => { if (settingsLoaded) save(SK.businessType, businessType); }, [businessType, settingsLoaded]);
   useEffect(() => { if (settingsLoaded) save(SK.autoMasterSyncEnabled, autoMasterSyncEnabled); }, [autoMasterSyncEnabled, settingsLoaded]);
   useEffect(() => { if (loaded && lastMasterSync) save(SK.lastMasterSync, lastMasterSync); }, [lastMasterSync, loaded]);
   useEffect(() => { if (loaded) save(SK.firebaseConfig,  firebaseConfig);  }, [firebaseConfig, loaded]);   // 🔥
@@ -12179,7 +12507,7 @@ function SmartBusinessMgmt() {
 
   const addTxn = useCallback((customerId, type, amount, balanceAfter, invoiceId = null, note = "", paymentInvoiceId = null, source = "collection") => {
     const entry = { id: uid(), customerId, type, amount, balanceAfter, invoiceId, paymentInvoiceId, note, source, date: todayStr(), dateKey: todayEn(), time: nowStr() };
-    if (FSS.isReady()) FSS.setRecord("txns", entry.id, withTs(entry));
+    if (FSS.isReady()) pushDurable("txns", entry.id, withTs(entry));
     setTxns(prev => [entry, ...prev]);
     return entry;
   }, []);
@@ -12228,7 +12556,7 @@ function SmartBusinessMgmt() {
     // করলে Firestore-এর পুরনো (non-voided) কপি দিয়ে local অবস্থা প্রতিস্থাপিত
     // হতো — ভয়েড করা invoice আবার "active" হয়ে ফিরে আসত, অথচ Dashboard-এর
     // total-এ সেটা বাদ হয়েই থাকত (আরেকটা গরমিল, উল্টো দিক থেকে)।
-    if (FSS.isReady()) FSS.setRecord("invoices", voidedInv.id, withTs(voidedInv));
+    if (FSS.isReady()) pushDurable("invoices", voidedInv.id, withTs(voidedInv));
 
     // ── 2. Restore stock + batches for every item in the invoice ─────────────
     // 🔴 এন্টারপ্রাইজ-লেভেল ফিক্স (স্টক race condition — void পাথ): আগে এখানে
@@ -12255,7 +12583,12 @@ function SmartBusinessMgmt() {
           if (txResult) return { id: soldItem.productId, stock: txResult.stock, batches: txResult.batches };
         }
         // fallback — Firestore বন্ধ/ব্যর্থ হলে আগের মতো local হিসেব
-        let updatedBatches = localP.batches ? [...localP.batches] : [];
+        // 🔴 ফিক্স (স্টক race condition — void পাথ, checkout ফিক্সের প্যারালাল):
+        // stale React closure `products`-এর বদলে সবচেয়ে সাম্প্রতিক product state
+        // getState() থেকে পড়া হচ্ছে, যাতে পরপর দুইটা ইনভয়েস অফলাইনে ভয়েড হলে
+        // দ্বিতীয়টার restore প্রথমটাকে ওভাররাইট করে হারিয়ে না যায়।
+        const freshP = useAppStore.getState().products.find(p => p.id === soldItem.productId) || localP;
+        let updatedBatches = freshP.batches ? [...freshP.batches] : [];
         if (soldBatchNo) {
           const bIdx = updatedBatches.findIndex(b => b.batchNo === soldBatchNo);
           if (bIdx >= 0) {
@@ -12263,7 +12596,7 @@ function SmartBusinessMgmt() {
           } else {
             updatedBatches.push({
               batchNo: soldBatchNo, qty: restoredQty,
-              costPrice: soldItem.costPrice || localP.costPrice || 0,
+              costPrice: soldItem.costPrice || freshP.costPrice || 0,
               expiryDate: soldItem.expiryDate || "",
             });
           }
@@ -12273,14 +12606,14 @@ function SmartBusinessMgmt() {
             {
               batchNo: `VOID-ADJ-${inv.id.slice(-6)}`,
               qty: restoredQty,
-              costPrice: soldItem.costPrice || localP.avgCost || localP.costPrice || 0,
+              costPrice: soldItem.costPrice || freshP.avgCost || freshP.costPrice || 0,
               expiryDate: null,
               addedAt: new Date().toISOString(),
               note: "voidInvoice legacy-item adjustment",
             },
           ];
         }
-        return { id: soldItem.productId, stock: (localP.stock || 0) + restoredQty, batches: updatedBatches };
+        return { id: soldItem.productId, stock: (freshP.stock || 0) + restoredQty, batches: updatedBatches };
       }));
       const restoreMap = new Map(restoreResults.filter(Boolean).map(r => [r.id, r]));
       setProducts(prev => prev.map(p => {
@@ -12403,7 +12736,8 @@ function SmartBusinessMgmt() {
       { id: "settings",  label: "সেটিং",   icon: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" },
     ];
     // Staff cannot see sms/ai/দৈনিক সারসংক্ষেপ/অডিট ট্রেইল/স্টাফ ব্যবস্থাপনা (settings এখন দেখবে — শুধু theme+font)
-    let visible = isStaff ? all.filter(n => !["sms", "ai", "dailySummary", "auditTrail", "staffMgmt"].includes(n.id)) : all;
+    // 🔴 ফিক্স: "ইনভয়েস হিস্ট্রি" (returns) ও "সাপ্লায়ার" (supplier) এখন থেকে শুধু admin/owner দেখবে — স্টাফের জন্য হাইড
+    let visible = isStaff ? all.filter(n => !["sms", "ai", "dailySummary", "auditTrail", "staffMgmt", "returns", "supplier"].includes(n.id)) : all;
     // "এক্সপেন্স ট্রেকার" শুধু Admin রোল দেখতে পাবে — অন্য কোনো রোল (staff/অজানা) দেখবে না
     if (currentUser?.role !== "admin" && currentUser?.role !== "owner") visible = visible.filter(n => n.id !== "expense");
     return visible;
@@ -12879,6 +13213,7 @@ function SmartBusinessMgmt() {
         {tab === "dashboard" && (
           <ErrorBoundary T={T}>
             <Dashboard T={T} S={S}
+              businessType={businessType}
               customers={customers} invoices={invoices} totalBaki={totalBaki}
               todayBaki={todayBaki} todayJoma={todayJoma} todayTotal={todayTotal}
               todayInvs={todayInvs} setTab={setTab} txns={txns}
@@ -12962,6 +13297,7 @@ function SmartBusinessMgmt() {
               initialTab={productInitTab}
               currentUser={currentUser} hasPerm={hasPerm}
               shopName={shopName}
+              businessType={businessType}
               auditLog={auditLog}
               anthropicKey={anthropicKey}
             />
@@ -12997,6 +13333,8 @@ function SmartBusinessMgmt() {
               showToast={showToast}
               currentUser={currentUser}
               shopName={shopName}
+              cashLogs={cashLogs}
+              setCashLogs={setCashLogs}
             />
           </ErrorBoundary>
         )}
@@ -13027,6 +13365,7 @@ function SmartBusinessMgmt() {
             <React.Suspense fallback={<div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"60vh", color: "var(--t-sub)", fontSize:14 }}>⚙️ লোড হচ্ছে...</div>}>
             <Settings T={T} S={S}
               shopName={shopName} setShopName={setShopName}
+              businessType={businessType} setBusinessType={setBusinessType}
               users={users} setUsers={setUsers}
               currentUser={currentUser} setCurrentUser={setCurrentUser}
               showToast={showToast}
@@ -14882,7 +15221,19 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     if (walkInHasBaki && walkInBakiAmt > 0) {
       if (walkInCustMode === "existing" && walkInExistingId) {
         walkInCustId = walkInExistingId;
-        setCustomers(prev => prev.map(c => c.id === walkInExistingId ? { ...c, balance: (c.balance || 0) + walkInBakiAmt } : c));
+        // 🔴 ফিক্স #১১ (মাল্টি-ডিভাইস balance lost-update race — walk-in থেকে
+        // পুরোনো কাস্টমার বাছাই): এই একই ফাংশনের নিচে (মূল selCust বাকি) আর
+        // standalone "বাকি আদায়" বাটনে balance এখন সার্ভারের লাইভ ভ্যালু থেকে
+        // atomically (FSS.transactionUpdateBalance) আপডেট হয়, কিন্তু walk-in
+        // ফ্লো-তে "পুরোনো কাস্টমার" ম্যাচ করলে balance এতদিন সরাসরি লোকাল
+        // React state (`c.balance`) থেকে হিসেব হয়ে setCustomers দিয়ে বসত —
+        // দুই ডিভাইস প্রায় একই সময়ে এই একই কাস্টমারকে বাকি দিলে (এখান থেকে বা
+        // অন্য কোনো বাকি এন্ট্রি থেকে) একটা delta হারিয়ে যেতে পারত। এখন একই
+        // atomic + getState() fallback প্যাটার্ন প্রয়োগ করা হলো।
+        const txBal = await FSS.transactionUpdateBalance(walkInExistingId, (serverBal) => serverBal + walkInBakiAmt);
+        const latestLocalBal = useAppStore.getState().customers.find(c => c.id === walkInExistingId)?.balance ?? 0;
+        const newWalkInBal = txBal !== null ? txBal : (latestLocalBal + walkInBakiAmt);
+        setCustomers(prev => prev.map(c => c.id === walkInExistingId ? { ...c, balance: newWalkInBal } : c));
       } else {
         const newCust = {
           id: uid(),
@@ -14940,7 +15291,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     // তৈরি হওয়ার সাথে সাথেই সরাসরি Firestore-এ লেখা হচ্ছে (offline হলে Firestore
     // নিজের persistent write queue-তে রাখবে, নেট ফিরলে নিজে থেকেই sync হবে) —
     // Master Sync/Settings-এ যাওয়ার দরকার নেই, staff device-এও এখন কাজ করবে।
-    if (FSS.isReady()) FSS.setRecord("invoices", inv.id, withTs(inv));
+    if (FSS.isReady()) pushDurable("invoices", inv.id, withTs(inv));
 
     // ── Phase 1.3: Stats doc update — invoice save-এ running total বাড়াও ──────
     // Dashboard totals (todayTotal, todayProfit) এখন এই doc থেকে পড়তে পারবে।
@@ -14981,7 +15332,14 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
         return { id: sold.productId, stock: txResult.stock, batches: txResult.batches };
       }
       // fallback — Firestore বন্ধ/ব্যর্থ হলে আগের মতো local guess থেকে হিসেব
-      const { newStock, updatedBatches, batchNo, costPrice } = computeStockDeductionFIFO(localP, sold.qty);
+      // 🔴 ফিক্স (স্টক race condition — balance fix-এর প্যারালাল): আগে এখানে
+      // stale React closure `products` থেকে পাওয়া `localP` দিয়ে হিসেব হতো —
+      // অফলাইনে একই পণ্য পরপর দুইবার দ্রুত বিক্রি হলে দ্বিতীয়টার হিসাব প্রথমটার
+      // deduction দেখতে পেত না, ফলে দ্বিতীয় setProducts() প্রথমটাকে ওভাররাইট করে
+      // একটা deduction হারিয়ে যেত (স্টক বেশি দেখাত)। এখন সবচেয়ে সাম্প্রতিক
+      // product state সরাসরি Zustand store থেকে (getState()) পড়া হয়।
+      const freshP = useAppStore.getState().products.find(p => p.id === sold.productId) || localP;
+      const { newStock, updatedBatches, batchNo, costPrice } = computeStockDeductionFIFO(freshP, sold.qty);
       soldBatchMap[sold.productId] = { batchNo, costPrice };
       return { id: sold.productId, stock: newStock, batches: updatedBatches };
     }));
@@ -15018,8 +15376,21 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       // 🔴 Transaction fix — সার্ভারের বর্তমান (সবচেয়ে up-to-date) balance থেকে
       // atomically delta apply করা হয় — অন্য ডিভাইস ঠিক এই মুহূর্তে balance
       // বদলালেও কোনো delta হারায় না। ব্যর্থ/local-only হলে local snapshot থেকে fallback।
+      // 🔴 ফিক্স (অফলাইন race condition): আগে fallback হিসাব `selCust.balance`
+      // থেকে হতো — এটা ইনভয়েস তৈরি শুরুর সময়ের একটা পুরনো স্ন্যাপশট। অফলাইনে
+      // (FSS.transactionUpdateBalance তখন সাথে সাথেই null রিটার্ন করে, কারণ
+      // এটা সার্ভার-রাউন্ডট্রিপ ছাড়া কাজ করতে পারে না) একই কাস্টমারের জন্য
+      // পরপর দুটো বাকি/আংশিক ইনভয়েস দ্রুত তৈরি হলে দ্বিতীয়টার হিসাব প্রথমটার
+      // আপডেট দেখতেই পেত না — ফলে দ্বিতীয় setCustomers() প্রথমটাকে ওভাররাইট
+      // করে একটা delta হারিয়ে যেত (কাস্টমারের "মোট বাকি" ভুল, যদিও প্রতিটা
+      // ইনভয়েসের নিজের রেকর্ড ঠিকই থাকত)। এখন fallback-এ সবচেয়ে সাম্প্রতিক
+      // balance সরাসরি Zustand store থেকে (getState() — React re-render-এর
+      // অপেক্ষা করে না, তাই আগের setCustomers() কল ইতিমধ্যে যা বসিয়েছে সেটাই
+      // পড়া যায়) নেওয়া হয়, তাই পরপর একাধিক অফলাইন বাকি ইনভয়েস আর একে অপরকে
+      // হারায় না।
       const txBal = await FSS.transactionUpdateBalance(selCust.id, (serverBal) => Math.max(0, serverBal + delta));
-      const newBal = txBal !== null ? txBal : Math.max(0, (selCust.balance || 0) + delta);
+      const latestLocalBal = useAppStore.getState().customers.find(c => c.id === selCust.id)?.balance ?? (selCust.balance || 0);
+      const newBal = txBal !== null ? txBal : Math.max(0, latestLocalBal + delta);
       setCustomers(prev => prev.map(c => c.id === selCust.id ? { ...c, balance: newBal } : c));
       if (bakiAmt > 0) addTxn(selCust.id, "baki", bakiAmt, newBal, inv.id, note);
       // partial payment: নগদ অংশ joma txn
@@ -17097,8 +17468,8 @@ function ProfitStatementCard({ T, S, invoices, products, shopName, expenses = []
 }
 
 // ── DashPurchaseEntryModal — হোম পেজ থেকে সরাসরি ক্রয় এন্ট্রি ──────────────
-function DashPurchaseEntryModal({ T, S, products, setProducts, setStockMovements, purchaseOrders = [], setPurchaseOrders, suppliers = [], onBack }) {
-  const EMPTY_PE = { productId: "", productSearch: "", qty: "", unitCost: "", unitSell: "", expiryDate: "", supplier: "", note: "", isFreeStock: false };
+function DashPurchaseEntryModal({ T, S, businessType = "pharmacy", products, setProducts, setStockMovements, purchaseOrders = [], setPurchaseOrders, suppliers = [], onBack }) {
+  const EMPTY_PE = { productId: "", productSearch: "", qty: "", unitCost: "", unitSell: "", spPrice: "", expiryDate: "", supplier: "", note: "", isFreeStock: false };
   const [peForm, setPeForm] = React.useState(EMPTY_PE);
   const [toast,  setToast]  = React.useState(null);
   const [searchOpen, setSearchOpen] = React.useState(false);
@@ -17131,7 +17502,7 @@ function DashPurchaseEntryModal({ T, S, products, setProducts, setStockMovements
       : products
   ), [products, peForm.productSearch]);
 
-  const savePE = () => {
+  const savePE = async () => {
     if (!peForm.productId) { showToast("পণ্য নির্বাচন করুন", "#ef4444"); return; }
     if (!peForm.qty || parseFloat(peForm.qty) <= 0) { showToast("পরিমাণ দিন", "#ef4444"); return; }
     const prod = products.find(p => p.id === peForm.productId);
@@ -17141,27 +17512,30 @@ function DashPurchaseEntryModal({ T, S, products, setProducts, setStockMovements
     const unitSell = parseFloat(peForm.unitSell) || prod.price || 0;
     const total    = qty * unitCost;
     const now      = new Date().toISOString();
-    // Weighted Average Cost calculation
-    const oldStock = prod.stock || 0;
-    const oldCost  = prod.costPrice || 0;
-    // ফ্রি স্টকেও weighted average — costPrice 0 হওয়ায় avg স্বাভাবিকভাবেই কমবে
-    const newCostPrice = oldStock + qty > 0
-      ? (oldStock * oldCost + qty * unitCost) / (oldStock + qty)
-      : unitCost;
-    const batchNo = getNextBatch(peForm.productId);
+    let batchNo = getNextBatch(peForm.productId);
     const noteText = peForm.isFreeStock
       ? `🎁 ফ্রি স্টক${peForm.note ? " — " + peForm.note : ""}`
       : peForm.note || "";
+
+    // 🔴 ফিক্স #১০ (মাল্টি-ডিভাইস স্টক lost-update race — Dashboard-এর কুইক
+    // পার্চেজ এন্ট্রি শর্টকাট): এই মডিউলটা মূল ক্রয় অর্ডার মডিউলের
+    // applyPurchaseBatch()-এর সম্পূর্ণ আলাদা/ডুপ্লিকেট একটা কপি — আগে এখানে
+    // batchNo কলিশন-প্রোটেকশনও (ফিক্স #৮) ছিল না, শুধু লোকাল React state থেকে
+    // stock/cost হিসেব করে পুরো ডকুমেন্ট ওভাররাইট হতো। এখন একই
+    // FSS.transactionAddStock() হেল্পার ব্যবহার করা হচ্ছে — সার্ভারের লাইভ
+    // কপির ওপর atomically stock/cost/batch যোগ হয়, batchNo কলিশনও একই
+    // transaction-এ resolve হয়। অফলাইন/ব্যর্থ হলে আগের local calculation-ই
+    // fallback।
+    const txResult = FSS.isReady() ? await FSS.transactionAddStock(peForm.productId, {
+      qty, unitCost, unitSell, expiryDate: peForm.expiryDate, supplier: peForm.supplier,
+      note: noteText, isFreeStock: peForm.isFreeStock, batchNoHint: batchNo,
+    }) : null;
+    if (txResult) batchNo = txResult.batchNo;
+
     const newBatch = {
-      batchNo,
-      qty,
-      costPrice: unitCost,
-      sellPrice: unitSell,
-      expiryDate: peForm.expiryDate || "",
-      supplier: peForm.supplier || "",
-      note: noteText,
-      at: now,
-      isFreeStock: peForm.isFreeStock || false,
+      batchNo, qty, costPrice: unitCost, sellPrice: unitSell,
+      expiryDate: peForm.expiryDate || "", supplier: peForm.supplier || "",
+      note: noteText, at: now, isFreeStock: peForm.isFreeStock || false,
     };
     const entry = {
       id: "pe_" + Date.now(), _type: "pe",
@@ -17175,23 +17549,37 @@ function DashPurchaseEntryModal({ T, S, products, setProducts, setStockMovements
       at: now, dateKey: now.split("T")[0],
       unit: prod.unit || "",
     };
-    const newStock = oldStock + qty;
-    setProducts(prev => prev.map(p => p.id === peForm.productId
-      ? {
-          ...p,
-          stock: newStock,
-          costPrice: Math.round(newCostPrice * 10000) / 10000,
-          price: unitSell || p.price,
-          lastUpdated: now,
-          expiryDate: peForm.expiryDate || p.expiryDate,
-          batches: [...(p.batches || []), newBatch],
-        }
-      : p
-    ));
+    let newStock;
+    if (txResult) {
+      newStock = txResult.stock;
+      setProducts(prev => prev.map(p => p.id === peForm.productId
+        ? { ...p, stock: txResult.stock, costPrice: txResult.costPrice, price: unitSell || p.price,
+            lastUpdated: now, expiryDate: peForm.expiryDate || p.expiryDate, batches: txResult.batches }
+        : p));
+    } else {
+      const oldStock = prod.stock || 0;
+      const oldCost  = prod.costPrice || 0;
+      const newCostPrice = oldStock + qty > 0
+        ? (oldStock * oldCost + qty * unitCost) / (oldStock + qty)
+        : unitCost;
+      newStock = oldStock + qty;
+      setProducts(prev => prev.map(p => p.id === peForm.productId
+        ? {
+            ...p,
+            stock: newStock,
+            costPrice: Math.round(newCostPrice * 10000) / 10000,
+            price: unitSell || p.price,
+            lastUpdated: now,
+            expiryDate: peForm.expiryDate || p.expiryDate,
+            batches: [...(p.batches || []), newBatch],
+          }
+        : p
+      ));
+    }
     const mv1 = pushStockMovement({
       id: "sm_" + Date.now(), productId: peForm.productId,
       productName: prod.name, stock: newStock,
-      prevStock: oldStock, delta: qty,
+      prevStock: newStock - qty, delta: qty,
       at: now, dateKey: now.split("T")[0], source: "purchase"
     });
     setStockMovements(prev => [mv1, ...prev]);
@@ -17292,7 +17680,7 @@ function DashPurchaseEntryModal({ T, S, products, setProducts, setStockMovements
         {/* সাপ্লায়ার — পরিমাণ ও ক্রয়মূল্যের উপরে */}
         <div style={{ marginBottom: 12 }}>
           <label style={S.label}>🏭 সাপ্লায়ার</label>
-          <SupplierPicker T={T} S={S}
+          <SupplierPicker T={T} S={S} businessType={businessType}
             value={peForm.supplier}
             extraSuppliers={knownSuppliers}
             onChange={v => setPeForm(f => ({ ...f, supplier: v }))} />
@@ -17399,7 +17787,7 @@ function DashPurchaseEntryModal({ T, S, products, setProducts, setStockMovements
 }
 
 // ── Dashboard ──────────────────────────────────────────────────────────────────
-function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, currentUser, onGoToPurchaseEntry, setProducts, stockMovements = [], setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false, supplierPayments = [], setSupplierPayments }) {
+function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, currentUser, onGoToPurchaseEntry, setProducts, stockMovements = [], setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false, supplierPayments = [], setSupplierPayments }) {
   const [viewInv,    setViewInv]    = useState(null);
   const [viewPayInv, setViewPayInv] = useState(null);
   const [listDate,   setListDate]   = useState(() => todayEn()); // YYYY-MM-DD
@@ -17450,7 +17838,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
   };
 
   // দোকান থেকে সরানো হয়েছে → অ্যাপ থেকেও ব্যাচ/স্টক সরানো + স্টক-মুভমেন্ট লগ (মাসিক হিসাবের উৎস)
-  const removeExpiredBatch = (product, batch) => {
+  const removeExpiredBatch = async (product, batch) => {
     const batchKey = `${product.id}::${batch.batchNo || ""}::${batch.expiryDate || ""}`;
     if (expRemoveInFlight.current.has(batchKey)) return; // ইতিমধ্যে প্রসেস হচ্ছে/হয়েছে — দ্বিতীয়বার আটকানো
     expRemoveInFlight.current.add(batchKey);
@@ -17459,18 +17847,38 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     const value = Math.round(qty * (batch.costPrice || 0) * 100) / 100;
     const dateKey = todayEn(); // GMT+6 (BD) অনুযায়ী আজকের dateKey
     const nowIso  = new Date().toISOString();
-    setProducts(prev => prev.map(p => {
-      if (p.id !== product.id) return p;
-      if (p.batches && p.batches.length > 0) {
-        const remainingBatches = p.batches.filter(b => !(((b.batchNo || "") === (batch.batchNo || "")) && b.expiryDate === batch.expiryDate));
-        const newStock = remainingBatches.reduce((s, b) => s + (b.qty || 0), 0);
-        return { ...p, batches: remainingBatches, stock: newStock, lastUpdated: nowIso };
-      }
-      return { ...p, stock: 0, expiryDate: "", lastUpdated: nowIso }; // legacy single-batch পণ্য
-    }));
+
+    // 🔴 ফিক্স #১২ (মাল্টি-ডিভাইস স্টক lost-update race — মেয়াদোত্তীর্ণ ব্যাচ
+    // সরানো): আগে stock/batches লোকাল React state থেকে হিসেব করে setProducts
+    // দিয়ে বসানো হতো, যেটা generic diff-push দিয়ে Firestore-এ পুরো ডকুমেন্ট
+    // ওভাররাইট হয়ে যেত (merge ছাড়া setDoc) — এই মুহূর্তে অন্য ডিভাইস থেকে ঠিক
+    // একই পণ্যে বিক্রি/পার্চেজ/রিটার্ন সিঙ্ক হয়ে এই ডিভাইসে না পৌঁছালে সেই
+    // কনকারেন্ট স্টক-পরিবর্তন হারিয়ে যেতে পারত। এখন FSS.transactionRemoveBatch()
+    // দিয়ে সার্ভারের লাইভ batches থেকে atomically ব্যাচ বাদ দেওয়া হয় (checkout/
+    // void/return/purchase-এর মতোই)। অফলাইন/ব্যর্থ হলে আগের local calculation-ই fallback।
+    const txResult = FSS.isReady() ? await FSS.transactionRemoveBatch(product.id, batch.batchNo || "", batch.expiryDate || "") : null;
+    let newStockFinal = 0;
+    if (txResult) {
+      newStockFinal = txResult.stock;
+      setProducts(prev => prev.map(p => p.id === product.id
+        ? { ...p, batches: txResult.batches, stock: txResult.stock, lastUpdated: nowIso }
+        : p));
+    } else {
+      setProducts(prev => prev.map(p => {
+        if (p.id !== product.id) return p;
+        if (p.batches && p.batches.length > 0) {
+          const remainingBatches = p.batches.filter(b => !(((b.batchNo || "") === (batch.batchNo || "")) && b.expiryDate === batch.expiryDate));
+          const newStock = remainingBatches.reduce((s, b) => s + (b.qty || 0), 0);
+          newStockFinal = newStock;
+          return { ...p, batches: remainingBatches, stock: newStock, lastUpdated: nowIso };
+        }
+        newStockFinal = 0;
+        return { ...p, stock: 0, expiryDate: "", lastUpdated: nowIso }; // legacy single-batch পণ্য
+      }));
+    }
     const mv = {
       id: "sm_exp_" + uid(), productId: product.id, productName: product.name,
-      stock: 0, prevStock: product.stock || 0, delta: -qty,
+      stock: newStockFinal, prevStock: product.stock || 0, delta: -qty,
       at: nowIso, dateKey, monthKey: dateKey.slice(0, 7),
       source: "expired_removal",
       costPrice: batch.costPrice || 0, qty, value, expiryDate: batch.expiryDate || "",
@@ -18435,6 +18843,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
                   <div style={{ height: "100%", width: `${pct}%`, borderRadius: 999, background: grad, transition: "width 0.5s ease" }} />
                 </div>
                 <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+                  {p.spPrice > 0 && <span style={{ color: "#a78bfa", fontSize: 10 }}>SP: ৳{p.spPrice}</span>}
                   <span style={{ color: "#f59e0b", fontSize: 10 }}>ক্রয়: ৳{p.costPrice||0}</span>
                   <span style={{ color: "#1fd15e", fontSize: 10 }}>বিক্রয়: ৳{p.price||0}</span>
                   {(p.stock||0) === 0 && <span style={{ color: "#ef4444", fontSize: 10, fontWeight: 800 }}>🚫 স্টক আউট</span>}
@@ -18610,6 +19019,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
                     <div style={{ height:"100%", width:`${pct}%`, borderRadius:999, background:grad, transition:"width 0.5s ease" }} />
                   </div>
                   <div style={{ display:"flex", gap:10, marginTop:5 }}>
+                    {p.spPrice > 0 ? <span style={{ color:"#a78bfa", fontSize:10 }}>SP: ৳{p.spPrice}</span> : null}
                     {p.costPrice ? <span style={{ color:"#f59e0b", fontSize:10 }}>ক্রয়: ৳{p.costPrice}</span> : null}
                     {p.price ? <span style={{ color:"#1fd15e", fontSize:10 }}>বিক্রয়: ৳{p.price}</span> : null}
                   </div>
@@ -18709,6 +19119,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
                     <div style={{ height:"100%", width:`${pct}%`, borderRadius:999, background:grad, transition:"width 0.5s ease" }} />
                   </div>
                   <div style={{ display:"flex", gap:10, marginTop:5 }}>
+                    {p.spPrice > 0 ? <span style={{ color:"#a78bfa", fontSize:10 }}>SP: ৳{p.spPrice}</span> : null}
                     {p.costPrice ? <span style={{ color:"#f59e0b", fontSize:10 }}>ক্রয়: ৳{p.costPrice}</span> : null}
                     {p.price ? <span style={{ color:"#1fd15e", fontSize:10 }}>বিক্রয়: ৳{p.price}</span> : null}
                   </div>
@@ -19957,6 +20368,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
       return (
         <DashPurchaseEntryModal
           T={T} S={S}
+          businessType={businessType}
           products={products}
           setProducts={setProducts}
           setStockMovements={setStockMovements}
@@ -21824,10 +22236,10 @@ function InvoiceReceiptPrint({ inv, customer, type }) {
 }
 
 // ── Products ───────────────────────────────────────────────────────────────────
-function Products({ T, S, products, setProducts, showToast, stockMovements = [], setStockMovements, purchaseOrders = [], setPurchaseOrders, deletedProducts = [], setDeletedProducts, initialTab, currentUser, hasPerm, shopName, auditLog, anthropicKey }) {
+function Products({ T, S, products, setProducts, showToast, stockMovements = [], setStockMovements, purchaseOrders = [], setPurchaseOrders, deletedProducts = [], setDeletedProducts, initialTab, currentUser, hasPerm, shopName, businessType = "pharmacy", auditLog, anthropicKey }) {
   const [showAdd,      setShowAdd]      = useState(false);
   const [editId,       setEditId]       = useState(null);
-  const [form,         setForm]         = useState({ name: "", price: "", stock: "", minStockAlert: "5", category: "অন্যান্য", company: "", productType: "product", costPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false, demandType: "common" });
+  const [form,         setForm]         = useState({ name: "", price: "", stock: "", minStockAlert: "5", category: "অন্যান্য", company: "", productType: "product", costPrice: "", spPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false, demandType: "common" });
   // ── #৪ মাল্টি-ব্যাচ এক্সপায়ারি — নতুন পণ্যে একই সাথে একাধিক আলাদা এক্সপায়ারির চালান যোগ করার জন্য ──
   // প্রাথমিক স্টক/মেয়াদ (form.stock/form.expiryDate) থাকে প্রথম ব্যাচ হিসেবে, extraBatches-এ বাকিগুলো
   const [extraBatches, setExtraBatches] = useState([]); // [{ id, qty, expiryDate }]
@@ -21909,7 +22321,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   const [activeTab,    setActiveTab]    = useState(initialTab || "retail"); // "retail" | "purchase"
 
   // ── ক্রয় এন্ট্রি (Purchase Entry) ট্যাবের state — এই useState ব্লক আগে ভুলবশত মুছে গিয়েছিল ──
-  const EMPTY_PE = { productId: "", productSearch: "", qty: "", unitCost: "", unitSell: "", expiryDate: "", supplier: "", note: "", isFreeStock: false };
+  const EMPTY_PE = { productId: "", productSearch: "", qty: "", unitCost: "", unitSell: "", spPrice: "", expiryDate: "", supplier: "", note: "", isFreeStock: false };
   const [peForm,          setPeForm]          = useState(EMPTY_PE);
   const [peShowForm,      setPeShowForm]      = useState(false);
   const [peSearchOpen,    setPeSearchOpen]    = useState(false);
@@ -21974,7 +22386,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   // ── #১ নাম অটো-সাজেশন — MEDICINE_DATASET থেকে নাম+পাওয়ার সাজেস্ট, সিলেক্ট করলে সাপ্লায়ার অটো-ফিল ──
   const [nameSuggestOpen, setNameSuggestOpen] = useState(false);
   const nameInputRef = useRef(null);
-  const { dataset: MEDICINE_DATASET, labelsLC: MEDICINE_LABELS_LC, companies: BD_PHARMA_COMPANIES } = useMedicineDataset(); // লেজি-লোড — Products ট্যাব খুললেই ফেচ হয়, বুট ব্লক করে না
+  const { dataset: MEDICINE_DATASET, labelsLC: MEDICINE_LABELS_LC, companies: BD_PHARMA_COMPANIES } = useMedicineDataset(businessType); // লেজি-লোড — Products ট্যাব খুললেই ফেচ হয়, বুট ব্লক করে না
   const nameSuggestions = useMemo(() => {
     const raw = (form.name || "").trim();
     if (raw.length < 2 || MEDICINE_DATASET.length === 0) return [];
@@ -22089,6 +22501,12 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       lastUpdated: now,
       minStockAlert: parseInt(form.minStockAlert) || (() => { const u = (form.unit||"").toLowerCase(); return (u.includes("বোতল")||u.includes("সিরাপ")||u.includes("ড্রপ")||u.includes("সাসপেনশন")) ? 5 : 20; })(),
       costPrice: form.isFreeStock ? 0 : (parseFloat(form.costPrice) || 0),
+      // 🔴 ফিক্স: আগে খালি রাখলে `undefined` বসত — Firestore SDK-এর setDoc()
+      // undefined ফিল্ড ভ্যালু মেনে নেয় না, সাথে সাথে exception থ্রো করত, ফলে
+      // পুরো products write silently ব্যর্থ হয়ে যেত (purchaseOrders ঠিকই সিঙ্ক
+      // হতো, কারণ ওই অবজেক্টে spPrice ফিল্ডটাই থাকে না)। null Firestore-এ বৈধ,
+      // আর নিচের সব display check (`p.spPrice > 0`) null-এও নিরাপদে false দেয়।
+      spPrice: form.spPrice !== "" && form.spPrice !== undefined ? (parseFloat(form.spPrice) || 0) : null,
       expiryDate: form.expiryDate || "",
       barcode: form.barcode || "",
       unit: (form.unit === "__typing__" ? "" : form.unit) || "",
@@ -22197,6 +22615,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       });
       const prod = { ...prodFields, stock: totalStockVal, batches: initialBatches };
       setProducts(prev => [...prev, { id: newId, ...prod }]);
+      if (businessType === "veterinary") vetLearnEntry(form.name, form.unit === "__typing__" ? "" : form.unit, form.company); // 🐄 সেলফ-লার্নিং সাজেশন
       // নতুন পণ্যে initial stock লগ করো (delta = totalStockVal, prevStock = 0)
       if (totalStockVal > 0) {
         const mvNew = pushStockMovement({
@@ -22275,21 +22694,47 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
         // সর্বশেষ ব্যাচ যা বর্তমানে স্টকে আছে (তথ্যমূলক ব্যাজের জন্য) — nextBatchLabel থেকে আলাদা
         const latestBatchLabel = peLatestBatchLabel;
 
+        // 🔴 ফিক্স (বাল্ক-ইমপোর্ট বাগ): confirmInvoiceItems একই চালানের একাধিক
+        // লাইন-আইটেমে applyPurchaseBatch() সিঙ্ক্রোনাসভাবে forEach লুপে কল করে।
+        // একই পণ্য দুইবার (দুই ব্যাচ/এক্সপায়ারি) থাকলে calcNextBatch() stale
+        // `products`/`purchaseOrders` closure থেকে দুইবারই একই "next batch"
+        // নম্বর হিসেব করত (কারণ লুপের মাঝে React state আপডেট হয় না) — দুইটা
+        // ব্যাচ একই batchNo পেয়ে conflict করত। এই লোকাল কাউন্টার দিয়ে একই
+        // execution-এর মধ্যে productId-ভিত্তিক ব্যাচ নম্বর ইউনিক রাখা হচ্ছে।
+        const _peBatchOffset = {};
         // ── একটা পণ্যে একটা ব্যাচ যোগ করার কেন্দ্রীয় লজিক (Weighted Average Cost) —
         // এককভাবে savePE (নিচে) থেকে, আর বাল্ক চালান-কনফার্ম থেকেও এই একই ফাংশন কল হয় ──
-        const applyPurchaseBatch = ({ productId, qty, unitCost, unitSell, expiryDate, supplier, note, isFreeStock }) => {
+        const applyPurchaseBatch = async ({ productId, qty, unitCost, unitSell, expiryDate, supplier, note, isFreeStock }) => {
           const prod = products.find(p => p.id === productId);
           if (!prod || !qty || qty <= 0) return null;
           const cost    = isFreeStock ? 0 : (unitCost || prod.costPrice || 0);
           const sell    = unitSell || prod.price || 0;
           const total   = qty * cost;
           const now     = new Date().toISOString();
-          const oldStock = prod.stock || 0;
-          const oldCost  = prod.costPrice || 0;
-          const newCostPrice = oldStock + qty > 0
-            ? (oldStock * oldCost + qty * cost) / (oldStock + qty)
-            : cost;
-          const batchNo = getNextBatch(productId);
+          let batchNo = getNextBatch(productId);
+          const seenCount = _peBatchOffset[productId] || 0;
+          if (seenCount > 0) {
+            const m = /^(.*-)(\d+)$/.exec(batchNo);
+            if (m) batchNo = `${m[1]}${parseInt(m[2], 10) + seenCount}`;
+          }
+          _peBatchOffset[productId] = seenCount + 1;
+
+          // 🔴 ফিক্স #১০ (মাল্টি-ডিভাইস স্টক lost-update race): আগে stock/
+          // batches লোকাল React state (`p`) থেকে হিসেব করে setProducts দিয়ে
+          // বসানো হতো, যেটা generic diff-push দিয়ে Firestore-এ পুরো ডকুমেন্ট
+          // absolute value হিসেবে ওভাররাইট হয়ে যেত (merge ছাড়া setDoc) — দুই
+          // ডিভাইস প্রায় একই সময়ে একই পণ্যে পার্চেজ দিলে একজনের write আরেকজনের
+          // stock-addition মুছে দিতে পারত (শুধু batchNo কলিশন না, আসল stock
+          // সংখ্যাও)। এখন FSS.transactionAddStock() দিয়ে সার্ভারের *সেই
+          // মুহূর্তের* product doc-এর ওপর atomically stock/cost/batch যোগ হয়
+          // (batchNo কলিশনও একই transaction-এ সার্ভারের লাইভ batches দিয়ে
+          // resolve হয়) — checkout/void/return-এর মতোই। অফলাইন/ব্যর্থ হলে
+          // আগের মতো লোকাল হিসাব-ই fallback হিসেবে থেকে যায়।
+          const txResult = FSS.isReady() ? await FSS.transactionAddStock(productId, {
+            qty, unitCost: cost, unitSell: sell, expiryDate, supplier, note, isFreeStock, batchNoHint: batchNo,
+          }) : null;
+          if (txResult) batchNo = txResult.batchNo;
+
           const newBatch = {
             batchNo, qty, costPrice: cost, sellPrice: sell,
             expiryDate: expiryDate || "", supplier: supplier || "", note: note || "", at: now,
@@ -22304,9 +22749,36 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
             isFreeStock: isFreeStock || false,
             at: now, dateKey: now.split("T")[0], unit: prod.unit || "",
           };
-          const newStock = oldStock + qty;
-          setProducts(prev => prev.map(p => p.id === productId
-            ? {
+          let newStock = (prod.stock || 0) + qty; // fallback/লগের জন্য প্রাথমিক মান
+          if (txResult) {
+            newStock = txResult.stock;
+            setProducts(prev => prev.map(p => p.id === productId
+              ? { ...p, stock: txResult.stock, costPrice: txResult.costPrice, price: sell || p.price,
+                  lastUpdated: now, expiryDate: expiryDate || p.expiryDate, batches: txResult.batches }
+              : p));
+          } else {
+            // অফলাইন/সার্ভার-ব্যর্থ — আগের synchronous local calculation fallback,
+            // একই সিঙ্ক্রোনাস-লুপ collision-safety (_peBatchOffset + linear probing) সহ।
+            setProducts(prev => prev.map(p => {
+              if (p.id !== productId) return p;
+              const existingBatchNos = new Set((p.batches || []).map(b => b.batchNo));
+              if (existingBatchNos.has(newBatch.batchNo)) {
+                const m = /^(.*-)(\d+)$/.exec(newBatch.batchNo);
+                if (m) {
+                  let n = parseInt(m[2], 10);
+                  let candidate;
+                  do { n += 1; candidate = `${m[1]}${n}`; } while (existingBatchNos.has(candidate));
+                  newBatch.batchNo = candidate;
+                  entry.batch = candidate;
+                }
+              }
+              const oldStock = p.stock || 0;
+              const oldCost  = p.costPrice || 0;
+              newStock = oldStock + qty;
+              const newCostPrice = oldStock + qty > 0
+                ? (oldStock * oldCost + qty * cost) / (oldStock + qty)
+                : cost;
+              return {
                 ...p,
                 stock: newStock,
                 costPrice: Math.round(newCostPrice * 10000) / 10000,
@@ -22314,13 +22786,13 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                 lastUpdated: now,
                 expiryDate: expiryDate || p.expiryDate,
                 batches: [...(p.batches || []), newBatch],
-              }
-            : p
-          ));
+              };
+            }));
+          }
           const mvBulk = pushStockMovement({
             id: "sm_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7), productId,
             productName: prod.name, stock: newStock,
-            prevStock: oldStock, delta: qty,
+            prevStock: newStock - qty, delta: qty,
             at: now, dateKey: now.split("T")[0], source: "purchase"
           });
           setStockMovements(prev => [mvBulk, ...prev]);
@@ -22328,7 +22800,8 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           return { prod, qty };
         };
 
-        const savePE = () => {
+
+        const savePE = async () => {
           const errs = {};
           if (!peForm.productId) errs.productId = true;
           if (!peForm.qty || parseFloat(peForm.qty) <= 0) errs.qty = true;
@@ -22339,7 +22812,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           }
           const prod = products.find(p => p.id === peForm.productId);
           if (!prod) return;
-          const result = applyPurchaseBatch({
+          const result = await applyPurchaseBatch({
             productId: peForm.productId,
             qty: parseFloat(peForm.qty),
             unitCost: parseFloat(peForm.unitCost) || 0,
@@ -22356,12 +22829,18 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
         };
 
         // ── #৭ AI ফিচার — চালান/ইনভয়েসের ছবি থেকে পাওয়া সবগুলো (checked) লাইন-আইটেম একসাথে সেভ ──
-        const confirmInvoiceItems = () => {
+        // 🔴 ফিক্স #১০-এর প্যারালাল: forEach-এর বদলে sequential for...of + await
+        // ব্যবহার করা হচ্ছে, যাতে একই চালানে একই পণ্যের একাধিক লাইন থাকলে প্রতিটা
+        // applyPurchaseBatch() transaction আগেরটার commit হওয়া stock/batches
+        // দেখতে পায় (আগে সব লাইন একসাথে fire হতো বলে transaction ছাড়াই এই
+        // গ্যারান্টি লাগত না, এখন transaction থাকায় সিরিয়াল না চালালে একই পণ্যের
+        // একাধিক লাইনের মাঝে batchNo হিন্ট স্টেল থেকে যেতে পারত)।
+        const confirmInvoiceItems = async () => {
           const toSave = (peInvoiceItems || []).filter(it => it.include && it.productId && parseFloat(it.qty) > 0);
           if (!toSave.length) { showToast("অন্তত একটা পণ্য টিক দিন", "#ef4444"); return; }
           let successCount = 0;
-          toSave.forEach(it => {
-            const r = applyPurchaseBatch({
+          for (const it of toSave) {
+            const r = await applyPurchaseBatch({
               productId: it.productId,
               qty: parseFloat(it.qty),
               unitCost: parseFloat(it.unitCost) || 0,
@@ -22372,7 +22851,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               isFreeStock: false,
             });
             if (r) successCount++;
-          });
+          }
           setPeInvoiceItems(null);
           setPeInvoiceSupplier("");
           showToast(`✅ ${successCount}টা পণ্য স্টকে যোগ হয়েছে`, "#a78bfa");
@@ -22645,11 +23124,16 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                     {/* সাপ্লায়ার */}
                     <label style={S.label}>🏭 সাপ্লায়ার</label>
                     <div style={{ marginBottom: 8 }}>
-                      <SupplierPicker T={T} S={S}
+                      <SupplierPicker T={T} S={S} businessType={businessType}
                         value={peNewProduct.company}
                         extraSuppliers={knownSuppliers}
                         onChange={v => { setPeNewProduct(vv => ({ ...vv, company: v })); setPeForm(f => ({ ...f, supplier: v })); }} />
                     </div>
+
+                    {/* SP — শুধু রেফারেন্সের জন্য, ঐচ্ছিক */}
+                    <label style={S.label}>🏷️ SP (৳) <span style={{ color:T.sub, fontWeight:500, fontSize:11 }}>— ঐচ্ছিক</span></label>
+                    <input style={{ ...S.input, marginBottom:8 }} type="number" placeholder="" inputMode="numeric"
+                      value={peForm.spPrice || ""} onChange={e => setPeForm(f => ({ ...f, spPrice: e.target.value }))} />
 
                     {/* পরিমাণ + একক ক্রয়মূল্য */}
                     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
@@ -22730,7 +23214,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               {!peNewProduct && <>
                 <div>
                 <label style={S.label}>🏭 সাপ্লায়ার</label>
-                <SupplierPicker T={T} S={S}
+                <SupplierPicker T={T} S={S} businessType={businessType}
                   value={peForm.supplier}
                   extraSuppliers={knownSuppliers}
                   onChange={v => setPeForm(f => ({ ...f, supplier: v }))} />
@@ -22849,6 +23333,10 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                     setProducts(prev => [...prev, {
                       id: newId, name, unit: unitFinal,
                       price: unitSell, costPrice: unitCost,
+                      // 🔴 ফিক্স: undefined নয়, null — Firestore setDoc() undefined-এ
+                      // exception থ্রো করে products/purchaseOrders write ব্যর্থ করে দিত
+                      // (দেখুন নতুন-পণ্য ফর্মের একই ফিক্সের কমেন্ট)।
+                      spPrice: peForm.spPrice !== "" && peForm.spPrice !== undefined ? (parseFloat(peForm.spPrice) || 0) : null,
                       stock: qty, minStockAlert: 5, category: "অন্যান্য", company,
                       productType: "product", expiryDate: peForm.expiryDate || "", barcode: "", lastUpdated: now,
                       batches: [firstBatch],
@@ -22859,6 +23347,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                       at: now, dateKey: todayK, source: "purchase",
                     });
                     setStockMovements(prev => [mvNewProd, ...prev]);
+                    if (businessType === "veterinary") vetLearnEntry(name, unitFinal, company); // 🐄 সেলফ-লার্নিং সাজেশন
                     setPurchaseOrders(prev => [{
                       id: uid(), _type: "pe",
                       productId: newId, productName: name, unit: unitFinal,
@@ -23269,7 +23758,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           {/* ── সাপ্লায়ার selector — শুধু পণ্যের জন্য ── */}
           {form.productType !== "service" && (<>
           <label style={S.label}>🏭 সাপ্লায়ার *</label>
-          <SupplierPicker key={editId || "new"} T={T} S={S}
+          <SupplierPicker key={editId || "new"} T={T} S={S} businessType={businessType}
             error={formErrors.company}
             value={form.company || ""}
             extraSuppliers={knownSuppliers}
@@ -23282,6 +23771,8 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
             <input style={{ ...S.input, border: formErrors.price ? "1.5px solid #ef4444" : S.input.border }} placeholder="" type="number" value={form.price} onChange={e => { setForm({ ...form, price: e.target.value }); if (parseFloat(e.target.value) > 0) setFormErrors(er=>({...er,price:false})); }} inputMode="numeric" pattern="[0-9]*" />
             {formErrors.price && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ সার্ভিস চার্জ আবশ্যক</div>}
           </>) : (<>
+          <label style={S.label}>🏷️ SP (৳) <span style={{ color:T.sub, fontWeight:500, fontSize:11 }}>— শুধু রেফারেন্সের জন্য, ঐচ্ছিক</span></label>
+          <input style={{ ...S.input }} placeholder="" type="number" value={form.spPrice} onChange={e => setForm({ ...form, spPrice: e.target.value })} inputMode="numeric" pattern="[0-9]*" />
           <label style={S.label}>💵 ক্রয়মূল্য (৳) *</label>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
             <div>
@@ -23439,6 +23930,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                 </div>
                 {/* ── সারি ২: ক্রয়|বিক্রয়|স্টক|সাপ্লায়ার ── */}
                 <div style={{ display:"flex", gap:6, marginTop:3, flexWrap:"wrap", alignItems:"center" }}>
+                  {p.productType !== "service" && p.spPrice > 0 && <span style={{ color:"#a78bfa", fontWeight:700, fontSize:11 }}>SP: ৳{fmt(p.spPrice)}</span>}
                   {p.productType !== "service" && p.costPrice > 0 && <span style={{ color:"#f59e0b", fontWeight:700, fontSize:11 }}>ক্রয়: ৳{fmt(p.costPrice)}</span>}
                   <span style={{ color:"#22c55e", fontWeight:700, fontSize:11 }}>{p.productType === "service" ? "চার্জ" : "বিক্রয়"}: ৳{fmt(p.price)}</span>
                   {p.productType !== "service" && (
@@ -23494,7 +23986,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                   onClick={(e) => {
                     e.stopPropagation();
                     if (editId === p.id) { setEditId(null); setShowAdd(false); }
-                    else { setEditId(p.id); setForm({ name: p.name, price: String(p.price), stock: String(p.stock || 0), minStockAlert: String(p.minStockAlert || 5), category: p.category || "অন্যান্য", company: p.company || "", productType: (p.productType === "retail" ? "product" : p.productType) || "product", costPrice: String(p.costPrice || ""), expiryDate: p.expiryDate || "", barcode: p.barcode || "", unit: p.unit || "", demandType: p.demandType || "common" }); setExtraBatches([]); setShowAdd(false); setCompanyCustom(!!p.company && !BD_PHARMA_COMPANIES.includes(p.company)); }
+                    else { setEditId(p.id); setForm({ name: p.name, price: String(p.price), stock: String(p.stock || 0), minStockAlert: String(p.minStockAlert || 5), category: p.category || "অন্যান্য", company: p.company || "", productType: (p.productType === "retail" ? "product" : p.productType) || "product", costPrice: String(p.costPrice || ""), spPrice: p.spPrice !== undefined && p.spPrice !== null ? String(p.spPrice) : "", expiryDate: p.expiryDate || "", barcode: p.barcode || "", unit: p.unit || "", demandType: p.demandType || "common" }); setExtraBatches([]); setShowAdd(false); setCompanyCustom(!!p.company && !BD_PHARMA_COMPANIES.includes(p.company)); }
                   }}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
                 </button>}
@@ -24001,9 +24493,12 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 📜 ReturnModule — এখন "ইনভয়েস হিস্ট্রি ভিউয়ার" (পণ্য ফেরত ফিচার সম্পূর্ণ সরানো
-// হয়েছে — ভয়েড/বাতিল ব্যবস্থাপনা ইতোমধ্যে Dashboard-এ আছে)। এই মডিউলে এখন আছে:
-//   ১) যেকোনো ইনভয়েস নম্বর দিয়ে খুঁজে ফুল ডিটেইলস দেখা (মোডাল, প্রিন্ট+WhatsApp সহ)
+// 📜 ReturnModule — "ইনভয়েস হিস্ট্রি ভিউয়ার" + পণ্য ফেরত (return) ফিচার।
+// (ভয়েড/বাতিল ব্যবস্থাপনা ইতোমধ্যে Dashboard-এ আলাদাভাবে আছে, এটা সেটা না)।
+// এই মডিউলে এখন আছে:
+//   ১) যেকোনো ইনভয়েস নম্বর দিয়ে খুঁজে ফুল ডিটেইলস দেখা (মোডাল, প্রিন্ট+WhatsApp সহ),
+//      এবং সেখান থেকেই প্রতিটা বিক্রিত পণ্যের জন্য আংশিক/পূর্ণ ফেরত প্রসেস করা
+//      (processReturn — স্টক রিস্টোর, বাকি সমন্বয়/নগদ রিফান্ড, returns কালেকশনে audit)
 //   ২) ৩০ দিনের বাইরের পুরনো ইনভয়েস — Firestore থেকে পেজিনেটেড, সার্চ ফিল্টার সহ
 //      (কাস্টমার নাম/আইডি, দিন/মাস, পেমেন্ট টাইপ)
 //   ৩) বাতিলকৃত ইনভয়েস হিস্ট্রি — Firestore থেকে সব সময়ের ডেটা, দিন/মাস নেভিগেটর
@@ -24025,7 +24520,7 @@ const RH_MONTH_NAMES_BN = ["জানুয়ারি","ফেব্রুয�
 const rhDayLabel   = (dk) => { const d = new Date(dk); if (isNaN(d.getTime())) return dk; return `${d.getDate()} ${RH_MONTH_NAMES_BN[d.getMonth()]}, ${d.getFullYear()}`; };
 const rhMonthLabel = (mk) => { const [y, m] = (mk || "").split("-"); return m ? `${RH_MONTH_NAMES_BN[parseInt(m, 10) - 1]} ${y}` : mk; };
 
-function ReturnModule({ T, S, invoices, customers, showToast, currentUser, shopName }) {
+function ReturnModule({ T, S, invoices, products, customers, returns, setReturns, setProducts, setCustomers, setStockMovements, addTxn, showToast, currentUser, shopName, setCashLogs }) {
 
   const fmt      = n => fmtMoney(n);
   const todayKey = _dateKeyOf(new Date());
@@ -24033,7 +24528,8 @@ function ReturnModule({ T, S, invoices, customers, showToast, currentUser, shopN
 
   const custMap = React.useMemo(() => new Map((customers||[]).map(c => [c.id, c])), [customers]);
 
-  // ── 🔍 ইনভয়েস খুঁজুন — যেকোনো ইনভয়েসের ফুল ডিটেইলস মোডালে দেখাবে (ফেরত-ফ্লো নেই) ──
+  // ── 🔍 ইনভয়েস খুঁজুন — যেকোনো ইনভয়েসের ফুল ডিটেইলস মোডালে দেখাবে, এবং সেখান
+  // থেকেই এখন প্রতিটা পণ্যের জন্য ফেরত (return) প্রসেস করা যাবে (নিচে দেখুন) ──
   const [invSearch, setInvSearch]   = React.useState("");
   const [detailInv, setDetailInv]   = React.useState(null); // ফুল ডিটেইলস মোডাল — যেকোনো সোর্স থেকে ওপেন হয়
 
@@ -24177,6 +24673,162 @@ function ReturnModule({ T, S, invoices, customers, showToast, currentUser, shopN
     [invoices, monthKeyNow]);
   const monthVoidedCount  = monthVoided.length;
   const monthVoidedRefund = React.useMemo(() => monthVoided.reduce((s,i) => s + (i.total||0), 0), [monthVoided]);
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 🔄 পণ্য ফেরত (Product Return) — এতদিন এই কম্পোনেন্ট শুধু props নিতই কিন্তু
+  // ব্যবহার করত না (products/setProducts/setCustomers/setStockMovements/
+  // addTxn/returns/setReturns — সব silently unused ছিল), ফলে "returns"
+  // কালেকশনটা sync-ready থাকলেও কোথাও লেখাই হতো না। এখন এখানে আসল ফিচার —
+  // ইনভয়েস ডিটেইলস মোডাল থেকে যেকোনো বিক্রিত পণ্য আংশিক/পূর্ণ ফেরত নেওয়া যাবে।
+  // ── স্টক রিস্টোর ও কাস্টমার-ব্যালেন্স সমন্বয় ঠিক voidInvoice()-এর মতোই
+  // atomic transaction (+ অফলাইন local fallback) দিয়ে হয়, যাতে দুই ডিভাইসে
+  // প্রায় একই সময়ে রিটার্ন প্রসেস হলেও কোনো delta হারিয়ে না যায়।
+  const [retQty,    setRetQty]    = React.useState({});   // productId -> qty string
+  const [retReason, setRetReason] = React.useState({});   // productId -> reason string
+  const [retMode,   setRetMode]   = React.useState({});   // productId -> "cash" | "baki"
+  const [retBusy,   setRetBusy]   = React.useState(null);  // productId currently processing
+
+  // এই ইনভয়েসের এই পণ্যটা আগে কতটা ফেরত নেওয়া হয়েছে — returns রেকর্ড থেকেই
+  // গণনা হয় (invoice.items মিউটেট করতে হয় না, append-only audit-trail-ই সত্য উৎস)
+  const getReturnedQty = React.useCallback((invoiceId, productId) =>
+    (returns || []).filter(r => r.invoiceId === invoiceId && r.productId === productId)
+      .reduce((s, r) => s + (r.qty || 0), 0),
+    [returns]);
+
+  const processReturn = async (inv, item) => {
+    const productId = item.productId;
+    const alreadyReturned = getReturnedQty(inv.id, productId);
+    const maxReturnable = Math.max(0, (item.qty || 0) - alreadyReturned);
+    const qty = parseFloat(retQty[productId]);
+    if (!qty || qty <= 0) { showToast("সঠিক পরিমাণ দিন", "#ef4444"); return; }
+    if (qty > maxReturnable) { showToast(`সর্বোচ্চ ${maxReturnable} ${item.unit || "পিস"} ফেরত নেওয়া যাবে`, "#ef4444"); return; }
+
+    setRetBusy(productId);
+    try {
+      // 🔴 ফিক্স (মাল্টি-ডিভাইস ডাবল-রিটার্ন race — সংকীর্ণ করা): উপরের চেক
+      // render-time-এর `returns` prop (stale হতে পারে) দিয়ে হয়েছিল। কমিট করার
+      // ঠিক আগে freshest Zustand state (getState()) থেকে আবার চেক করা হচ্ছে,
+      // যাতে এই ডিভাইসেই কিছুক্ষণ আগে সিঙ্ক হওয়া অন্য ডিভাইসের রিটার্ন এন্ট্রি
+      // থাকলে সেটা ধরা পড়ে। ⚠️ এটা এখনো পুরোপুরি atomic না (অন্য ডিভাইস ঠিক এই
+      // মুহূর্তে অফলাইনে/এখনো-না-সিঙ্ক-হওয়া অবস্থায় একই আইটেম ফেরত নিলে সেটা এখনো
+      // মিস হতে পারে — Firestore transaction দিয়ে কালেকশন-কোয়েরি lock করা যায় না
+      // বলে stock/balance-এর মতো ১০০% গ্যারান্টি এখানে দেওয়া সম্ভব না), কিন্তু
+      // সাধারণ ব্যবহারে (একই মুহূর্তে দুই ডিভাইস থেকে একই আইটেম ফেরত — বিরল) এটা
+      // রেসের সম্ভাবনা যথেষ্ট কমায়।
+      const freshReturned = (useAppStore.getState().returns || [])
+        .filter(r => r.invoiceId === inv.id && r.productId === productId)
+        .reduce((s, r) => s + (r.qty || 0), 0);
+      const freshMax = Math.max(0, (item.qty || 0) - freshReturned);
+      if (qty > freshMax) {
+        showToast(freshMax <= 0 ? "এই পণ্য ইতিমধ্যে অন্য ডিভাইস থেকে ফেরত নেওয়া হয়ে গেছে" : `সর্বোচ্চ ${freshMax} ${item.unit || "পিস"} ফেরত নেওয়া যাবে`, "#ef4444");
+        return; // নিচের finally { setRetBusy(null); } এমনিতেই চলবে
+      }
+      const mode = retMode[productId] || "cash";
+      const reason = (retReason[productId] || "").trim();
+      const localP = products.find(p => p.id === productId);
+
+      // ── ১. স্টক ফেরত — সার্ভারের বর্তমান কপির ওপর atomically (voidInvoice-এর
+      // মতোই); Firebase বন্ধ/ব্যর্থ হলে সবচেয়ে সাম্প্রতিক local state (getState())
+      // থেকে fallback, stale closure থেকে না।
+      let stockResult = null;
+      if (FSS.isReady()) {
+        stockResult = await FSS.transactionRestoreStock(productId, qty, item.batchNo || "", {
+          costPrice: item.costPrice || localP?.costPrice || 0,
+          expiryDate: item.expiryDate || "",
+          voidAdjBatchNo: `RETURN-ADJ-${inv.id.slice(-6)}`,
+        });
+      }
+      if (!stockResult) {
+        const freshP = useAppStore.getState().products.find(p => p.id === productId) || localP;
+        if (freshP) {
+          let updatedBatches = freshP.batches ? [...freshP.batches] : [];
+          const soldBatchNo = item.batchNo || "";
+          if (soldBatchNo) {
+            const bIdx = updatedBatches.findIndex(b => b.batchNo === soldBatchNo);
+            if (bIdx >= 0) updatedBatches[bIdx] = { ...updatedBatches[bIdx], qty: (updatedBatches[bIdx].qty || 0) + qty };
+            else updatedBatches.push({ batchNo: soldBatchNo, qty, costPrice: item.costPrice || freshP.costPrice || 0, expiryDate: item.expiryDate || "" });
+          } else {
+            updatedBatches = [...updatedBatches, {
+              batchNo: `RETURN-ADJ-${inv.id.slice(-6)}`, qty,
+              costPrice: item.costPrice || freshP.avgCost || freshP.costPrice || 0,
+              expiryDate: null, addedAt: new Date().toISOString(), note: "product return adjustment",
+            }];
+          }
+          stockResult = { stock: (freshP.stock || 0) + qty, batches: updatedBatches };
+        }
+      }
+      if (stockResult) {
+        setProducts(prev => prev.map(p => p.id === productId
+          ? { ...p, stock: stockResult.stock, batches: stockResult.batches, lastUpdated: new Date().toISOString() }
+          : p));
+      }
+
+      // ── ২. Stock movement লগ (ট্রেসেবিলিটি — অন্য সব stock adjustment-এর মতো) ──
+      const mv = pushStockMovement({
+        id: "sm_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+        productId, productName: item.name || localP?.name || "",
+        stock: stockResult?.stock ?? ((localP?.stock || 0) + qty),
+        prevStock: stockResult ? (stockResult.stock - qty) : (localP?.stock || 0),
+        delta: qty, at: new Date().toISOString(), dateKey: todayKey, source: "return",
+      });
+      setStockMovements(prev => [mv, ...(prev || [])]);
+
+      // ── ৩. রিফান্ড/সমন্বয় — "বাকি সমন্বয়" হলে কাস্টমারের বকেয়া কমে (একই
+      // atomic transactionUpdateBalance + fallback প্যাটার্ন, voidInvoice দেখুন)।
+      // "নগদ ফেরত" হলে balance অপরিবর্তিত থাকে, কিন্তু ক্যাশ ড্রয়ার থেকে টাকা বের
+      // হয় বলে cashLogs-এ withdrawal এন্ট্রি লগ হয় (Dashboard-এর addCashLog-এর
+      // একই schema, pushCashLog হেল্পার দিয়ে সরাসরি Firestore-এ push) — নাহলে
+      // দিন শেষে ক্যাশ বুক মিলবে না।
+      const refundAmount = qty * (item.price ?? 0);
+      let newBalanceAfter = null;
+      const cust = inv.customerId ? custMap.get(inv.customerId) : null;
+      if (mode === "baki" && cust) {
+        const txBal = await FSS.transactionUpdateBalance(cust.id, (serverBal) => Math.max(0, serverBal - refundAmount));
+        setCustomers(prev => prev.map(c => {
+          if (c.id !== cust.id) return c;
+          const newBal = txBal !== null ? txBal : Math.max(0, (c.balance || 0) - refundAmount);
+          newBalanceAfter = newBal;
+          setTimeout(() => {
+            addTxn(cust.id, "joma", refundAmount, newBal, inv.id,
+              `পণ্য ফেরত সমন্বয় — ${item.name || ""}${reason ? " (" + reason + ")" : ""}`, null, "return-adjust");
+          }, 0);
+          return { ...c, balance: newBal };
+        }));
+      } else if (mode === "cash" && typeof setCashLogs === "function") {
+        const cashEntry = {
+          id: uid(), type: "withdrawal", cashType: "other", party: "",
+          amount: refundAmount,
+          note: `পণ্য ফেরত (নগদ) — ইনভয়েস ${inv.invoiceNo || inv.id} — ${item.name || localP?.name || ""}${reason ? " (" + reason + ")" : ""}`,
+          date: todayStr(), dateKey: todayKey,
+          createdAt: new Date().toISOString(),
+          by: currentUser?.name || "মালিক",
+        };
+        pushCashLog(cashEntry);
+        setCashLogs(prev => [cashEntry, ...(prev || [])]);
+      }
+
+      // ── ৪. returns কালেকশনে audit রেকর্ড — useFSSCollection-এর জেনেরিক
+      // diff-push দিয়েই সিঙ্ক হবে (customers/products-এর মতো), আলাদা pushDurable
+      // দরকার নেই কারণ এটা windowed কালেকশন না।
+      const retEntry = {
+        id: uid(), invoiceId: inv.id, invoiceNo: inv.invoiceNo || inv.id,
+        productId, productName: item.name || localP?.name || "",
+        qty, unit: item.unit || localP?.unit || "",
+        unitPrice: item.price ?? 0, costPrice: item.costPrice || localP?.costPrice || 0,
+        batchNo: item.batchNo || "", refundAmount, refundMode: mode,
+        customerId: cust?.id || null, customerName: cust?.name || inv.customerName || "",
+        reason, date: todayStr(), dateKey: todayKey, time: nowStr(),
+        createdAt: new Date().toISOString(), createdBy: currentUser?.name || "মালিক",
+      };
+      setReturns(prev => [retEntry, ...(prev || [])]);
+
+      setRetQty(m => ({ ...m, [productId]: "" }));
+      setRetReason(m => ({ ...m, [productId]: "" }));
+      showToast(`✅ ${qty} ${item.unit || "পিস"} ফেরত নেওয়া হয়েছে${mode === "baki" ? " ও বাকি সমন্বয় হয়েছে" : ""}`, "#22c55e");
+    } finally {
+      setRetBusy(null);
+    }
+  };
 
   return (
     <div style={{ ...S.page, paddingBottom: 100 }}>
@@ -24456,6 +25108,62 @@ function ReturnModule({ T, S, invoices, customers, showToast, currentUser, shopN
                 style={{ background:T.border, border:"none", borderRadius:8, width:30, height:30, color:T.text, fontSize:16, cursor:"pointer", fontFamily:"inherit" }}>✕</button>
             </div>
             <InvoiceReceipt T={T} S={S} inv={detailInv} customer={custMap.get(detailInv.customerId)} type="buyer" />
+
+            {/* ══ 🔄 পণ্য ফেরত নিন — শুধু active (non-voided) ইনভয়েসে, সার্ভিস-আইটেম বাদে ══ */}
+            {detailInv.status !== "voided" && (
+              <div style={{ marginTop:16, borderTop:`1px dashed ${T.border}`, paddingTop:14 }}>
+                <div style={{ color:T.text, fontWeight:900, fontSize:14, marginBottom:10 }}>🔄 পণ্য ফেরত নিন</div>
+                {(detailInv.items || []).filter(it => it.productType !== "service").map((item, idx) => {
+                  const alreadyReturned = getReturnedQty(detailInv.id, item.productId);
+                  const maxReturnable = Math.max(0, (item.qty || 0) - alreadyReturned);
+                  const cust = detailInv.customerId ? custMap.get(detailInv.customerId) : null;
+                  return (
+                    <div key={item.productId + "_" + idx}
+                      style={{ background:T.bg, border:`1px solid ${T.border}`, borderRadius:12, padding:"10px 12px", marginBottom:10 }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
+                        <div style={{ color:T.text, fontWeight:800, fontSize:13 }}>{item.name}</div>
+                        <div style={{ color:T.sub, fontSize:11 }}>বিক্রি: {item.qty} {item.unit || ""}{alreadyReturned > 0 ? ` · আগে ফেরত: ${alreadyReturned}` : ""}</div>
+                      </div>
+                      {maxReturnable <= 0 ? (
+                        <div style={{ color:T.sub, fontSize:12 }}>এই পণ্যের সম্পূর্ণ পরিমাণ ইতিমধ্যে ফেরত নেওয়া হয়েছে</div>
+                      ) : (
+                        <>
+                          <div style={{ display:"flex", gap:8, marginBottom:6 }}>
+                            <input
+                              type="number" placeholder={`পরিমাণ (সর্বোচ্চ ${maxReturnable})`}
+                              value={retQty[item.productId] || ""}
+                              onChange={e => setRetQty(m => ({ ...m, [item.productId]: e.target.value }))}
+                              style={{ ...S.input, marginTop:0, flex:1 }}
+                            />
+                            <select
+                              value={retMode[item.productId] || "cash"}
+                              onChange={e => setRetMode(m => ({ ...m, [item.productId]: e.target.value }))}
+                              style={{ ...S.input, marginTop:0, flex:"none", width:130 }}
+                            >
+                              <option value="cash">নগদ ফেরত</option>
+                              {cust && <option value="baki">বাকি সমন্বয়</option>}
+                            </select>
+                          </div>
+                          <input
+                            placeholder="কারণ (ঐচ্ছিক)"
+                            value={retReason[item.productId] || ""}
+                            onChange={e => setRetReason(m => ({ ...m, [item.productId]: e.target.value }))}
+                            style={{ ...S.input, marginTop:0, marginBottom:8 }}
+                          />
+                          <button
+                            onClick={() => processReturn(detailInv, item)}
+                            disabled={retBusy === item.productId}
+                            style={{ ...S.saveBtn, marginTop:0, width:"100%", opacity: retBusy === item.productId ? 0.6 : 1 }}
+                          >
+                            {retBusy === item.productId ? "প্রসেস হচ্ছে..." : "✅ ফেরত নিশ্চিত করুন"}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -26733,7 +27441,7 @@ function AppVersionCard({ T, S }) {
 }
 
 function Settings_({ T, S, shopName,
- setShopName, users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, driveStatus, backupNeeded, backupFailStreak, lastBackupError, restoreTestAt, restoreTestOk, restoreTestDetail, restoreTestFailStreak, onRunRestoreTest, performDriveBackup, buildBackupData, buildManualBackupData, manualBackupSetters, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, setGoogleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, auditLogs = [], setAuditLogs, hasPerm, fssReady = false, pendingConflicts = [] }) {
+ setShopName, businessType = "pharmacy", setBusinessType, users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, driveStatus, backupNeeded, backupFailStreak, lastBackupError, restoreTestAt, restoreTestOk, restoreTestDetail, restoreTestFailStreak, onRunRestoreTest, performDriveBackup, buildBackupData, buildManualBackupData, manualBackupSetters, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, setGoogleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, auditLogs = [], setAuditLogs, hasPerm, fssReady = false, pendingConflicts = [] }) {
   const [editName,    setEditName]    = useState(false);
   const [nameInput,   setNameInput]   = useState(shopName);
   const [showRecoveryExpanded, setShowRecoveryExpanded] = useState(false);
@@ -27470,6 +28178,86 @@ function Settings_({ T, S, shopName,
   if (isStaffUser) {
     return (
       <div style={S.page}>
+        {/* ══ Read-only Sync Status (স্টাফ-ও দেখতে পারবে) ══ */}
+        {/* 🔴 ফিক্স: আগে এই ব্লকটা শুধু non-staff return পাথে ছিল — উপরের কমেন্টে
+            "সব role দেখতে পারে, staff-ও" লেখা থাকলেও isStaffUser early-return-এর
+            কারণে স্টাফ কখনো এই কোড পর্যন্ত পৌঁছাতোই না (dead code for staff)।
+            এখন staff branch-এও কপি করে দেওয়া হলো, যাতে স্টাফ নিজেই বুঝতে পারে
+            তার ডিভাইস Firestore-এ সংযুক্ত কিনা — মালিকের ওপর নির্ভর না করে। */}
+        <div style={{ display:"flex", alignItems:"center", gap:8, background: fssReady ? "#22c55e12" : "#64748b12", border:`1px solid ${fssReady ? "#22c55e30" : "#64748b30"}`, borderRadius:10, padding:"8px 12px", marginBottom:12 }}>
+          <span style={{ width:8, height:8, borderRadius:99, background: fssReady ? "#22c55e" : "#64748b", display:"inline-block", flexShrink:0 }} />
+          <span style={{ color: fssReady ? "#4ade80" : "#94a3b8", fontSize:11, fontWeight:700 }}>
+            Firestore: {fssReady ? "সংযুক্ত (real-time sync চলছে)" : "সংযুক্ত নেই — এই ডিভাইস শুধু local ডেটা নিয়ে চলছে"}
+          </span>
+        </div>
+
+        {/* ── 🩺 ফুল অ্যাপ চেকআপ — স্টাফ ফোনেও দেখানো হচ্ছে, যাতে স্টাফ নিজেই
+            নিজের ডিভাইসের Firestore Write→Read লাইভ টেস্ট চালিয়ে দেখতে পারে
+            সিঙ্ক আসলে কাজ করছে কিনা (আগে এটা শুধু owner/admin দেখতে পেত)। ── */}
+        <div style={{ marginBottom:10, borderRadius:10, border:"1px solid #38bdf844", background:"#38bdf80f", padding:"10px 11px" }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+              <span style={{ fontSize:13 }}>🩺</span>
+              <span style={{ color:"#38bdf8", fontWeight:800, fontSize:10.5 }}>ফুল অ্যাপ চেকআপ</span>
+            </div>
+            <button
+              onClick={runSyncDiagnostics}
+              disabled={syncDiag?.running}
+              style={{ background:"#38bdf822", border:"1px solid #38bdf855", borderRadius:7, padding:"5px 11px", color:"#38bdf8", fontSize:9.5, fontWeight:800, cursor: syncDiag?.running ? "not-allowed" : "pointer", fontFamily:"inherit", opacity: syncDiag?.running ? 0.6 : 1 }}
+            >
+              {syncDiag?.running ? "চলছে..." : "▶ ফুল চেকাপ চালান"}
+            </button>
+          </div>
+          {!syncDiag && (
+            <div style={{ color:"#94a3b8", fontSize:9.5 }}>সিঙ্ক কানেকশন, স্টাফ পারমিশন, ডেটা ইন্টেগ্রিটি, লোকাল স্টোরেজ, ব্যাকআপ/হেলথ, windowing ফিচার ও হিসাব/লজিক সঠিকতা (বাকি/ইনভয়েস/ক্যাশ/stats) — সবকিছু এক ক্লিকে যাচাই করতে "ফুল চেকাপ চালান" চাপুন।</div>
+          )}
+          {syncDiag?.checks && (() => {
+            const groups = {};
+            syncDiag.checks.forEach(c => { (groups[c.feature] = groups[c.feature] || []).push(c); });
+            const iconFor = (s) => s === "pass" ? "✅" : s === "fail" ? "❌" : s === "todo" ? "⏳" : "⏭️";
+            const colorFor = (s) => s === "pass" ? "#22c55e" : s === "fail" ? "#ef4444" : s === "todo" ? "#94a3b8" : "#f59e0b";
+            const passCount = syncDiag.checks.filter(c => c.status === "pass").length;
+            const failCount = syncDiag.checks.filter(c => c.status === "fail").length;
+            const totalCount = syncDiag.checks.length;
+            return (
+              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                <div style={{
+                  display:"flex", alignItems:"center", justifyContent:"space-between",
+                  background: failCount > 0 ? "#ef444418" : "#22c55e18",
+                  border: `1px solid ${failCount > 0 ? "#ef444455" : "#22c55e55"}`,
+                  borderRadius:8, padding:"7px 10px", marginBottom:2,
+                }}>
+                  <span style={{ color: failCount > 0 ? "#fca5a5" : "#86efac", fontWeight:800, fontSize:10.5 }}>
+                    {failCount > 0 ? `⚠️ ${failCount}টা সমস্যা পাওয়া গেছে` : "✅ সব ঠিক আছে"}
+                  </span>
+                  <span style={{ color:"#94a3b8", fontSize:9 }}>{passCount}/{totalCount} পাস</span>
+                </div>
+                {Object.keys(groups).map(feature => (
+                  <div key={feature}>
+                    <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:10, marginBottom:3 }}>{feature}</div>
+                    {groups[feature].map((c, i) => (
+                      <div key={i} style={{ display:"flex", gap:6, marginBottom:3, paddingLeft:6 }}>
+                        <span style={{ fontSize:10 }}>{iconFor(c.status)}</span>
+                        <div style={{ flex:1 }}>
+                          <div style={{ color:colorFor(c.status), fontSize:9.5, fontWeight:700 }}>{c.name}</div>
+                          <div style={{ color:"#94a3b8", fontSize:8.5 }}>{c.detail}</div>
+                          {c.status === "fail" && c.name === "আজকের Firestore stats doc vs লোকাল ইনভয়েস যোগফল" && (
+                            <button onClick={fixStatsDrift} disabled={statsFixing}
+                              style={{ marginTop:4, background:"#f59e0b22", border:"1px solid #f59e0b55", borderRadius:6, padding:"4px 9px", color:"#f59e0b", fontSize:8.5, fontWeight:800, cursor: statsFixing ? "not-allowed" : "pointer", fontFamily:"inherit", opacity: statsFixing ? 0.6 : 1 }}>
+                              {statsFixing ? "ঠিক করা হচ্ছে..." : "🩹 এখনই রিক্যালকুলেট করে ঠিক করুন"}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+                <div style={{ color:"#64748b", fontSize:8, marginTop:2 }}>সর্বশেষ চালানো হয়েছে: {new Date(syncDiag.ranAt).toLocaleTimeString("en-US", { hour:"2-digit", minute:"2-digit", timeZone: "Asia/Dhaka" })}</div>
+              </div>
+            );
+          })()}
+        </div>
+
         {/* ══ Theme Card ══ */}
         {(() => {
           return (
@@ -27787,6 +28575,27 @@ function Settings_({ T, S, shopName,
             </button>
           </div>
         )}
+      </div>
+
+      {/* ① Business Type — ফার্মেসি / ভেটেরিনারি */}
+      <div className="qc-gradient-card" style={{ ...S.card }}>
+        <div style={{ color: T.text, fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0ea5e9" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+          ব্যবসার ধরন
+        </div>
+        <div style={{ display:"flex", gap:10 }}>
+          <label style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:6, flex:1, padding:"11px 10px", borderRadius:10, border:`1.5px solid ${businessType === "pharmacy" ? "#0ea5e9" : T.border}`, background: businessType === "pharmacy" ? "#0ea5e915" : "transparent", cursor:"pointer" }}>
+            <input type="checkbox" checked={businessType === "pharmacy"} onChange={() => { setBusinessType?.("pharmacy"); showToast("ফার্মেসি মোড চালু হয়েছে"); }} style={{ width:16, height:16, accentColor:"#0ea5e9", cursor:"pointer" }} />
+            <span style={{ color: businessType === "pharmacy" ? "#0ea5e9" : T.sub, fontWeight:700, fontSize:13 }}>💊 ফার্মেসি</span>
+          </label>
+          <label style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:6, flex:1, padding:"11px 10px", borderRadius:10, border:`1.5px solid ${businessType === "veterinary" ? "#16a34a" : T.border}`, background: businessType === "veterinary" ? "#16a34a15" : "transparent", cursor:"pointer" }}>
+            <input type="checkbox" checked={businessType === "veterinary"} onChange={() => { setBusinessType?.("veterinary"); showToast("ভেটেরিনারি মোড চালু হয়েছে"); }} style={{ width:16, height:16, accentColor:"#16a34a", cursor:"pointer" }} />
+            <span style={{ color: businessType === "veterinary" ? "#16a34a" : T.sub, fontWeight:700, fontSize:13 }}>🐄 ভেটেরিনারি</span>
+          </label>
+        </div>
+        <div style={{ color:T.sub, fontSize:11, marginTop:8, lineHeight:1.5 }}>
+          এই সিলেকশন অনুযায়ী পণ্যের নাম-সাজেশন ডেটাসেট বদলে যাবে। ভেটেরিনারি মোডে আপনি যত পণ্য/সাপ্লায়ার যোগ করবেন, অ্যাপ নিজে থেকেই সেগুলো মনে রেখে ভবিষ্যতে সাজেশনে দেখাবে।
+        </div>
       </div>
 
       {/* ⑦ Bluetooth Printer */}
