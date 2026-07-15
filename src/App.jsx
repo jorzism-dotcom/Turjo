@@ -15019,8 +15019,21 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       // 🔴 Transaction fix — সার্ভারের বর্তমান (সবচেয়ে up-to-date) balance থেকে
       // atomically delta apply করা হয় — অন্য ডিভাইস ঠিক এই মুহূর্তে balance
       // বদলালেও কোনো delta হারায় না। ব্যর্থ/local-only হলে local snapshot থেকে fallback।
+      // 🔴 ফিক্স (অফলাইন race condition): আগে fallback হিসাব `selCust.balance`
+      // থেকে হতো — এটা ইনভয়েস তৈরি শুরুর সময়ের একটা পুরনো স্ন্যাপশট। অফলাইনে
+      // (FSS.transactionUpdateBalance তখন সাথে সাথেই null রিটার্ন করে, কারণ
+      // এটা সার্ভার-রাউন্ডট্রিপ ছাড়া কাজ করতে পারে না) একই কাস্টমারের জন্য
+      // পরপর দুটো বাকি/আংশিক ইনভয়েস দ্রুত তৈরি হলে দ্বিতীয়টার হিসাব প্রথমটার
+      // আপডেট দেখতেই পেত না — ফলে দ্বিতীয় setCustomers() প্রথমটাকে ওভাররাইট
+      // করে একটা delta হারিয়ে যেত (কাস্টমারের "মোট বাকি" ভুল, যদিও প্রতিটা
+      // ইনভয়েসের নিজের রেকর্ড ঠিকই থাকত)। এখন fallback-এ সবচেয়ে সাম্প্রতিক
+      // balance সরাসরি Zustand store থেকে (getState() — React re-render-এর
+      // অপেক্ষা করে না, তাই আগের setCustomers() কল ইতিমধ্যে যা বসিয়েছে সেটাই
+      // পড়া যায়) নেওয়া হয়, তাই পরপর একাধিক অফলাইন বাকি ইনভয়েস আর একে অপরকে
+      // হারায় না।
       const txBal = await FSS.transactionUpdateBalance(selCust.id, (serverBal) => Math.max(0, serverBal + delta));
-      const newBal = txBal !== null ? txBal : Math.max(0, (selCust.balance || 0) + delta);
+      const latestLocalBal = useAppStore.getState().customers.find(c => c.id === selCust.id)?.balance ?? (selCust.balance || 0);
+      const newBal = txBal !== null ? txBal : Math.max(0, latestLocalBal + delta);
       setCustomers(prev => prev.map(c => c.id === selCust.id ? { ...c, balance: newBal } : c));
       if (bakiAmt > 0) addTxn(selCust.id, "baki", bakiAmt, newBal, inv.id, note);
       // partial payment: নগদ অংশ joma txn
