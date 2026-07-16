@@ -1,1 +1,28 @@
+# .github/dependabot.yml
+# npm dependency ও GitHub Actions dependency-তে security vulnerability এলে
+# স্বয়ংক্রিয়ভাবে PR/alert তৈরি করবে। কোনো কোড লাগে না — এটা বসানোর পর GitHub
+# নিজে থেকেই সাপ্তাহিক চেক করবে এবং সমস্যা পেলে PR পাঠাবে (merge করা ঐচ্ছিক,
+# কিন্তু আগে থেকেই বসানো branch-protection/CI gate সেই PR-ও pass করতে হবে)।
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    # major version bump-এ breaking change হওয়ার সম্ভাবনা বেশি (Firebase/Capacitor/
+    # React মতো core dependency-তে) — সেগুলো auto-PR না করে শুধু security-critical
+    # patch/minor আপডেটগুলো PR হিসেবে আসুক, major আপডেট ম্যানুয়ালি রিভিউ করে করা ভালো।
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "github-actions"
