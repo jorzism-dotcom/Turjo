@@ -25,6 +25,86 @@
 
 ## এন্ট্রি
 
+### [পূরণ করুন] — ESLint যোগ করতেই ধরা পড়ল: "Cash Flow Forecast" ফিচার সম্পূর্ণ ভাঙা ছিল (src/worker.js)
+- উপসর্গ (Symptom): কোনো ইউজার-রিপোর্ট ছিল না — এটা "Static Analysis" (আইটেম #৮-এর
+  বাকি অংশ, ESLint) যোগ করার সময় প্রথম রানেই ধরা পড়েছে।
+- মূল কারণ (Root cause): `src/worker.js`-এ `self.onmessage = ({ data }) => { ... };`
+  হ্যান্ডলারের বন্ধনী `};` ভুল জায়গায় ছিল — "Cash Flow Forecast" (৬ নম্বর ফিচার)-এর
+  পুরো ব্লকটা এই বন্ধনীর *বাইরে*, মডিউল top-level-এ বসানো ছিল। ফলে `data`
+  ভ্যারিয়েবলটা undefined (`no-undef` — ESLint-এ error হিসেবে ধরা পড়ল), এবং worker
+  script load হওয়ার সময়েই `ReferenceError` থ্রো করত।
+- ব্লাস্ট রেডিয়াস: App.jsx থেকে `CASH_FLOW_FORECAST` টাইপ মেসেজ পাঠানো হতো এবং
+  `CASH_FLOW_RESULT`-এর জন্য অপেক্ষা করা হতো (`setCashFlow`) — কিন্তু worker কখনো
+  এই কোড পর্যন্ত পৌঁছাতোই না। মানে **"আগামী ৭ দিনের ক্যাশ ফ্লো ফোরকাস্ট" ফিচারটা
+  প্রতিটা দোকানে, প্রতিবার, সম্পূর্ণ নিরবভাবে ব্যর্থ হচ্ছিল** — কোনো error UI-তে
+  দেখা যেত না (worker script-level error, React ErrorBoundary এটা ধরে না), শুধু
+  ফলাফল কখনো আসত না। এই ৮ নম্বর কাজের (auto bug detection) গুরুত্ব ঠিক এই
+  ধরনের নিরব ব্যর্থতা ধরার জন্যই।
+- ফিক্স কোথায়: `src/worker.js` — `CASH_FLOW_FORECAST` ব্লকটা `self.onmessage`
+  হ্যান্ডলারের ভেতরে সরিয়ে আনা হলো (বন্ধনী সঠিক জায়গায়)।
+- রিগ্রেশন টেস্ট: এই কোডটা browser Worker API-নির্ভর (postMessage/self), তাই
+  plain-Node regression suite-এ সরাসরি কভার করা কঠিন — কিন্তু ESLint এখন CI-তে
+  প্রতিটা push-এ চলে, তাই একই ধরনের "orphaned block, undefined variable" বাগ
+  ভবিষ্যতে আর build পাস করতে পারবে না।
+- যাচাই: `npm run lint` (0 errors), `npm run build` (সফল), `node --check src/worker.js`
+  (syntax valid) — এই সেশনে আসলে চালিয়ে কনফার্ম করা হয়েছে। **তবে ডিভাইসে/টেস্ট
+  শপে গিয়ে Cash Flow Forecast ফিচারটা বাস্তবে এখন ডেটা দেখাচ্ছে কিনা — এটা এখনো
+  ম্যানুয়ালি চোখে দেখে যাচাই করা হয়নি, ডিপ্লয়ের পর করে নিন।**
+
+### [পূরণ করুন] — Auto bug detection guide (#৮)-এর বাকি অংশ যোগ হলো: ESLint, Integration tests, JSDoc+@ts-check
+- কী যোগ হলো:
+  - `eslint.config.js` — ইচ্ছাকৃতভাবে সংকীর্ণ কনফিগ: `react-hooks/rules-of-hooks`
+    ও `no-undef`/`no-unreachable` ইত্যাদি সত্যিকারের bug-প্যাটার্ন সবসময় error,
+    কিন্তু `react-hooks/exhaustive-deps` ও `no-unused-vars` warn (legacy ৩৩k-লাইন
+    ফাইলে শত শত pre-existing warning আছে — সেগুলো এখনই সব ফিক্স করা এই কাজের
+    scope-এর বাইরে, তাই CI ব্লক করে না)।
+  - `tests/integration-tests.mjs` — নতুন, ১০টা কেস। logic-tests.mjs-এর মতো একটা
+    ফাংশন আলাদা টেস্ট না করে, একাধিক ফাংশন চেইন করে বাস্তব ফ্লো যাচাই করে
+    (সেল→ভয়েড রাউন্ড-ট্রিপ, মিশ্র-পেমেন্ট দৈনিক সামারি, ক্রয়→সাপ্লায়ার-বাকি→ব্যাচ
+    নম্বর, FEFO স্টক সিলেকশন)।
+  - `jsconfig.json` + `@ts-check` (শুধু `src/logic.js`, `src/schemas.js`-এ) —
+    App.jsx-এ টাইপ-চেক করা হয়নি ইচ্ছাকৃতভাবে (টাইপবিহীন ৩৩k লাইনে চালালে শত শত
+    false-positive আসত)। এই চেকেই `getSortedActiveBatches`-এ একটা real
+    type-safety ইস্যু ধরা পড়ল (`Date - Date` ইমপ্লিসিট coercion) — রানটাইমে
+    বাগ ছিল না, কিন্তু `.getTime()` দিয়ে explicit করে দেওয়া হলো (আরও নিরাপদ)।
+  - `npm run lint`, `npm run typecheck` — নতুন script; দুটোই CI gate-এ যোগ,
+    build ধাপের আগে (`npm test`-এরও আগে)।
+- বর্তমান বেসলাইন: ESLint ০ error / ৩৮৩ warning (সব `no-unused-vars` টাইপ নয়েজ),
+  TypeScript ০ error। `npm test` এখন ৪৩+১৪+১০ = ৬৭টা কেস।
+- যাচাই: lint/typecheck/test/build — সবগুলো এই সেশনে বাস্তবে চালিয়ে কনফার্ম
+  করা হয়েছে।
+
+### [পূরণ করুন] — fast-check fuzz testing প্রথমবার আসলে রান করে ৩টা এজ-কেস বাগ ধরা পড়ল ও ফিক্স হলো
+- উপসর্গ (Symptom): আগের সেশনে fast-check ইনস্টল/লেখা হয়েছিল কিন্তু network-বিহীন
+  কন্টেইনারে কখনো আসলে রান করা যায়নি — শুধু কোড-রিভিউ করে "ঠিক আছে" ধরে নেওয়া
+  হয়েছিল। এই সেশনে প্রথমবার আসলে `npm run test:fuzz` চালিয়ে ৩টা রিয়েল বাগ পাওয়া গেল।
+- মূল কারণ (Root cause):
+  1. `calcInvoiceTotal(items, discount, extraCharge)` — `discount` extreme
+     negative (যেমন `-Infinity`) হলে `Math.min(discount, ...)` নিজেই ঋণাত্মক
+     অসীম হয়ে total-কে `Infinity` বানিয়ে দিত। একইভাবে `extraCharge` অসীম হলেও
+     total `Infinity` হতো।
+  2. `isBatchExpired(expiryDate)` — date-only ইনপুটে (`"YYYY-MM-DD"` প্রত্যাশিত)
+     ফরম্যাট যাচাই ছাড়াই সরাসরি `new Date()` দিয়ে parse করা হতো। JS-এর native
+     Date parser লেনিয়েন্ট — গার্বেজ স্ট্রিং ("0U") কেও চুপচাপ কোনো একটা
+     (ভুল) তারিখ হিসেবে মেনে নেয়, `NaN`/throw করে না। ফলে ভুল ডেটা এলে ব্যাচ
+     ভুলভাবে "মেয়াদোত্তীর্ণ" বা "মেয়াদহীন" ধরা হতে পারত।
+- ফিক্স কোথায় (`src/logic.js`):
+  - `calcInvoiceTotal`: `discount`/`extraCharge` কে `Number.isFinite()` দিয়ে
+    যাচাই করে non-finite হলে `0` ধরা হয়, তারপর আগের ক্ল্যাম্পিং লজিক চলে।
+  - `isBatchExpired`: date-only ব্রাঞ্চে `^\d{4}-\d{2}-\d{2}$` regex দিয়ে ফরম্যাট
+    কড়াভাবে যাচাই করার পরই parse করা হয়; না মিললে সরাসরি `false`।
+- ব্লাস্ট রেডিয়াস: `calcInvoiceTotal` সরাসরি `createInvoice()`-এ ব্যবহৃত, তাই এই
+  বাগ থিওরিটিক্যালি বাস্তব ইনভয়েসেও total ভুল/Infinity করে দিতে পারত (যদিও UI
+  থেকে discount/extraCharge কখনো Infinity পাঠানোর কথা না — বাস্তব ঝুঁকি কম,
+  কিন্তু ডেটা-করাপশন/import বাগে সম্ভব)। `isBatchExpired` ব্যাচ স্টক/সেলযোগ্যতা
+  হিসাবে ব্যবহৃত হয় — ভুল তারিখ পার্স হলে স্টক ভুল দেখানোর ঝুঁকি ছিল।
+- রিগ্রেশন টেস্ট: হ্যাঁ — ৩টা নতুন কেস `tests/logic-tests.mjs`-এ যোগ করা হয়েছে
+  (মোট ৪০ → ৪৩টা), যাতে এই এজ-কেসগুলো ভবিষ্যতে চুপচাপ ফিরে না আসে। fuzz suite
+  ৫ বার (× ১০০০ random রান) চালিয়ে কনফার্ম করা হয়েছে — সব প্রপার্টি পাস।
+- যাচাই: `npm test` (৪৩+১৪ কেস পাস), `npm run test:fuzz` (৫ বার), `npm run build`
+  (সফল), `npx stryker run` (৭২.৫% — আগের বেসলাইনের কাছাকাছি, রিগ্রেশন নেই) —
+  সবগুলো এই সেশনে আসলে চালিয়ে যাচাই করা হয়েছে, শুধু কোড-রিভিউ না।
+
 ### [পূরণ করুন] — Safety-net সম্প্রসারণ: fuzz testing, mutation testing, pre-commit gate, schema validation, dependency scanning
 - উপসর্গ/উদ্দেশ্য: এটা কোনো বাগ-ফিক্স না — এন্টারপ্রাইজ-লেভেল অ্যাপ (Stripe/Shopify-সমতুল্য)
   সাধারণত যা করে তার সাথে এখনো যা বাকি ছিল, তার ৪টা যোগ করা হলো (branch protection
