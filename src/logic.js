@@ -1,0 +1,204 @@
+// ─── src/logic.js ────────────────────────────────────────────────────────────
+// এই ফাইলে থাকা প্রতিটি ফাংশন খাঁটি (pure): কোনো React state, Firebase, বা DOM
+// ছোঁয় না — শুধু ইনপুট নিয়ে হিসাব করে আউটপুট দেয়। এই কারণেই এগুলো এই আলাদা
+// ফাইলে রাখা হয়েছে (App.jsx থেকে সরিয়ে আনা, কোনো লজিক পরিবর্তন ছাড়াই):
+//
+//   1. App.jsx এখান থেকে import করে ব্যবহার করে (browser bundle-এ)।
+//   2. tests/logic-tests.mjs ঠিক এই একই ফাইল থেকে import করে টেস্ট চালায়
+//      (plain Node.js-এ, কোনো browser/Firebase/build ছাড়াই, তাই CI-তে
+//      সেকেন্ডে চলে)।
+//
+// ⚠️ এই ফাইলের কোনো ফাংশন বদলালে, tests/logic-tests.mjs-এ সংশ্লিষ্ট টেস্ট
+// কেসও যাচাই/আপডেট করুন। নতুন কোনো pure formula/হিসাব ফাংশন লেখার সময় সেটাও
+// এখানে রাখুন (App.jsx-এর ভেতরে ছড়িয়ে না রেখে) — যাতে ভবিষ্যতেও regression
+// টেস্টে ধরা পড়ে।
+
+// ─── তারিখ/সময় (বাংলাদেশ, GMT+6, DST নেই) ───────────────────────────────────
+export const BD_OFFSET_MS = 6 * 60 * 60 * 1000;
+
+// d (যেকোনো real মুহূর্ত/Date) থেকে বাংলাদেশ সময় অনুযায়ী {y, m(0-indexed), day} বের করে
+export function _bdParts(d = new Date()) {
+  const s = new Date(d.getTime() + BD_OFFSET_MS);
+  return { y: s.getUTCFullYear(), m: s.getUTCMonth(), day: s.getUTCDate() };
+}
+
+// ─── calcNextBatch — Option B: Date-based B-YYMM-N format ───────────────────
+// ক্রয়ের তারিখ থেকে B-YYMM-N ফরম্যাটে ব্যাচ আইডি জেনারেট করে
+// একই মাসে একাধিক ক্রয়: B-2506-1, B-2506-2, ...
+export function calcNextBatch(productId, products, purchaseOrders, purchaseDate) {
+  const now = purchaseDate ? new Date(purchaseDate) : new Date();
+  // সবসময় GMT+6 (বাংলাদেশ) অনুযায়ী ব্যাচ-মাস নির্ধারিত হয় (ডিভাইসের local timezone না)।
+  const { y: _by, m: _bm } = _bdParts(now);
+  const yy = String(_by).slice(2);
+  const mm = String(_bm + 1).padStart(2, "0");
+  const prefix = `B-${yy}${mm}-`;
+
+  const peEntries = (purchaseOrders || []).filter(e =>
+    e._type === "pe" && e.productId === productId
+  );
+  const prod = (products || []).find(p => p.id === productId);
+  const batchBatches = (prod?.batches || []).map(b => b.batchNo || "");
+
+  const allBatchIds = [
+    ...peEntries.map(e => e.batch || ""),
+    ...batchBatches,
+  ];
+  const thisMonthNums = allBatchIds
+    .filter(b => b.startsWith(prefix))
+    .map(b => parseInt(b.slice(prefix.length), 10))
+    .filter(n => !isNaN(n));
+
+  const nextN = thisMonthNums.length > 0 ? Math.max(...thisMonthNums) + 1 : 1;
+  return `${prefix}${nextN}`;
+}
+
+// ─── isBatchExpired — একটা তারিখ আজকের হিসেবে মেয়াদোত্তীর্ণ কিনা ─────────────
+// date-only ("YYYY-MM-DD") হলে দিনের শেষ (23:59:59) পর্যন্ত সেইদিন এখনো বিক্রয়যোগ্য
+export function isBatchExpired(expiryDate) {
+  if (!expiryDate) return false;
+  const exp = /T/.test(expiryDate) ? new Date(expiryDate) : new Date(`${expiryDate}T23:59:59`);
+  if (isNaN(exp.getTime())) return false;
+  return exp < new Date();
+}
+
+// ─── getSortedActiveBatches — p.batches থেকে FIFO অর্ডারে সব active (qty>0,
+// অ-মেয়াদোত্তীর্ণ) batch — productBatchMap, prodBatchMap, এবং বিক্রয়ের সময়
+// stock deduction — সব একই sort logic ব্যবহার করে
+export function getSortedActiveBatches(product) {
+  if (!product?.batches || product.batches.length === 0) return [];
+  return product.batches
+    .filter(b => (b.qty || 0) > 0 && !isBatchExpired(b.expiryDate))
+    .sort((a, b) => {
+      if (a.expiryDate && b.expiryDate) return new Date(a.expiryDate) - new Date(b.expiryDate);
+      if (a.expiryDate) return -1;
+      if (b.expiryDate) return 1;
+      return new Date(a.at || 0) - new Date(b.at || 0);
+    });
+}
+
+// ─── getActiveBatch — p.batches থেকে FIFO active (অ-মেয়াদোত্তীর্ণ) batch ────
+export function getActiveBatch(product) {
+  const active = getSortedActiveBatches(product);
+  return active[0] || null;
+}
+
+// ─── getSellableStock — পণ্যের প্রকৃত বিক্রয়যোগ্য (অ-মেয়াদোত্তীর্ণ) স্টক ──────
+export function getSellableStock(product) {
+  if (!product) return 0;
+  if (product.productType === "service") return Infinity;
+  if (product.batches && product.batches.length > 0) {
+    return getSortedActiveBatches(product).reduce((s, b) => s + (b.qty || 0), 0);
+  }
+  // legacy: batch-tracking ছাড়া পুরনো পণ্য — top-level expiryDate দিয়ে চেক
+  if (isBatchExpired(product.expiryDate)) return 0;
+  return product.stock || 0;
+}
+
+// ─── computeSupplierDueMap — সাপ্লায়ার-ভিত্তিক বাকি হিসাব ────────────────────
+// due শুধুমাত্র ম্যানুয়াল "বাকি যোগ" এন্ট্রি (type:"due") ও পেমেন্ট (type:"payment")
+// দিয়ে নির্ধারিত হয় — ক্রয় অর্ডারের মোট মূল্যের (totalPurchased) সাথে due-এর
+// কোনো সরাসরি সম্পর্ক নেই (আগে একটা বাগ ছিল যেখানে শুধু ক্রয় অর্ডার থাকলেই
+// বাকি দেখাতো, ম্যানুয়ালি যোগ না করলেও — এখন ফিক্সড)।
+export function computeSupplierDueMap(products = [], purchaseOrders = [], supplierPayments = []) {
+  const map = {};
+  const ensure = (name) => {
+    if (!map[name]) map[name] = { name, productCount: 0, totalStock: 0, totalPurchased: 0, paid: 0, due: 0 };
+    return map[name];
+  };
+  (products || []).forEach(p => {
+    const name = (p.company || p.supplier || "").trim();
+    if (!name) return;
+    const row = ensure(name);
+    row.productCount++;
+    row.totalStock += (p.stock || 0);
+  });
+  (purchaseOrders || []).forEach(po => {
+    const name = (po.supplier || po.company || "").trim();
+    if (!name) return;
+    const row = ensure(name);
+    const amt = (po.items || []).reduce((s, it) => s + (it.qty || 0) * (it.costPrice || it.price || 0), 0);
+    row.totalPurchased += amt;
+  });
+  (supplierPayments || []).forEach(p => {
+    const name = (p.supplierName || "").trim();
+    if (!name) return;
+    const row = ensure(name);
+    const signed = p.type === "due" ? -(p.amount || 0) : (p.amount || 0);
+    row.paid += signed;
+  });
+  Object.values(map).forEach(row => { row.due = Math.max(0, -row.paid); });
+  return map;
+}
+
+// ─── Shared Profit Utilities ──────────────────────────────────────────────────
+// সব জায়গায় একই formula: cost = it.costPrice ?? p.costPrice ?? 0 (invoice-time দাম আগে)
+//                          revenue = inv.total (discount-পরবর্তী)
+export function _itemCostPrice(item, prodMap) {
+  const prod = prodMap?.get?.(item.productId);
+  // সেবা পণ্যের costPrice সবসময় 0 (পুরো বিক্রয়মূল্যই লাভ)
+  if (item.productType === "service" || prod?.productType === "service") return 0;
+  return (item.costPrice != null) ? item.costPrice : (prod?.costPrice ?? 0);
+}
+
+export function calcInvoiceProfit(inv, prodMap) {
+  const items = inv.items || [];
+  const subtotal = items.reduce((s, it) => s + (it.price || 0) * (it.qty || 1), 0);
+  // total = subtotal - itemDiscount - discount + extraCharge
+  // revenue = (subtotal - itemDiscount - discount) + extraCharge = items revenue + extraCharge
+  const discount = (inv.discount || 0) + (inv.itemDiscount || 0);
+  const extraCharge = inv.extraCharge || 0;
+  const discountRatio = subtotal > 0 ? (subtotal - discount) / subtotal : 1;
+  const itemsProfit = items.reduce((s, it) => {
+    const qty = it.qty || 1;
+    const revenue = (it.price || 0) * qty * discountRatio; // discount-adjusted
+    const cost = _itemCostPrice(it, prodMap) * qty;
+    return s + revenue - cost;
+  }, 0);
+  // extraCharge পুরোটাই লাভ (কোনো cost নেই)
+  return itemsProfit + extraCharge;
+}
+
+export function calcProfitTotal(invList, prodMap) {
+  return invList.reduce((s, inv) => s + calcInvoiceProfit(inv, prodMap), 0);
+}
+
+// ⚠️⚠️ গুরুত্বপূর্ণ সতর্কতা — নিচের ৪টি ফাংশন এখনো "reference-copy":
+// এগুলো createInvoice() / voidInvoice() / buildSummary()-এর ভেতরে (component-এর
+// মধ্যে state-bound হিসেবে) যে আসল ফর্মুলা আছে, তার হাতে-লেখা প্রতিলিপি — সেই
+// আসল কোড এখনো এই ফাংশনগুলো import করে ব্যবহার করছে না (তারা আলাদা, নিজেদের
+// জায়গায় সরাসরি হিসাব করে)। তাই এই মুহূর্তে এই ৪টার টেস্ট শুধু "এই কপিটা এখনো
+// সঠিক কিনা" যাচাই করে — createInvoice/voidInvoice/buildSummary-এর আসল কোড
+// বদলে গেলে এই টেস্ট তা এখনই ধরতে পারবে না। এটা একটা পরিচিত, ইচ্ছাকৃতভাবে
+// এখনো-না-করা পরবর্তী ধাপ — createInvoice/voidInvoice/buildSummary-কে
+// আলাদাভাবে, সাবধানে রিফ্যাক্টর করে এই ফাংশনগুলো import করানো (আলাদা,
+// রিভিউ-করা পরিবর্তন হিসেবে — এই সেফটি-নেট বসানোর সাথে না মিশিয়ে)।
+// যতক্ষণ না সেই রিফ্যাক্টর হচ্ছে, এই ফাংশন বদলালে অবশ্যই
+// createInvoice/voidInvoice/buildSummary-এর ভেতরের আসল কোডও হাতে মিলিয়ে
+// আপডেট করুন।
+// ─── ইনভয়েস total সূত্র — createInvoice()-এর ফর্মুলার রেফারেন্স-কপি ──────────
+export function calcInvoiceTotal(items, discount, extraCharge) {
+  const subtotal = items.reduce((s, i) => s + i.qty * i.price, 0);
+  const itemDiscTotal = items.reduce((s, i) => s + Math.min(Math.max(i.itemDiscount || 0, 0), i.qty * i.price), 0);
+  const discAmt = Math.min(discount || 0, Math.max(0, subtotal - itemDiscTotal));
+  const extraAmt = Math.max(extraCharge || 0, 0);
+  return subtotal - itemDiscTotal - discAmt + extraAmt;
+}
+
+// ─── ভয়েড-রিভার্সাল netChange সূত্র — voidInvoice()-এর হিসাবের রেফারেন্স-কপি ──
+export function calcVoidNetChange(inv) {
+  return (inv.payType === "baki" ? inv.total : (inv.bakiAmount || 0)) - (inv.overpayAmount || 0);
+}
+
+// ─── ক্যাশ ড্রয়ার সূত্র — buildSummary()-এর হিসাবের রেফারেন্স-কপি ──────────────
+export function calcCashDrawer(opening, cashSale, joma, withdrawal) {
+  return opening + cashSale + joma - withdrawal;
+}
+
+// ─── ব্যাচ-স্টক রিস্টোর — voidInvoice()-এর ব্যাচ-qty-ফেরত লজিকের রেফারেন্স-কপি ──
+export function restoreBatchQty(batches, batchNo, restoredQty, fallback = {}) {
+  let updated = batches ? [...batches] : [];
+  const idx = updated.findIndex(b => b.batchNo === batchNo);
+  if (idx >= 0) updated[idx] = { ...updated[idx], qty: (updated[idx].qty || 0) + restoredQty };
+  else updated.push({ batchNo, qty: restoredQty, ...fallback });
+  return updated;
+}

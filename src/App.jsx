@@ -11,6 +11,15 @@ import {
 import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
 import { Virtuoso, VirtuosoGrid } from "react-virtuoso";
+// 🧪 Shared pure logic (App.jsx-এর ভেতর ছড়িয়ে না রেখে src/logic.js-এ রাখা হয়েছে,
+// যাতে tests/logic-tests.mjs ঠিক এই একই কোড plain Node-এ import করে regression
+// টেস্ট চালাতে পারে — CI-তে build হওয়ার আগেই)।
+import {
+  BD_OFFSET_MS, _bdParts,
+  calcNextBatch, isBatchExpired, getSortedActiveBatches, getActiveBatch, getSellableStock,
+  computeSupplierDueMap, _itemCostPrice, calcInvoiceProfit, calcProfitTotal,
+  calcInvoiceTotal, calcVoidNetChange, calcCashDrawer, restoreBatchQty,
+} from "./logic.js";
 // 🔴 recharts — শুধু AI পেজের "Analytics & Report" ট্যাবে ব্যবহার হয় (ডিফল্ট স্ক্রিন নয়),
 // তাই স্ট্যাটিক import না রেখে নিচে lazy dynamic import() দিয়ে লোড করা হচ্ছে (useRecharts হুক) —
 // প্রতি অ্যাপ-ওপেনে এই চার্ট লাইব্রেরির parse/eval খরচ আর বহন করতে হবে না।
@@ -260,87 +269,9 @@ function bnMonthYear(dateStr) {
   return (m >= 1 && m <= 12) ? `${BN_MONTH_NAMES[m - 1]}, ${y}` : "";
 }
 
-// ─── calcNextBatch — Option B: Date-based B-YYMM-N format ───────────────────
-// ক্রয়ের তারিখ থেকে B-YYMM-N ফরম্যাটে ব্যাচ আইডি জেনারেট করে
-// একই মাসে একাধিক ক্রয়: B-2506-1, B-2506-2, ...
-function calcNextBatch(productId, products, purchaseOrders, purchaseDate) {
-  const now = purchaseDate ? new Date(purchaseDate) : new Date();
-  // 🔴 ফিক্স: আগে now.getFullYear()/getMonth() (ডিভাইসের local timezone) ব্যবহার
-  // হতো — এখন সবসময় GMT+6 (বাংলাদেশ) অনুযায়ী ব্যাচ-মাস নির্ধারিত হয়।
-  const { y: _by, m: _bm } = _bdParts(now);
-  const yy = String(_by).slice(2);
-  const mm = String(_bm + 1).padStart(2, "0");
-  const prefix = `B-${yy}${mm}-`;
+// calcNextBatch, isBatchExpired — এখন src/logic.js থেকে import করা (উপরে দেখুন)।
 
-  const peEntries = (purchaseOrders || []).filter(e =>
-    e._type === "pe" && e.productId === productId
-  );
-  const prod = (products || []).find(p => p.id === productId);
-  const batchBatches = (prod?.batches || []).map(b => b.batchNo || "");
-
-  const allBatchIds = [
-    ...peEntries.map(e => e.batch || ""),
-    ...batchBatches,
-  ];
-  const thisMonthNums = allBatchIds
-    .filter(b => b.startsWith(prefix))
-    .map(b => parseInt(b.slice(prefix.length), 10))
-    .filter(n => !isNaN(n));
-
-  const nextN = thisMonthNums.length > 0 ? Math.max(...thisMonthNums) + 1 : 1;
-  return `${prefix}${nextN}`;
-}
-
-// ─── isBatchExpired — একটা তারিখ আজকের হিসেবে মেয়াদোত্তীর্ণ কিনা ─────────────
-// date-only ("YYYY-MM-DD") হলে দিনের শেষ (23:59:59) পর্যন্ত সেইদিন এখনো বিক্রয়যোগ্য
-function isBatchExpired(expiryDate) {
-  if (!expiryDate) return false;
-  const exp = /T/.test(expiryDate) ? new Date(expiryDate) : new Date(`${expiryDate}T23:59:59`);
-  if (isNaN(exp.getTime())) return false;
-  return exp < new Date();
-}
-
-// ─── getSortedActiveBatches — p.batches থেকে FIFO অর্ডারে সব active (qty>0,
-// অ-মেয়াদোত্তীর্ণ) batch ── productBatchMap, prodBatchMap, এবং বিক্রয়ের সময়
-// stock deduction — সব একই sort logic ব্যবহার করে
-// 🔴 ফিক্স: মেয়াদোত্তীর্ণ ব্যাচ (qty থাকলেও) এখন এখান থেকে বাদ যায়, তাই
-// বিক্রয়/FIFO-deduction কখনো মেয়াদোত্তীর্ণ ব্যাচ থেকে হয় না — একই পণ্যে একটা
-// মেয়াদোত্তীর্ণ ও একটা সচল ব্যাচ দুটোই থাকলে শুধু সচলটা থেকেই বিক্রি হবে।
-// এক্সপায়ার্ড ব্যাচ raw p.batches[]-এ থেকেই যায় (মেয়াদোত্তীর্ণ পণ্য পেজ ও
-// প্রোডাক্ট কার্ডে দেখানোর জন্য), শুধু "বিক্রয়যোগ্য পুল" থেকে বাদ পড়ে।
-function getSortedActiveBatches(product) {
-  if (!product?.batches || product.batches.length === 0) return [];
-  return product.batches
-    .filter(b => (b.qty || 0) > 0 && !isBatchExpired(b.expiryDate))
-    .sort((a, b) => {
-      if (a.expiryDate && b.expiryDate) return new Date(a.expiryDate) - new Date(b.expiryDate);
-      if (a.expiryDate) return -1;
-      if (b.expiryDate) return 1;
-      return new Date(a.at || 0) - new Date(b.at || 0);
-    });
-}
-
-// ─── getActiveBatch — p.batches থেকে FIFO active (অ-মেয়াদোত্তীর্ণ) batch ────
-// productBatchMap ও prodBatchMap উভয়ের shared helper
-function getActiveBatch(product) {
-  const active = getSortedActiveBatches(product);
-  return active[0] || null;
-}
-
-// ─── getSellableStock — পণ্যের প্রকৃত বিক্রয়যোগ্য (অ-মেয়াদোত্তীর্ণ) স্টক ──────
-// p.stock-এ মেয়াদোত্তীর্ণ ব্যাচের qty-ও যোগ থাকতে পারে (যতক্ষণ না ম্যানুয়ালি
-// রাইট-অফ করা হয়) — তাই বিক্রয় UI-তে max-qty/disable চেক এটা দিয়ে করতে হবে,
-// সরাসরি p.stock দিয়ে না — নাহলে মেয়াদোত্তীর্ণ স্টকও বিক্রির অনুমতি পেয়ে যায়।
-function getSellableStock(product) {
-  if (!product) return 0;
-  if (product.productType === "service") return Infinity;
-  if (product.batches && product.batches.length > 0) {
-    return getSortedActiveBatches(product).reduce((s, b) => s + (b.qty || 0), 0);
-  }
-  // legacy: batch-tracking ছাড়া পুরনো পণ্য — top-level expiryDate দিয়ে চেক
-  if (isBatchExpired(product.expiryDate)) return 0;
-  return product.stock || 0;
-}
+// getSortedActiveBatches, getActiveBatch, getSellableStock — এখন src/logic.js থেকে import করা।
 
 // ─── computeStockDeductionFIFO — একটা পণ্য থেকে qty বাদ দিলে নতুন stock/batches
 // কী হবে তা বিশুদ্ধভাবে (pure function, কোনো state/side-effect নেই) হিসেব করে।
@@ -549,49 +480,7 @@ const getKnownSuppliers = (products = [], purchaseOrders = []) => {
   return Array.from(set);
 };
 
-// ── 🏭 computeSupplierDueMap — সাপ্লায়ার-ভিত্তিক মোট ক্রয়/পরিশোধ/বাকি হিসাব ──
-// একটাই কেন্দ্রীয় হিসাব — SupplierPaymentModule (সাপ্লায়ার পেজ) ও Dashboard-এর
-// ক্যাশ উইথড্রয়াল (সাপ্লায়ারকে পেমেন্ট) — দুই জায়গাতেই এই একই ফাংশন ব্যবহার হয়
-// যাতে "বর্তমান বাকি" সবখানে সবসময় সিঙ্ক থাকে। supplierPayments-এর প্রতিটি এন্ট্রি
-// সাধারণত একটি পরিশোধ (type omitted/"payment" → paid বাড়ে); type:"due" হলে সেটা
-// ম্যানুয়ালি যোগ করা বাড়তি বাকি (paid কমে, ফলে due বাড়ে)।
-function computeSupplierDueMap(products = [], purchaseOrders = [], supplierPayments = []) {
-  const map = {};
-  const ensure = (name) => {
-    if (!map[name]) map[name] = { name, productCount: 0, totalStock: 0, totalPurchased: 0, paid: 0, due: 0 };
-    return map[name];
-  };
-  (products || []).forEach(p => {
-    const name = (p.company || p.supplier || "").trim();
-    if (!name) return;
-    const row = ensure(name);
-    row.productCount++;
-    row.totalStock += (p.stock || 0);
-  });
-  (purchaseOrders || []).forEach(po => {
-    const name = (po.supplier || po.company || "").trim();
-    if (!name) return;
-    const row = ensure(name);
-    const amt = (po.items || []).reduce((s, it) => s + (it.qty || 0) * (it.costPrice || it.price || 0), 0);
-    row.totalPurchased += amt;
-  });
-  (supplierPayments || []).forEach(p => {
-    const name = (p.supplierName || "").trim();
-    if (!name) return;
-    const row = ensure(name);
-    const signed = p.type === "due" ? -(p.amount || 0) : (p.amount || 0);
-    row.paid += signed;
-  });
-  // 🔴 ফিক্স: আগে due = totalPurchased (ক্রয় অর্ডারের মোট মূল্য) − paid হিসাবে বের হতো,
-  // ফলে ম্যানুয়ালি "বাকি যোগ" না করলেও শুধু ক্রয় অর্ডার থাকলেই বাকি দেখাত — যেটা
-  // ড্যাশবোর্ডের সাথে সিঙ্ক থাকতো না এবং ব্যবহারকারীর প্রত্যাশিত আচরণ ছিল না। এখন
-  // totalPurchased শুধু তথ্যের জন্য (কার্ডে "মোট ক্রয়" দেখাতে) হিসাব হয়, বাকির (due)
-  // সাথে এর কোনো সম্পর্ক নেই — due শুধুমাত্র ম্যানুয়াল "বাকি যোগ" বাটন দিয়ে যোগ করা
-  // এন্ট্রি (type:"due") ও পেমেন্ট (type:"payment"/ক্যাশ ড্রয়ার থেকে পেমেন্ট) দিয়ে
-  // নির্ধারিত হয়: due = max(0, বাকি-যোগ-এর যোগফল − পেমেন্টের যোগফল)।
-  Object.values(map).forEach(row => { row.due = Math.max(0, -row.paid); });
-  return map;
-}
+// computeSupplierDueMap — এখন src/logic.js থেকে import করা।
 
 // ─── SearchBar — reusable smart search input component ───────────────────────
 function SearchBar({ placeholder, value, onChange, onClear, color = "#22c55e", T, S, style, voiceColor, showCount, count, accentBorder, autoFocus }) {
@@ -4501,20 +4390,8 @@ const ArchiveDB = {
   },
 };
 
-// 🔴 ফিক্স: আগে দুইভাবে dateKey বানানো হতো — কোথাও raw UTC
-// (d.toISOString().split("T")[0], যেটা বাংলাদেশ স্থানীয় রাত ১২টা থেকে ভোর ৬টা
-// পর্যন্ত "গতকাল" দেখাতো), কোথাও ডিভাইসের local calendar date
-// (getFullYear/getMonth/getDate, যেটা ডিভাইসের টাইমজোন বাংলাদেশ না হলে ভুল
-// হতে পারতো)। এখন সব জায়গায় একটাই নির্ভরযোগ্য পদ্ধতি — ডিভাইসের টাইমজোন সেটিং
-// যা-ই থাকুক না কেন, সবসময় fixed GMT+6 (বাংলাদেশ, DST নেই) অনুযায়ী তারিখ/মাস
-// গণনা হয়। BD_OFFSET_MS যোগ করে UTC getters ব্যবহার করাই এই ট্রিকের মূল কথা।
-const BD_OFFSET_MS = 6 * 60 * 60 * 1000;
+// BD_OFFSET_MS, _bdParts — এখন src/logic.js থেকে import করা।
 const MONTH_NAMES_EN = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-// d (যেকোনো real মুহূর্ত/Date) থেকে বাংলাদেশ সময় অনুযায়ী {y, m(0-indexed), day} বের করে
-function _bdParts(d = new Date()) {
-  const s = new Date(d.getTime() + BD_OFFSET_MS);
-  return { y: s.getUTCFullYear(), m: s.getUTCMonth(), day: s.getUTCDate() };
-}
 function _dateKeyOf(d) {
   const { y, m, day } = _bdParts(d);
   return `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
@@ -8472,39 +8349,7 @@ async function shareViaWhatsAppSmart(type, name, mobile, message, showToast) {
 // এখন পুরো অ্যাপে একই নিয়ম — সরল GMT+6 মধ্যরাত — ব্যবহার হয়, _dateKeyOf-এর সাথে ১০০% সিঙ্কড।
 const todayEn = () => _dateKeyOf(new Date());
 
-// ─── Shared Profit Utilities ──────────────────────────────────────────────────
-// সব জায়গায় একই formula: cost = it.costPrice ?? p.costPrice ?? 0 (invoice-time দাম আগে)
-//                          revenue = inv.total (discount-পরবর্তী)
-// per-item breakdown-এ revenue discount অনুপাতে scale হয় যাতে যোগফল inv.total-এর সাথে মেলে
-const _itemCostPrice = (item, prodMap) => {
-  const prod = prodMap?.get?.(item.productId);
-  // সেবা পণ্যের costPrice সবসময় 0 (পুরো বিক্রয়মূল্যই লাভ)
-  if (item.productType === "service" || prod?.productType === "service") return 0;
-  return (item.costPrice != null) ? item.costPrice : (prod?.costPrice ?? 0);
-};
-
-const calcInvoiceProfit = (inv, prodMap) => {
-  const items = inv.items || [];
-  const subtotal = items.reduce((s, it) => s + (it.price || 0) * (it.qty || 1), 0);
-  // Fix 5: discountRatio শুধু discount-এর জন্য — extraCharge আলাদা যোগ হবে
-  // total = subtotal - itemDiscount - discount + extraCharge
-  // তাই revenue = (subtotal - itemDiscount - discount) + extraCharge = items revenue + extraCharge
-  // 🔴 ফিক্স: আগে শুধু inv.discount (গ্লোবাল ডিসকাউন্ট) বিয়োগ হতো, inv.itemDiscount
-  // (প্রতি-লাইন ডিসকাউন্ট, createInvoice-এ আলাদা ফিল্ডে সেভ হয়) সম্পূর্ণ উপেক্ষিত
-  // হতো — ফলে কোনো ইনভয়েসে লাইন-আইটেম ডিসকাউন্ট দেওয়া থাকলে Dashboard/AI-এর
-  // "আজকের/এই মাসের লাভ" ঠিক ততটাই বেশি দেখাত (itemDiscount-এর সমপরিমাণ)।
-  const discount = (inv.discount || 0) + (inv.itemDiscount || 0);
-  const extraCharge = inv.extraCharge || 0;
-  const discountRatio = subtotal > 0 ? (subtotal - discount) / subtotal : 1;
-  const itemsProfit = items.reduce((s, it) => {
-    const qty = it.qty || 1;
-    const revenue = (it.price || 0) * qty * discountRatio; // discount-adjusted
-    const cost = _itemCostPrice(it, prodMap) * qty;
-    return s + revenue - cost;
-  }, 0);
-  // extraCharge পুরোটাই লাভ (কোনো cost নেই)
-  return itemsProfit + extraCharge;
-};
+// _itemCostPrice, calcInvoiceProfit — এখন src/logic.js থেকে import করা।
 
 // ── 🧪 Logic Test Suite — pure ফাংশন/সূত্রকে হাতে বানানো fixture দিয়ে চালিয়ে
 // "input X দিলে output Y হওয়া উচিত" যাচাই করে। কোনো নেটওয়ার্ক/Firestore/React
@@ -8567,14 +8412,8 @@ const runLogicTests = () => {
     return { pass: actual === 0, expected: 0, actual };
   });
 
-  // ── ইনভয়েস total সূত্র — createInvoice()-এ ব্যবহৃত সূত্রের reference-copy ──
-  const calcInvoiceTotal = (items, discount, extraCharge) => {
-    const subtotal = items.reduce((s, i) => s + i.qty * i.price, 0);
-    const itemDiscTotal = items.reduce((s, i) => s + Math.min(Math.max(i.itemDiscount || 0, 0), i.qty * i.price), 0);
-    const discAmt = Math.min(discount || 0, Math.max(0, subtotal - itemDiscTotal));
-    const extraAmt = Math.max(extraCharge || 0, 0);
-    return subtotal - itemDiscTotal - discAmt + extraAmt;
-  };
+  // ── ইনভয়েস total সূত্র — calcInvoiceTotal এখন src/logic.js থেকে import করা
+  // (⚠️ এখনো createInvoice()-এর reference-copy — logic.js-এর সতর্কতা দেখুন) ──
   t("ইনভয়েস টোটাল সূত্র", "লাইন-আইটেম ডিসকাউন্ট সাবটোটাল ছাড়িয়ে যেতে পারবে না (clamp)", () => {
     const actual = calcInvoiceTotal([{ price: 100, qty: 1, itemDiscount: 999 }], 0, 0);
     return { pass: actual === 0, expected: 0, actual }; // negative total হওয়া উচিত না
@@ -8594,8 +8433,7 @@ const runLogicTests = () => {
     return { pass: actual === 235, expected: 235, actual };
   });
 
-  // ── ভয়েড-রিভার্সাল netChange সূত্র — voidInvoice()-এর হিসাবের reference-copy ──
-  const calcVoidNetChange = (inv) => (inv.payType === "baki" ? inv.total : (inv.bakiAmount || 0)) - (inv.overpayAmount || 0);
+  // ── ভয়েড-রিভার্সাল netChange সূত্র — এখন src/logic.js থেকে import করা ──
   t("ভয়েড রিভার্সাল সূত্র", "পুরো বাকি (baki) ইনভয়েস ভয়েড হলে পুরো total-ই বিয়োগ হওয়া উচিত", () => {
     const actual = calcVoidNetChange({ payType: "baki", total: 500, bakiAmount: 0, overpayAmount: 0 });
     return { pass: actual === 500, expected: 500, actual };
@@ -8617,8 +8455,7 @@ const runLogicTests = () => {
     return { pass: newBal === 0, expected: 0, actual: newBal };
   });
 
-  // ── ক্যাশ ড্রয়ার সূত্র — buildSummary()-এর হিসাবের reference-copy ──
-  const calcCashDrawer = (opening, cashSale, joma, withdrawal) => opening + cashSale + joma - withdrawal;
+  // ── ক্যাশ ড্রয়ার সূত্র — এখন src/logic.js থেকে import করা ──
   t("ক্যাশ ড্রয়ার সূত্র", "ওপেনিং+বিক্রি+আদায়−উত্তোলন — স্বাভাবিক কেস", () => {
     const actual = calcCashDrawer(1000, 5000, 800, 1200);
     return { pass: actual === 5600, expected: 5600, actual };
@@ -8628,14 +8465,7 @@ const runLogicTests = () => {
     return { pass: actual === 0, expected: 0, actual };
   });
 
-  // ── ব্যাচ-স্টক রিস্টোর — voidInvoice()-এর ব্যাচ-qty-ফেরত লজিকের reference-copy ──
-  const restoreBatchQty = (batches, batchNo, restoredQty, fallback = {}) => {
-    let updated = batches ? [...batches] : [];
-    const idx = updated.findIndex(b => b.batchNo === batchNo);
-    if (idx >= 0) updated[idx] = { ...updated[idx], qty: (updated[idx].qty || 0) + restoredQty };
-    else updated.push({ batchNo, qty: restoredQty, ...fallback });
-    return updated;
-  };
+  // ── ব্যাচ-স্টক রিস্টোর — এখন src/logic.js থেকে import করা ──
   t("ব্যাচ রিস্টোর সূত্র", "বিদ্যমান ব্যাচে qty যোগ হওয়া উচিত (প্রতিস্থাপন নয়)", () => {
     const result = restoreBatchQty([{ batchNo: "B1", qty: 5 }], "B1", 3);
     const actual = result.find(b => b.batchNo === "B1")?.qty;
@@ -8655,8 +8485,7 @@ const runLogicTests = () => {
   return results;
 };
 
-const calcProfitTotal = (invList, prodMap) =>
-  invList.reduce((s, inv) => s + calcInvoiceProfit(inv, prodMap), 0);
+// calcProfitTotal — এখন src/logic.js থেকে import করা।
 
 // per-product breakdown with discount-scaled revenue
 const calcProfitByProduct = (invList, prodMap, productsFallback = []) => {
@@ -12821,31 +12650,20 @@ function SmartBusinessMgmt() {
         // getState() থেকে পড়া হচ্ছে, যাতে পরপর দুইটা ইনভয়েস অফলাইনে ভয়েড হলে
         // দ্বিতীয়টার restore প্রথমটাকে ওভাররাইট করে হারিয়ে না যায়।
         const freshP = useAppStore.getState().products.find(p => p.id === soldItem.productId) || localP;
-        let updatedBatches = freshP.batches ? [...freshP.batches] : [];
-        if (soldBatchNo) {
-          const bIdx = updatedBatches.findIndex(b => b.batchNo === soldBatchNo);
-          if (bIdx >= 0) {
-            updatedBatches[bIdx] = { ...updatedBatches[bIdx], qty: (updatedBatches[bIdx].qty || 0) + restoredQty };
-          } else {
-            updatedBatches.push({
-              batchNo: soldBatchNo, qty: restoredQty,
+        const existingBatches = freshP.batches ? [...freshP.batches] : [];
+        // 🧪 shared formula (src/logic.js) — regression test suite এখন সরাসরি এই
+        // একই restoreBatchQty() কোড টেস্ট করে, আলাদা "reference-copy" না।
+        const updatedBatches = soldBatchNo
+          ? restoreBatchQty(existingBatches, soldBatchNo, restoredQty, {
               costPrice: soldItem.costPrice || freshP.costPrice || 0,
               expiryDate: soldItem.expiryDate || "",
-            });
-          }
-        } else {
-          updatedBatches = [
-            ...updatedBatches,
-            {
-              batchNo: `VOID-ADJ-${inv.id.slice(-6)}`,
-              qty: restoredQty,
+            })
+          : restoreBatchQty(existingBatches, `VOID-ADJ-${inv.id.slice(-6)}`, restoredQty, {
               costPrice: soldItem.costPrice || freshP.avgCost || freshP.costPrice || 0,
               expiryDate: null,
               addedAt: new Date().toISOString(),
               note: "voidInvoice legacy-item adjustment",
-            },
-          ];
-        }
+            });
         return { id: soldItem.productId, stock: (freshP.stock || 0) + restoredQty, batches: updatedBatches };
       }));
       const restoreMap = new Map(restoreResults.filter(Boolean).map(r => [r.id, r]));
@@ -12859,7 +12677,9 @@ function SmartBusinessMgmt() {
     // নেট প্রভাব: এই ইনভয়েস বাকি যোগ করেছিল (+bakiAmount), আর overpay থাকলে আগের
     // বাকি কমিয়েছিল (-overpayAmount) — ভয়েডে দুটোই সঠিকভাবে উল্টাতে হবে
     if ((inv.payType === "baki" || inv.payType === "partial") && inv.customerId) {
-      const netChange = (inv.payType === "baki" ? inv.total : (inv.bakiAmount || 0)) - (inv.overpayAmount || 0);
+      // 🧪 shared formula (src/logic.js) — regression test suite এখন সরাসরি এই
+      // একই কোড টেস্ট করে, আলাদা "reference-copy" না।
+      const netChange = calcVoidNetChange(inv);
       if (netChange !== 0) {
         // 🔴 Transaction fix — Firebase enabled থাকলে সার্ভারের বর্তমান balance
         // থেকে atomic transaction-এ বিয়োগ করা হয় (অন্য ডিভাইসের concurrent এডিট
@@ -15347,7 +15167,10 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
   const itemDiscTotal = items.reduce((s, i) => s + Math.min(Math.max(parseFloat(i.itemDiscount) || 0, 0), i.qty * i.price), 0);
   const discAmt        = Math.min(parseFloat(discount) || 0, Math.max(0, subtotal - itemDiscTotal));
   const extraAmt       = Math.max(parseFloat(extraCharge) || 0, 0);
-  const total           = subtotal - itemDiscTotal - discAmt + extraAmt;
+  // 🧪 shared formula (src/logic.js) — regression test suite এখন সরাসরি এই একই
+  // calcInvoiceTotal() কোড টেস্ট করে, আলাদা "reference-copy" না। discAmt/extraAmt
+  // ইতিমধ্যে ক্ল্যাম্প করা, তাই calcInvoiceTotal-এর ভেতরের দ্বিতীয়বার ক্ল্যাম্প নিরীহ (no-op)।
+  const total           = calcInvoiceTotal(items, discAmt, extraAmt);
   const paidAmt = payType === "partial" ? (parseFloat(partialAmt) || 0) : (payType === "cash" ? total : 0);
   const bakiAmt = Math.max(0, total - paidAmt);
   // Overpayment split: পরিশোধ > আজকের invoice → অতিরিক্ত অংশ কাস্টমারের জমা হবে
@@ -26114,7 +25937,9 @@ function buildDailySummaryData({ invoices = [], txns = [], customers = [], produ
   const todayPurchaseCost = (purchaseOrders || [])
     .filter(p => p._type === "pe" && (p.dateKey === todayKey || (p.createdAt && p.createdAt.startsWith(todayKey))))
     .reduce((s, p) => s + (p.totalCost || 0), 0);
-  const currentCashDrawer = openingCash + cashSale + jomaToday - cashOutToday;
+  // 🧪 shared formula (src/logic.js) — regression test suite এখন সরাসরি এই একই
+  // calcCashDrawer() কোড টেস্ট করে, আলাদা "reference-copy" না।
+  const currentCashDrawer = calcCashDrawer(openingCash, cashSale, jomaToday, cashOutToday);
   return { revenue, cashSale, bakiToday, jomaToday, totalBakiNow, totalProfit, totalLoss, openingCash, cashOutToday, currentCashDrawer, todayPurchaseCost };
 }
 
