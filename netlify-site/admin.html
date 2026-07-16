@@ -1704,11 +1704,12 @@ function fbLog(msg, type) {
 }
 
 function fbInitTab() {
-  if (fbInited) return;
-  fbInited = true;
-  document.getElementById('fbRulesText').value   = FB_DEFAULT_RULES;
-  document.getElementById('fbIndexesText').value = FB_DEFAULT_INDEXES;
-  document.getElementById('fbRtdbText').value    = FB_DEFAULT_RTDB;
+  if (!fbInited) {
+    fbInited = true;
+    document.getElementById('fbRulesText').value   = FB_DEFAULT_RULES;
+    document.getElementById('fbIndexesText').value = FB_DEFAULT_INDEXES;
+    document.getElementById('fbRtdbText').value    = FB_DEFAULT_RTDB;
+  }
 }
 
 function fbWaitForGoogle(cb, tries) {
@@ -1746,7 +1747,10 @@ window.fbConnect = function() {
         }
       });
     }
-    fbTokenClient.requestAccessToken({ prompt: 'consent' });
+    // select_account যোগ করা হয়েছে যাতে একাধিক আলাদা Google account দিয়ে
+    // দোকান-বাই-দোকান কানেক্ট করার সময় ব্রাউজারের পুরনো সেশন থেকে ভুল
+    // account চুপচাপ বেছে না নেয় — প্রতিবার account chooser জোর করে দেখাবে।
+    fbTokenClient.requestAccessToken({ prompt: 'select_account consent' });
   });
 };
 
