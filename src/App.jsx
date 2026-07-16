@@ -27759,6 +27759,31 @@ function Settings_({ T, S, shopName,
  setShopName, businessType = "pharmacy", setBusinessType, businessTypeLocked = false, setBusinessTypeLocked, users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, driveStatus, backupNeeded, backupFailStreak, lastBackupError, restoreTestAt, restoreTestOk, restoreTestDetail, restoreTestFailStreak, onRunRestoreTest, performDriveBackup, buildBackupData, buildManualBackupData, manualBackupSetters, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, setGoogleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, auditLogs = [], setAuditLogs, hasPerm, fssReady = false, pendingConflicts = [] }) {
   const [editName,    setEditName]    = useState(false);
   const [nameInput,   setNameInput]   = useState(shopName);
+  // 🔧 DEV-ONLY: "ব্যবসার ধরন" হেডিং-এ ৭ বার দ্রুত ট্যাপ করলে (৩ সেকেন্ডের মধ্যে) হিডেন
+  // আনলক বাটন দেখাবে — টেস্টিং-এর সময় দুই মোডই যাচাই করার জন্য (Android-এর "Developer
+  // Options" আনলক করার প্যাটার্নেই)। সাধারণ ইউজার ভুলেও এভাবে ৭ বার ট্যাপ করবেন না।
+  const [devTapCount, setDevTapCount] = useState(0);
+  const [showDevUnlock, setShowDevUnlock] = useState(false);
+  const devTapTimerRef = useRef(null);
+  const handleDevTap = useCallback(() => {
+    setDevTapCount(prev => {
+      const next = prev + 1;
+      if (devTapTimerRef.current) clearTimeout(devTapTimerRef.current);
+      if (next >= 7) {
+        setShowDevUnlock(true);
+        devTapTimerRef.current = null;
+        return 0;
+      }
+      devTapTimerRef.current = setTimeout(() => setDevTapCount(0), 3000);
+      return next;
+    });
+  }, []);
+  const handleDevUnlockBusinessType = useCallback(async () => {
+    setBusinessTypeLocked?.(false);
+    if (FSS.isReady()) { try { await FSS.setBusinessConfig(businessType, false); } catch {} }
+    setShowDevUnlock(false);
+    showToast("🔧 DEV: ব্যবসার ধরন আনলক করা হলো — লোকাল ও Firestore দুই জায়গাতেই", "#f59e0b");
+  }, [businessType, setBusinessTypeLocked, showToast]);
   const [showRecoveryExpanded, setShowRecoveryExpanded] = useState(false);
   const [showGateway, setShowGateway] = useState(false);
   const [showKey, setShowKey] = useState(false);             // 🔴 ফিক্স: আগে Claude AI কার্ডের IIFE-এর ভেতরে declare করা ছিল
@@ -28894,10 +28919,17 @@ function Settings_({ T, S, shopName,
 
       {/* ① Business Type — ফার্মেসি / ভেটেরিনারি — owner/admin এডিট করতে পারে, staff শুধু read-only ব্যাজ দেখে */}
       <div className="qc-gradient-card" style={{ ...S.card }}>
-        <div style={{ color: T.text, fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+        <div onClick={handleDevTap} style={{ color: T.text, fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8, marginBottom: 10, userSelect: "none" }}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0ea5e9" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
           ব্যবসার ধরন
         </div>
+        {showDevUnlock && (
+          <div style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 10px", borderRadius:8, border:"1.5px dashed #f59e0b", background:"#f59e0b15", marginBottom:10 }}>
+            <span style={{ fontSize:12, color:"#f59e0b", fontWeight:700, flex:1 }}>🔧 DEV: টেস্টিং-এর জন্য লক খুলে দেবো?</span>
+            <button onClick={handleDevUnlockBusinessType} style={{ padding:"6px 10px", borderRadius:6, border:"none", background:"#f59e0b", color:"#000", fontWeight:800, fontSize:11, cursor:"pointer" }}>আনলক করুন</button>
+            <button onClick={() => setShowDevUnlock(false)} style={{ padding:"6px 10px", borderRadius:6, border:`1px solid ${T.border}`, background:"transparent", color:T.sub, fontWeight:700, fontSize:11, cursor:"pointer" }}>বাতিল</button>
+          </div>
+        )}
         {currentUser?.role === "staff" ? (
           // 🆕 স্টাফ ডিভাইস — শুধু read-only ব্যাজ, meta/businessConfig থেকে real-time সিংক হওয়া মোড দেখায়
           <div style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 12px", borderRadius:10, border:`1.5px solid ${businessType === "veterinary" ? "#16a34a44" : "#0ea5e944"}`, background: businessType === "veterinary" ? "#16a34a12" : "#0ea5e912" }}>
