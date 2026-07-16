@@ -44,7 +44,13 @@ jobs:
         env:
           npm_config_sharp_libvips_binary_host: https://github.com/lovell/sharp-libvips/releases/download
 
-      - name: 🧪 Run logic tests (fails build if any core formula is broken)
+      - name: 🔎 ESLint (fails build only on real bugs — no-undef, broken hooks, etc.; style warnings don't block)
+        run: npm run lint
+
+      - name: 🔬 Type-check (JSDoc + @ts-check, শুধু src/logic.js ও src/schemas.js — App.jsx আওতায় না)
+        run: npm run typecheck
+
+      - name: 🧪 Run logic + schema + integration tests (fails build if any core formula/flow is broken)
         run: npm test
 
       - name: 🔀 Fuzz tests (informational only — does not block build yet)
