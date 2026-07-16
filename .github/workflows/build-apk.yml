@@ -44,6 +44,9 @@ jobs:
         env:
           npm_config_sharp_libvips_binary_host: https://github.com/lovell/sharp-libvips/releases/download
 
+      - name: 🧪 Run logic tests (fails build if any core formula is broken)
+        run: npm test
+
       - name: Bundle GSI client locally (Capacitor WebView fix)
         run: |
           # Download Google Identity Services script so Capacitor WebView
