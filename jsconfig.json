@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "checkJs": true,
+    "allowJs": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "strict": false
+  },
+  "include": [
+    "src/logic.js",
+    "src/schemas.js"
+  ],
+  "exclude": [
+    "node_modules",
+    "src/App.jsx",
+    "src/worker.js",
+    "src/main.jsx"
+  ]
+}
