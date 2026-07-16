@@ -4034,7 +4034,7 @@ const Haptic = {
 
 
 // ─── App Version ─────────────────────────────────────────────────────────────
-const APP_VERSION = "v1-dbg2"; // 🔍 TEMP DEBUG marker — Settings-এ দেখে build fresh কিনা যাচাই করা যাবে
+const APP_VERSION = "v1-dbg4"; // 🔍 TEMP DEBUG marker — Settings-এ দেখে build fresh কিনা যাচাই করা যাবে (firstRemoteEverSet ফিক্স সহ)
 const APP_BUILD   = "2026-07-11";
 
 // 🔴 সেমান্টিক ভার্সন (x.y.z) — Settings-এর নীরব AppVersionCard (দেখুন
@@ -5845,6 +5845,17 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
   const { instant = false, filterIncoming = null, onSync = null, syncDeletes = true } = opts;
   const lastSynced  = useRef(null);
   const firstRemote = useRef(false);
+  // 🔴 ফিক্স (root cause — "প্রোডাক্ট/কাস্টমার এড করলে Firestore-এ যাচ্ছে না"):
+  // আগে প্রতিটা resubscribe (২০s heartbeat/resume/online → resyncTick বদল)-এ
+  // firstRemote.current জোর করে false করে দেওয়া হতো, তারপর resubscribe-এর পরের
+  // প্রথম snapshot প্রায়ই stale cached/খালি হতো (skip_cache_empty-তে আটকাত) —
+  // ফলে firstRemote.current আর কখনো true হতো না, আর push effect
+  // (`if (!firstRemote.current) return;`) স্থায়ীভাবে push_effect_skip করে যেত।
+  // firstRemoteEverSet একবার সত্যিকারের সার্ভার-কনফার্মড ডেটা পাওয়ার পর সেই
+  // নিশ্চয়তা মনে রাখে — তারপরের কোনো resubscribe আর firstRemote.current রিসেট
+  // করে না (শুধু প্রথমবার mount/ready-তেই রিসেট হয়), তাই push effect স্থিতিশীল
+  // window হারায় না।
+  const firstRemoteEverSet = useRef(false);
   const valueRef    = useRef(value);
   const pending     = useRef(new Map()); // id(string) -> { rec, old, ts } — push হয়েছে, echo বাকি
   const resyncTick  = useResyncTick(); // 🔴 ফেজ ৩ ফিক্স — resume/online/heartbeat-এ re-subscribe
@@ -5886,10 +5897,10 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
 
   // remote → local
   useEffect(() => {
-    if (!ready) { firstRemote.current = false; return; }
-    firstRemote.current = false;
+    if (!ready) { if (!firstRemoteEverSet.current) firstRemote.current = false; return; }
+    if (!firstRemoteEverSet.current) firstRemote.current = false;
     pending.current = new Map();
-    if (DBG) traceDebug("subscribe_start", { name, ready, resyncTick, dbHasDb: !!FSS._db });
+    if (DBG) traceDebug("subscribe_start", { name, ready, resyncTick, dbHasDb: !!FSS._db, firstRemoteEverSet: firstRemoteEverSet.current });
     const unsub = FSS.subscribeCollection(name, (arr, fromCache) => {
       if (DBG) traceDebug("snapshot_received", { name, fromCache, arrLen: arr.length, firstRemoteWas: firstRemote.current, valueRefLen: (valueRef.current||[]).length });
       let incoming = filterIncoming ? filterIncoming(arr) : arr;
@@ -5919,6 +5930,7 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
       if (!firstRemote.current && fromCache && incoming.length === 0) { if (DBG) traceDebug("skip_cache_empty", { name }); return; }
       if (!firstRemote.current) {
         firstRemote.current = true;
+        firstRemoteEverSet.current = true;
         // 🔴 ফিক্স: Master Reset-এর পরের ২ মিনিটে seed-on-empty বন্ধ — নাহলে
         // stale local ডেটা (কোনো রেসের কারণে flush না হলে) ভুলবশত আবার
         // Firestore-এ push হয়ে "রিসেট করলাম তবু ডেটা ফিরে এলো" বাগ তৈরি করত।
