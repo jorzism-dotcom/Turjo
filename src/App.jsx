@@ -904,20 +904,21 @@ async function logErrorToCentral(context, error, extra = {}) {
 // কোনো rate-limit নেই ইচ্ছাকৃতভাবে (logErrorToCentral-এর ১০s লিমিটে যেন এই
 // ট্রেস চাপা না পড়ে) — তাই এটা শুধু সাময়িক ডায়াগনস্টিক সেশনের জন্য ব্যবহার করা উচিত।
 async function traceDebug(step, data = {}) {
+  // 🔍 TEMP DEBUG: debug_trace কালেকশনে write permission নেই (Firestore Rules
+  // whitelist-এ নেই) — প্রতিটা write ব্যর্থ হচ্ছিল। আর ব্যর্থতার ফলব্যাক
+  // logErrorToCentral()-এরও ১০s থ্রটল আছে (একসাথে অনেক ট্রেস কল হলে বেশিরভাগ
+  // হারিয়ে যেত)। তাই এখন সরাসরি, থ্রটল-মুক্তভাবে app_errors-এ (যেটা লেখার
+  // অনুমতি আছে বলে নিশ্চিত হয়েছে) পূর্ণ payload সহ লেখা হচ্ছে।
   try {
-    const ref = doc(collection(_db, "debug_trace"));
+    const ref = doc(collection(_db, "app_errors"));
     await setDoc(ref, {
-      step,
-      ...Object.fromEntries(Object.entries(data).map(([k, v]) => [k, typeof v === "object" ? JSON.stringify(v).slice(0, 300) : v])),
+      context: "TRACE:" + step,
+      message: JSON.stringify(data).slice(0, 500),
       deviceId: (typeof DeviceID !== "undefined" && DeviceID.get) ? DeviceID.get() : "unknown",
-      at: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      resolved: false,
     });
-  } catch (e) {
-    // 🔍 TEMP DEBUG: debug_trace write নিজেই ব্যর্থ হলে আগে চুপচাপ ignore হতো —
-    // এখন সেটা app_errors-এ visible করা হচ্ছে (যেটা কাজ করে বলে জানা গেছে),
-    // যাতে আসল কারণ (rules-deny/network/other) ধরা পড়ে।
-    try { logErrorToCentral?.("traceDebug:fail", e, { step }); } catch {}
-  }
+  } catch { /* ট্রেস নিজেই fail করলে চুপচাপ ignore */ }
 }
 
 // ─── Storage Helper ───────────────────────────────────────────────────────────
