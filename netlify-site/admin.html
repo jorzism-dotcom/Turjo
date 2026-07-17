@@ -623,7 +623,7 @@
           দোকানের Firebase-এ Rules/Indexes Deploy
         </h4>
         <p style="font-size:12px;color:var(--sub);line-height:1.7;margin-bottom:14px">
-          দোকানদারের নিজের Google account দিয়ে sign-in করিয়ে (তার সামনে বসে বা screen share করে), তার Firebase project-এ এক ক্লিকে Firestore Rules + Indexes + Realtime Database Rules বসিয়ে দিন। কোনো কিছু স্থায়ীভাবে সংরক্ষণ হয় না — session শেষে token নিজে থেকেই অকেজো হয়ে যায়।
+          দোকানদারের নিজের Google account দিয়ে sign-in করিয়ে (তার সামনে বসে বা screen share করে), তার Firebase project-এ এক ক্লিকে Firestore Rules + Indexes বসিয়ে দিন। Realtime Database Rules Google-এর সীমাবদ্ধতার কারণে অটো-ডিপ্লয় হয় না — নিচে JSON কপি করে Console-এ একবার ম্যানুয়ালি বসাতে হবে। কোনো কিছু স্থায়ীভাবে সংরক্ষণ হয় না — session শেষে token নিজে থেকেই অকেজো হয়ে যায়।
         </p>
 
         <div id="fbAuthBox">
@@ -656,14 +656,31 @@
           <div class="form-section-title" style="margin-top:14px">Firestore Indexes (JSON)</div>
           <textarea id="fbIndexesText" rows="5" style="width:100%;font-family:monospace;font-size:11px;background:rgba(0,0,0,0.3);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:10px"></textarea>
 
-          <div class="form-section-title" style="margin-top:14px">Realtime Database Rules (JSON)</div>
-          <textarea id="fbRtdbText" rows="3" style="width:100%;font-family:monospace;font-size:11px;background:rgba(0,0,0,0.3);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:10px"></textarea>
-
           <button class="btn-primary" style="margin-top:16px;background:linear-gradient(135deg,#f59e0b,#d97706)" onclick="fbDeployAll()">
-            🚀 সব Deploy করুন (Rules + Indexes + RTDB)
+            🚀 Deploy করুন (Rules + Indexes)
           </button>
 
-          <div id="fbLog" style="margin-top:14px;font-family:monospace;font-size:11.5px;line-height:1.9;max-height:260px;overflow-y:auto;background:rgba(0,0,0,0.35);border-radius:10px;padding:12px;white-space:pre-wrap"></div>
+          <div class="glass" style="margin-top:18px;padding:14px;border:1px solid rgba(252,211,77,0.35);border-radius:12px;background:rgba(252,211,77,0.06)">
+            <div style="font-size:13px;font-weight:700;color:#fcd34d;margin-bottom:6px">
+              ⚠️ Realtime Database Rules — ম্যানুয়ালি বসাতে হবে
+            </div>
+            <p style="font-size:12px;color:var(--sub);line-height:1.7;margin-bottom:10px">
+              RTDB Rules এই account দিয়ে অটো-ডিপ্লয় করা যায় না (Google-এর সীমাবদ্ধতা)। নিচের JSON কপি করে Firebase Console → Realtime Database → Rules ট্যাবে paste করে Publish করুন — প্রতি দোকানে মাত্র একবার লাগবে।
+            </p>
+            <div style="display:flex;gap:8px;align-items:flex-start">
+              <textarea id="fbRtdbText" rows="4" readonly style="flex:1;font-family:monospace;font-size:11px;background:rgba(0,0,0,0.3);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:10px"></textarea>
+              <button class="rcopy" style="flex-shrink:0" onclick="copyRtdbRules()">📋</button>
+            </div>
+            <div id="fbRtdbCopyMsg" style="font-size:12px;color:#6ee7b7;margin-top:6px;min-height:16px"></div>
+            <a id="fbRtdbConsoleLink" href="#" target="_blank" style="display:inline-block;margin-top:4px;font-size:12px;color:#7dd3fc;text-decoration:underline">Firebase Console-এ RTDB Rules খুলুন →</a>
+          </div>
+
+          <div class="glass" style="margin-top:18px;padding:0;border-radius:14px;overflow:hidden;border:1px solid var(--border)">
+            <div style="padding:10px 14px;background:rgba(255,255,255,0.04);border-bottom:1px solid var(--border);font-size:13px;font-weight:700;display:flex;align-items:center;gap:8px">
+              📜 Deploy Log
+            </div>
+            <div id="fbLog" style="font-family:monospace;font-size:13.5px;line-height:2.1;max-height:420px;overflow-y:auto;background:rgba(0,0,0,0.35);padding:16px;white-space:pre-wrap"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -1799,6 +1816,9 @@ window.fbFetchConfig = async function() {
   if (!projectId) { fbLog('আগে Project ID লিখুন।', 'err'); return; }
   if (!fbAccessToken) { fbLog('আগে Google account দিয়ে সংযুক্ত করুন।', 'err'); return; }
 
+  document.getElementById('fbRtdbConsoleLink').href =
+    'https://console.firebase.google.com/project/' + encodeURIComponent(projectId) + '/database/' + encodeURIComponent(projectId) + '-default-rtdb/rules';
+
   fbLog('Web app config খোঁজা হচ্ছে (' + projectId + ')...');
   try {
     let webApps = await fbApiFetch('https://firebase.googleapis.com/v1beta1/projects/' + projectId + '/webApps');
@@ -1896,51 +1916,20 @@ async function fbDeployIndexes(projectId, indexesJsonText) {
   fbLog('Indexes: ' + ok + 'টা তৈরি হয়েছে, ' + skip + 'টা আগে থেকেই ছিল।', 'ok');
 }
 
-// ── RTDB Rules deploy ──
-async function fbDeployRtdbRules(databaseURL, rtdbJsonText) {
-  if (!databaseURL) { fbLog('Database URL পাওয়া যায়নি, RTDB rules স্কিপ করা হলো।', 'warn'); return; }
-  JSON.parse(rtdbJsonText); // validate
-  const base = databaseURL.replace(/\/$/, '');
-
-  // ডায়াগনস্টিক: token-এ আসলে কোন scope আছে তা লগ করা (কারণ বের করতে সাহায্য করবে)
-  try {
-    const ti = await fetch('https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=' + encodeURIComponent(fbAccessToken));
-    const tiData = await ti.json();
-    if (tiData && tiData.scope) {
-      fbLog('Token scopes: ' + tiData.scope, 'warn');
-    } else if (tiData && tiData.error) {
-      fbLog('Token যাচাই ব্যর্থ: ' + (tiData.error_description || tiData.error), 'warn');
-    }
-  } catch (e) { /* ignore diagnostic failure */ }
-
-  // পদ্ধতি ১: Authorization header দিয়ে (regional/নতুন RTDB instance-এর জন্য সঠিক)
-  let res = await fetch(base + '/.settings/rules.json', {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + fbAccessToken
-    },
-    body: rtdbJsonText
+// ── RTDB Rules কপি (অটো-ডিপ্লয় সম্ভব না — Google user-token RTDB legacy
+// endpoint-এ Unauthorized দেয়, তাই শুধু কপি-বাটন দেওয়া হলো) ──
+window.copyRtdbRules = function() {
+  const val = document.getElementById('fbRtdbText').value;
+  navigator.clipboard?.writeText(val).then(() => {
+    const msg = document.getElementById('fbRtdbCopyMsg');
+    msg.textContent = '✅ কপি হয়েছে! এখন Firebase Console-এ paste করে Publish করুন।';
+    setTimeout(() => msg.textContent = '', 3000);
   });
-  if (res.ok) { fbLog('Realtime Database Rules সফলভাবে deploy হয়েছে।', 'ok'); return; }
-  const err1 = await res.text();
-
-  // পদ্ধতি ২: access_token query parameter দিয়ে (পুরোনো legacy instance-এর জন্য)
-  res = await fetch(base + '/.settings/rules.json?access_token=' + encodeURIComponent(fbAccessToken), {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: rtdbJsonText
-  });
-  if (res.ok) { fbLog('Realtime Database Rules সফলভাবে deploy হয়েছে।', 'ok'); return; }
-  const err2 = await res.text();
-
-  throw new Error('RTDB rules deploy ব্যর্থ। Header পদ্ধতি: ' + err1 + ' | Query param পদ্ধতি: ' + err2);
-}
+};
 
 async function fbRunDeploySteps(projectId) {
   const rulesText   = document.getElementById('fbRulesText').value;
   const indexesText = document.getElementById('fbIndexesText').value;
-  const rtdbText    = document.getElementById('fbRtdbText').value;
 
   fbLog('Deploy শুরু হচ্ছে — Project: ' + projectId);
 
@@ -1956,17 +1945,7 @@ async function fbRunDeploySteps(projectId) {
     fbLog('Indexes deploy ব্যর্থ: ' + e.message, 'err');
   }
 
-  try {
-    if (!fbDatabaseURL) {
-      fbLog('Database URL জানা নেই — আগে "Project থেকে Config খুঁজে বের করুন" চাপুন।', 'warn');
-    } else {
-      await fbDeployRtdbRules(fbDatabaseURL, rtdbText);
-    }
-  } catch (e) {
-    fbLog('RTDB Rules deploy ব্যর্থ: ' + e.message, 'err');
-  }
-
-  fbLog('সম্পন্ন। উপরের লগ চেক করে নিশ্চিত হোন সব ধাপ ঠিকঠাক হয়েছে।', 'ok');
+  fbLog('সম্পন্ন। RTDB Rules এখনো বাকি থাকলে উপরের কপি-বক্স থেকে JSON কপি করে Console-এ ম্যানুয়ালি বসান।', 'ok');
 }
 
 window.fbDeployAll = async function() {
