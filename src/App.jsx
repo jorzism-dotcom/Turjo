@@ -24,6 +24,15 @@ import {
 // ফিল্ডে NaN/undefined ঢুকে যাচ্ছে কিনা যাচাই করে। দেখুন src/schemas.js-এর
 // শুরুর কমেন্ট — এটা এই মুহূর্তে "soft mode" (শুধু লগ করে, write আটকায় না)।
 import { validateRecord } from "./schemas.js";
+// 🧪 সিঙ্ক/ব্যাকআপের pure লজিক — src/sync.js-এ আলাদা করা হয়েছে (#৮ এন্টারপ্রাইজ
+// ধাপ) যাতে tests/sync-tests.mjs এই কোড plain Node-এ import করে multi-device
+// conflict-resolution ও backup/restore round-trip টেস্ট করতে পারে, CI-তে।
+import {
+  FSS_COLLECTIONS, BACKUP_FIELDS, BACKUP_FIELD_LABELS_BN,
+  pickBackupFields, computeRestoreGuardMs, diffBackupFields,
+  hashString, hashRecord, hashCollection, buildContentHashes,
+  diffChangedFields, effectiveTs, mergeCollection,
+} from "./sync.js";
 // 🔴 recharts — শুধু AI পেজের "Analytics & Report" ট্যাবে ব্যবহার হয় (ডিফল্ট স্ক্রিন নয়),
 // তাই স্ট্যাটিক import না রেখে নিচে lazy dynamic import() দিয়ে লোড করা হচ্ছে (useRecharts হুক) —
 // প্রতি অ্যাপ-ওপেনে এই চার্ট লাইব্রেরির parse/eval খরচ আর বহন করতে হবে না।
@@ -4048,26 +4057,11 @@ const DeviceID = (() => {
 // Collections: customers, products, invoices, txns, smsLog, users, suppliers,
 // purchaseOrders, stockMovements, cashLogs, paymentInvoices + settings/main
 // (shopName, smsTemplates, smsGateway)
-const FSS_COLLECTIONS = [
-  "customers", "products", "invoices", "txns", "smsLog", "suppliers",
-  "purchaseOrders", "stockMovements", "cashLogs", "paymentInvoices",
-  "expenses", "returns", "auditLogs", "quotations", "supplierPayments",
-  "deletedProducts", "deletedCustomers",
-];
-// ── কেন্দ্রীয় ব্যাকআপ ফিল্ড-রেজিস্ট্রি (v6) ─────────────────────────────────
-// FSS_COLLECTIONS-এর থেকে আলাদা রাখা হয়েছে ইচ্ছাকৃতভাবে: FSS_COLLECTIONS ব্যবহৃত
-// হয় Firestore-লেভেল অপারেশনে (clearAllData/Master Reset সহ) যেখানে "users"
-// অন্তর্ভুক্ত করলে Master Reset স্টাফ/অ্যাডমিন লগইন ডেটাও মুছে দিত — যা অপ্রত্যাশিত
-// আচরণ পরিবর্তন হতো। BACKUP_FIELDS শুধু backup/restore payload বানানোর জন্য —
-// buildBackupData, validateBackup ইত্যাদি সব জায়গায় এই একটা লিস্ট থেকেই পড়া হয়,
-// যাতে নতুন কোনো collection যোগ হলে একটাই জায়গায় পরিবর্তন লাগে।
-const BACKUP_FIELDS = [...FSS_COLLECTIONS, "users"];
-// শুধু BACKUP_FIELDS-এ থাকা কী-গুলো data থেকে বেছে নেয় (backup payload বানাতে)
-function pickBackupFields(data) {
-  const out = {};
-  BACKUP_FIELDS.forEach(f => { if (data && data[f] !== undefined) out[f] = data[f]; });
-  return out;
-}
+// FSS_COLLECTIONS, BACKUP_FIELDS, pickBackupFields — এখন src/sync.js থেকে
+// import হয় (উপরে দেখুন)। FSS_COLLECTIONS-এর থেকে BACKUP_FIELDS ইচ্ছাকৃতভাবে
+// আলাদা: FSS_COLLECTIONS ব্যবহৃত হয় Firestore-লেভেল অপারেশনে (clearAllData/
+// Master Reset সহ) যেখানে "users" অন্তর্ভুক্ত করলে Master Reset স্টাফ/অ্যাডমিন
+// লগইন ডেটাও মুছে দিত — যা অপ্রত্যাশিত আচরণ পরিবর্তন হতো।
 // ── রিস্টোর গার্ড (বাগ ফিক্স) ────────────────────────────────────────────────
 // সমস্যা: ম্যানুয়াল রিস্টোর (Google Drive/লোকাল ফাইল/স্ন্যাপশট) local state
 // ছোট করে দিলে, useFSSCollection-এর push effect ব্যাকআপে-না-থাকা রেকর্ডকে
@@ -4095,9 +4089,7 @@ function applyBackupFields(d, setters) {
   // চলাকালীন সময়ে race condition-এর ঝুঁকি ছিল (ব্যাকআপে-না-থাকা রেকর্ড ভুলবশত
   // ডিলিট হয়ে যাওয়া)। এখন রেকর্ড-সংখ্যা অনুযায়ী adaptive — ছোট দোকানে কার্যত
   // আগের মতোই ৫ সেকেন্ড থাকে, বড় ডেটাসেটে বেশি সময় (সর্বোচ্চ ৩০ সেকেন্ড) দেয়।
-  const totalRecords = BACKUP_FIELDS.reduce((s, f) => s + (Array.isArray(d[f]) ? d[f].length : 0), 0);
-  const guardMs = Math.min(30000, 5000 + totalRecords * 10);
-  beginRestoreGuard(guardMs);
+  beginRestoreGuard(computeRestoreGuardMs(d));
   BACKUP_FIELDS.forEach(f => {
     if (d[f]) {
       const setterName = "set" + f[0].toUpperCase() + f.slice(1);
@@ -4172,41 +4164,7 @@ async function withRetry(fn, { retries = 3, baseDelay = 800, onRetry } = {}) {
 // ব্যবহার করে বর্তমান ডেটা vs ব্যাকআপ ফাইলের ডেটা তুলনা করে, id মিলিয়ে কয়টা
 // নতুন যোগ হবে/কয়টা মুছে যাবে/কয়টা বদলাবে — বাস্তবে রিস্টোর প্রয়োগ করার আগেই
 // ইউজারকে দেখায়, যাতে ভুল ফাইল/পুরনো ব্যাকআপ দিয়ে ভুলবশত ওভাররাইট না হয়।
-const BACKUP_FIELD_LABELS_BN = {
-  customers: "কাস্টমার", products: "পণ্য", invoices: "ইনভয়েস", txns: "লেনদেন",
-  smsLog: "SMS লগ", suppliers: "সাপ্লায়ার", purchaseOrders: "ক্রয় অর্ডার",
-  stockMovements: "স্টক মুভমেন্ট", cashLogs: "ক্যাশ লগ", paymentInvoices: "পেমেন্ট ইনভয়েস",
-  expenses: "খরচ", returns: "রিটার্ন", auditLogs: "অডিট লগ", quotations: "কোটেশন",
-  supplierPayments: "সাপ্লায়ার পেমেন্ট", deletedProducts: "মোছা পণ্য",
-  deletedCustomers: "মোছা কাস্টমার", users: "ইউজার",
-};
-function diffBackupFields(currentData, incomingData) {
-  if (!incomingData) return { rows: [], totalAdded: 0, totalRemoved: 0, totalChanged: 0 };
-  const rows = [];
-  let totalAdded = 0, totalRemoved = 0, totalChanged = 0;
-  BACKUP_FIELDS.forEach(f => {
-    if (incomingData[f] === undefined) return;
-    const curArr = Array.isArray(currentData?.[f]) ? currentData[f] : [];
-    const newArr = Array.isArray(incomingData[f]) ? incomingData[f] : [];
-    const curMap = {}; curArr.forEach(r => { if (r?.id != null) curMap[r.id] = r; });
-    const newIds = new Set();
-    let added = 0, changed = 0;
-    newArr.forEach(r => {
-      if (r?.id == null) return;
-      newIds.add(r.id);
-      const prev = curMap[r.id];
-      if (!prev) { added++; return; }
-      try { if (JSON.stringify(prev) !== JSON.stringify(r)) changed++; } catch {}
-    });
-    let removed = 0;
-    curArr.forEach(r => { if (r?.id != null && !newIds.has(r.id)) removed++; });
-    if (curArr.length || newArr.length) {
-      rows.push({ field: f, label: BACKUP_FIELD_LABELS_BN[f] || f, curCount: curArr.length, newCount: newArr.length, added, removed, changed });
-      totalAdded += added; totalRemoved += removed; totalChanged += changed;
-    }
-  });
-  return { rows, totalAdded, totalRemoved, totalChanged };
-}
+// BACKUP_FIELD_LABELS_BN, diffBackupFields — এখন src/sync.js থেকে import (উপরে)।
 
 // ── #২ প্রতি-রেকর্ড content-hash — শুধু "কয়টা রেকর্ড আছে" (count) না, "কনটেন্ট
 // বদলেছে কিনা" সেটাও ধরে। FNV-1a ব্যবহার করা হয়েছে (দ্রুত, dependency-free,
@@ -4215,37 +4173,8 @@ function diffBackupFields(currentData, incomingData) {
 // কম্বাইন করা হয় — XOR commutative, তাই sync/merge-এর কারণে array-এর ক্রম
 // বদলে গেলেও (একই রেকর্ড সেট হলে) হ্যাশ অপরিবর্তিত থাকে; কিন্তু কোনো রেকর্ডের
 // content বদলালে, বা কোনো রেকর্ড হারিয়ে/যোগ হলে হ্যাশ বদলে যাবে।
-function hashString(str) {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return h >>> 0;
-}
-function hashRecord(rec) {
-  if (!rec || typeof rec !== "object") return 0;
-  try {
-    // top-level কী গুলো sort করে stringify — key-insertion-order বদলালেও
-    // (যেমন merge-এর সময় নতুন object তৈরি হলে) একই content-এ একই হ্যাশ আসে
-    const keys = Object.keys(rec).sort();
-    let stable = "";
-    for (const k of keys) stable += k + ":" + JSON.stringify(rec[k]) + "|";
-    return hashString(stable);
-  } catch { return 0; }
-}
-function hashCollection(arr) {
-  if (!Array.isArray(arr) || !arr.length) return 0;
-  let h = 0;
-  for (const rec of arr) h ^= hashRecord(rec);
-  return (h >>> 0).toString(36); // কমপ্যাক্ট string ফর্মে (backup ফাইলের সাইজ কম রাখতে)
-}
-// পুরো BACKUP_FIELDS-এর জন্য { fieldName: contentHash } অবজেক্ট বানায়
-function buildContentHashes(payload) {
-  const out = {};
-  BACKUP_FIELDS.forEach(f => { out[f] = hashCollection(payload[f]); });
-  return out;
-}
+// hashString/hashRecord/hashCollection/buildContentHashes — এখন src/sync.js
+// থেকে import (উপরে দেখুন)।
 
 // ══════════════════════════════════════════════════════════════════════════
 // PHASE 3 — পারফরম্যান্স + স্কেল (Performance + Scale)
@@ -4262,11 +4191,7 @@ function buildContentHashes(payload) {
 // প্রভাবিত করে না (যেমন: local file লেখা হলেও Drive checkpoint আলাদাই থাকে)।
 // ⚠️ শুধু নিঃশব্দ/অটো ব্যাকআপে প্রযোজ্য — ইউজার সরাসরি বাটনে চাপলে (ম্যানুয়াল)
 // সবসময় আসল লেখা/আপলোড হয়, "বাটনে চাপলাম কিছুই হলো না" এমন বিভ্রান্তি এড়াতে।
-function diffChangedFields(newHashes, prevHashes) {
-  if (!prevHashes || typeof prevHashes !== "object") return { changed: true, fields: [...BACKUP_FIELDS] };
-  const fields = BACKUP_FIELDS.filter(f => (newHashes[f] || 0) !== (prevHashes[f] || 0));
-  return { changed: fields.length > 0, fields };
-}
+// diffChangedFields — এখন src/sync.js থেকে import (উপরে দেখুন)।
 const DeltaSync = {
   // destKey: "autoLocalFile" | "drive" | "snapshot" | "masterSync" — প্রতিটা
   // ব্যাকআপ-গন্তব্যের নিজস্ব checkpoint, একসাথে একই localStorage key-তে { destKey: hashes } আকারে রাখা
@@ -5598,7 +5523,7 @@ const stripServerTs = (rec) => { if (!rec || rec._serverTs === undefined) return
 // তা ঠিক করতে _serverTs (Firestore সার্ভার ঘড়ি — সব ডিভাইসের জন্য একই নিরপেক্ষ
 // রেফারেন্স) অগ্রাধিকার পায়; সেটা না থাকলে (এখনো sync হয়নি এমন নিজের-ডিভাইসের
 // সদ্য এডিট, বা পুরনো legacy রেকর্ড) client-side _updatedAt-এ fallback করে।
-const effectiveTs = (rec) => (rec?._serverTs != null ? rec._serverTs : (rec?._updatedAt || 0));
+// effectiveTs — এখন src/sync.js থেকে import (উপরে দেখুন)।
 
 // ── stockMovements এখন windowed real-time sync (invoices-এর মতো) — তাই
 // useFSSCollection আর local→remote push করে না। প্রতিটা নতুন movement তৈরির
@@ -12169,31 +12094,16 @@ function SmartBusinessMgmt() {
         // বদলে থাকে (প্রতিটা রেকর্ডে আলাদা FSS.setRecord() write — বড় দোকানে হাজার
         // হাজার অহেতুক write, Firestore billing/ব্যাটারি খরচ বাড়ায়)। এখন প্রতিটা
         // কালেকশনের জন্য আলাদা flag — একটার change আরেকটাকে প্রভাবিত করবে না।
+        // 🧪 মূল কনফ্লিক্ট-রেজোলিউশন নীতি (last-write-wins by effectiveTs +
+        // tombstone protection) এখন src/sync.js-এর mergeCollection()-এ — pure
+        // ফাংশন, tests/sync-tests.mjs-এ সরাসরি টেস্ট করা হয়। এখানে শুধু তার
+        // ফলাফল অনুযায়ী React setState + Firestore push (side-effect) করা হয়।
         COLLECTIONS.forEach(([colName, localArr, setter]) => {
           const driveArr = driveData[colName] || [];
-          if (!driveArr.length) { mergedData[colName] = localArr; return; }
-
-          let anyChange = false;
           const tombstones = deletedIdSets[colName];
-          const merged = new Map();
-          // প্রথমে local state রাখো
-          (localArr || []).forEach(r => { if (r?.id != null) merged.set(String(r.id), r); });
-          // Drive-এর record দেখো — _updatedAt বেশি হলে জেতে, কিন্তু tombstone-এ
-          // থাকা (ইচ্ছাকৃতভাবে মোছা) রেকর্ড কখনো resurrect হবে না
-          driveArr.forEach(dr => {
-            if (dr?.id == null) return;
-            const key = String(dr.id);
-            if (tombstones?.has(key)) return; // ইচ্ছাকৃতভাবে মোছা — বাদ
-            const existing = merged.get(key);
-            if (!existing || effectiveTs(dr) > effectiveTs(existing)) {
-              merged.set(key, dr);
-              anyChange = true;
-            }
-          });
-
-          const mergedArr = Array.from(merged.values());
+          const { merged: mergedArr, changed } = mergeCollection(localArr, driveArr, tombstones);
           mergedData[colName] = mergedArr;
-          if (mergedArr.length !== (localArr || []).length || anyChange) {
+          if (changed) {
             setter(mergedArr);
             // Firestore-এও push করো (merged records)
             mergedArr.forEach(rec => {
