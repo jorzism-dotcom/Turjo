@@ -1865,8 +1865,44 @@ window.fbFetchConfig = async function() {
   }
 };
 
+// ── Firestore Database না থাকলে তৈরি করা (reconnect flow-এ নতুন প্রজেক্ট
+// আসতে পারে যেখানে কখনো Firestore native database provision করা হয়নি) ──
+async function fbPollLRO(opGetUrl, label, maxTries) {
+  maxTries = maxTries || 40;
+  for (let i = 0; i < maxTries; i++) {
+    const op = await fbApiFetch(opGetUrl);
+    if (op.done) {
+      if (op.error) throw new Error(op.error.message || JSON.stringify(op.error));
+      return op.response || op;
+    }
+    await new Promise(r => setTimeout(r, 3000));
+  }
+  throw new Error(label + ' — সময় বেশি লাগছে।');
+}
+
+async function fbCheckFirestoreDbExists(projectId) {
+  try {
+    await fbApiFetch('https://firestore.googleapis.com/v1/projects/' + projectId + '/databases/(default)');
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function fbCreateFirestoreDb(projectId, locationId) {
+  fbLog('Firestore Database তৈরি হচ্ছে...');
+  await fbWithRetry(async () => {
+    const op = await fbApiFetch('https://firestore.googleapis.com/v1/projects/' + projectId + '/databases?databaseId=(default)', {
+      method: 'POST', body: JSON.stringify({ type: 'FIRESTORE_NATIVE', locationId })
+    });
+    await fbPollLRO('https://firestore.googleapis.com/v1/' + op.name, 'Firestore Database তৈরি');
+  }, 'Firestore Database তৈরি', 4, 8000);
+  fbLog('Firestore Database তৈরি হয়েছে।', 'ok');
+}
+
 // ── Firestore Rules deploy ──
 async function fbDeployFirestoreRules(projectId, rulesSource) {
+
   fbLog('Firestore Rules ruleset তৈরি হচ্ছে...');
   const ruleset = await fbApiFetch('https://firebaserules.googleapis.com/v1/projects/' + projectId + '/rulesets', {
     method: 'POST',
@@ -1910,7 +1946,7 @@ async function fbDeployIndexes(projectId, indexesJsonText) {
       ok++;
     } catch (e) {
       if (e.message && e.message.toLowerCase().includes('already exists')) { skip++; }
-      else fbLog('Index ব্যর্থ (' + idx.collectionGroup + '): ' + e.message, 'warn');
+      else { fbLog('Index ব্যর্থ (' + idx.collectionGroup + '): ' + e.message, 'warn'); throw e; }
     }
   }
   fbLog('Indexes: ' + ok + 'টা তৈরি হয়েছে, ' + skip + 'টা আগে থেকেই ছিল।', 'ok');
@@ -1932,6 +1968,16 @@ async function fbRunDeploySteps(projectId) {
   const indexesText = document.getElementById('fbIndexesText').value;
 
   fbLog('Deploy শুরু হচ্ছে — Project: ' + projectId);
+
+  try {
+    const exists = await fbCheckFirestoreDbExists(projectId);
+    if (!exists) {
+      fbLog('Firestore Database পাওয়া যায়নি — নতুন তৈরি করা হচ্ছে...', 'warn');
+      await fbCreateFirestoreDb(projectId, 'asia-southeast1');
+    }
+  } catch (e) {
+    fbLog('Firestore Database চেক/তৈরি ব্যর্থ: ' + e.message, 'err');
+  }
 
   try {
     await fbWithRetry(() => fbDeployFirestoreRules(projectId, rulesText), 'Firestore Rules deploy', 3, 8000);
