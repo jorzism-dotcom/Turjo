@@ -6355,9 +6355,10 @@ function useStaffPermissionGuard(fssReady, loaded, setCurrentUser, setUsers) {
         if (
           JSON.stringify(fresh.tempPermissions || []) === JSON.stringify(prev.tempPermissions || []) &&
           JSON.stringify(fresh.autoSchedules || []) === JSON.stringify(prev.autoSchedules || []) &&
-          !!fresh.canAddProduct === !!prev.canAddProduct
+          !!fresh.canAddProduct === !!prev.canAddProduct &&
+          (fresh.assignedBusinessType || null) === (prev.assignedBusinessType || null)
         ) return prev;
-        return { ...prev, tempPermissions: fresh.tempPermissions || [], autoSchedules: fresh.autoSchedules || [], canAddProduct: !!fresh.canAddProduct };
+        return { ...prev, tempPermissions: fresh.tempPermissions || [], autoSchedules: fresh.autoSchedules || [], canAddProduct: !!fresh.canAddProduct, assignedBusinessType: fresh.assignedBusinessType || null };
       });
       // অন্য admin-facing UI (যেমন StaffMgmtModule) যাতেও আপডেটেড ডেটা দেখায়,
       // সেজন্য local users array-ও একইসাথে patch করা হয় — কিন্তু ডেটা সত্যিই
@@ -11767,13 +11768,23 @@ function SmartBusinessMgmt() {
   }, [fssReady, appResyncTick]);
 
   // 🆕 businessType/businessTypeLocked — Firestore meta/businessConfig রিয়েল-টাইম সিংক
-  // (owner যেই মোড সেট করবে, staff-এর ফোনেও অ্যাপ রিস্টার্ট ছাড়াই সাথে সাথে সেই মোড আসবে)
+  // (owner যেই মোড সেট করবে, admin/owner-এর অন্য ফোনেও অ্যাপ রিস্টার্ট ছাড়াই সাথে সাথে সেই মোড আসবে)
+  // 🆕 ধাপ ৫ (Staff Permission System, ১৮ জুলাই ২০২৬): আগে এই sync স্টাফের ফোনেও
+  // প্রযোজ্য ছিল — মানে owner Business Switcher দিয়ে বদলালে স্টাফের ফোনও সাথে সাথে
+  // ফলো করত। এটা ধাপ ৫-এর মূল দাবির সাথে সংঘর্ষ করছিল: স্টাফ তার
+  // admin-assigned business-এ সবসময় লক থাকবে, owner অন্য business-এ সুইচ করলেও
+  // স্টাফের ডেটা/UI বদলাবে না। তাই এখন থেকে businessType-এর remote-follow শুধু
+  // admin/owner ডিভাইসেই প্রযোজ্য — স্টাফের জন্য আলাদা লক effect (নিচে, useStaffAssignedBusinessLock) দায়িত্ব নেয়।
   useEffect(() => {
     if (!fssReady || !FSS._db || !settingsLoaded) return;
+    const isStaffDevice = currentUser?.role === "staff";
     const unsub = FSS.subscribeBusinessConfig((data) => {
       if (data) {
         // remote-এ ডেটা আছে — এটাই সত্য উৎস, লোকাল স্টেট এর সাথে মিলিয়ে নাও
-        if (typeof data.businessType === "string" && data.businessType !== businessType) setBusinessType(data.businessType);
+        // (শুধু admin/owner ডিভাইসে — স্টাফ তার নিজের assignedBusinessType-এ লক থাকে)
+        if (!isStaffDevice) {
+          if (typeof data.businessType === "string" && data.businessType !== businessType) setBusinessType(data.businessType);
+        }
         if (typeof data.businessTypeLocked === "boolean" && data.businessTypeLocked !== businessTypeLocked) setBusinessTypeLocked(data.businessTypeLocked);
         // 🆕 ধাপ ২: enabledBusinessTypes — পুরনো ডকুমেন্টে (এই ফিল্ড লেখার আগে
         // তৈরি) এটা না থাকতে পারে, তখন businessType-কেই একমাত্র enabled ধরা হয়
@@ -11782,15 +11793,33 @@ function SmartBusinessMgmt() {
           ? data.enabledBusinessTypes
           : [data.businessType || businessType];
         if (JSON.stringify(remoteEnabled) !== JSON.stringify(enabledBusinessTypes)) setEnabledBusinessTypes(remoteEnabled);
-      } else if (businessTypeLocked) {
+      } else if (businessTypeLocked && !isStaffDevice) {
         // 🔴 এই দোকানের জন্য এখনো কোনো meta/businessConfig ডকুমেন্ট নেই (আপডেটের পর
         // প্রথমবার) — এই ডিভাইসের বর্তমান লক করা মোডটাই "seed" হিসেবে Firestore-এ
-        // লিখে দাও, যাতে ডেটা হারানোর কোনো ঝুঁকি না থাকে
+        // লিখে দাও, যাতে ডেটা হারানোর কোনো ঝুঁকি না থাকে।
+        // 🆕 ধাপ ৫: শুধু admin/owner ডিভাইস থেকেই seed করা হয় — স্টাফের ফোন থেকে
+        // shop-wide businessConfig কখনো লেখা উচিত না।
         FSS.setBusinessConfig(businessType, businessTypeLocked, enabledBusinessTypes);
       }
     });
     return () => unsub();
-  }, [fssReady, settingsLoaded, businessType, businessTypeLocked, enabledBusinessTypes]);
+  }, [fssReady, settingsLoaded, businessType, businessTypeLocked, enabledBusinessTypes, currentUser?.role]);
+
+  // 🆕 ধাপ ৫ (Staff Permission System, ১৮ জুলাই ২০২৬): স্টাফের businessType সবসময়
+  // owner-assigned মান (currentUser.assignedBusinessType) দিয়ে লক থাকবে — উপরের
+  // effect-এ owner-এর shop-wide সুইচ স্টাফের জন্য স্কিপ করা হয়েছে, এই effect-ই এখন
+  // স্টাফের ফোনে businessType-এর একমাত্র উৎস। enabledBusinessTypes.length <= 1
+  // (বর্তমান ৫০০ শপের সবগুলোতেই) হলে assignedBusinessType থাকলেও সেটা একমাত্র
+  // enabled টাইপের সমান হবে — অর্থাৎ no-op, existing আচরণ অক্ষুণ্ণ।
+  // assignedBusinessType না থাকলে (পুরনো স্টাফ রেকর্ড, বা owner এখনো assign করেননি)
+  // কিছুই করে না — আগের মতোই বর্তমান businessType-এ থেকে যায়, ভাঙে না।
+  useEffect(() => {
+    if (currentUser?.role !== "staff") return;
+    const assigned = currentUser.assignedBusinessType;
+    if (!assigned) return;
+    if (!Array.isArray(enabledBusinessTypes) || !enabledBusinessTypes.includes(assigned)) return;
+    if (assigned !== businessType) setBusinessType(assigned);
+  }, [currentUser, enabledBusinessTypes, businessType, setBusinessType]);
 
   // 🆕 ধাপ ২: enabledBusinessTypes.length > 1 (সত্যিকারের multi-business শপ)
   // হলেই কেবল FSS.col()/doc() collection-prefix লাগায় — single-business শপে
@@ -12044,9 +12073,10 @@ function SmartBusinessMgmt() {
       if (
         JSON.stringify(updated.tempPermissions || []) === JSON.stringify(prev.tempPermissions || []) &&
         JSON.stringify(updated.autoSchedules || []) === JSON.stringify(prev.autoSchedules || []) &&
-        !!updated.canAddProduct === !!prev.canAddProduct
+        !!updated.canAddProduct === !!prev.canAddProduct &&
+        (updated.assignedBusinessType || null) === (prev.assignedBusinessType || null)
       ) return prev;
-      return { ...prev, tempPermissions: updated.tempPermissions || [], autoSchedules: updated.autoSchedules || [], canAddProduct: !!updated.canAddProduct };
+      return { ...prev, tempPermissions: updated.tempPermissions || [], autoSchedules: updated.autoSchedules || [], canAddProduct: !!updated.canAddProduct, assignedBusinessType: updated.assignedBusinessType || null };
     });
   }, [users, loaded]);
 
@@ -14035,6 +14065,8 @@ function SmartBusinessMgmt() {
               showToast={showToast}
               recoveryPhone={recoveryPhone}
               recoveryPinHash={recoveryPinHash}
+              enabledBusinessTypes={enabledBusinessTypes}
+              businessType={businessType}
             />
           </ErrorBoundary>
         )}
@@ -27834,10 +27866,15 @@ function StaffSetupQrPanel({ T, S, recoveryPhone, recoveryPinHash }) {
   );
 }
 
-function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, recoveryPhone, recoveryPinHash }) {
+function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, recoveryPhone, recoveryPinHash, enabledBusinessTypes = [], businessType }) {
   const [showNewUser, setShowNewUser] = useState(false);
-  const [userForm, setUserForm] = useState({ name: "", username: "", password: "", pin: "" });
+  const [userForm, setUserForm] = useState({ name: "", username: "", password: "", pin: "", assignedBusinessType: businessType });
   const [search, setSearch] = useState("");
+  // 🆕 ধাপ ৫ (Staff Permission System): শুধু সত্যিকারের multi-business শপে
+  // (enabledBusinessTypes.length >= 2) business-assignment UI দেখানো হয় — বর্তমান
+  // ৫০০ শপের সবগুলোতেই এটা no-op, existing UI/আচরণ অপরিবর্তিত থাকে (নিয়ম ৩)।
+  const isMultiBusinessShop = Array.isArray(enabledBusinessTypes) && enabledBusinessTypes.length >= 2;
+  const [editingBizStaffId, setEditingBizStaffId] = useState(null);
 
   if (currentUser?.role === "staff") {
     return (
@@ -27851,16 +27888,42 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
 
   const addUser = async () => {
     if (!userForm.name || !userForm.username || !userForm.password) { showToast("সব তথ্য দিন", "#ef4444"); return; }
+    // 🆕 ধাপ ৫: multi-business শপে নতুন স্টাফের জন্য business assignment বাধ্যতামূলক
+    if (isMultiBusinessShop && !enabledBusinessTypes.includes(userForm.assignedBusinessType)) {
+      showToast("স্টাফের জন্য একটা বিজনেস নির্বাচন করুন", "#ef4444"); return;
+    }
     const uname = userForm.username.trim().toLowerCase();
     if (users.some(u => (u.username || "").toLowerCase() === uname)) {
       showToast("এই ইউজারনেম আগে থেকেই আছে", "#ef4444"); return;
     }
     const hashed = await hashPassword(userForm.password);
     const hashedPin = userForm.pin ? await hashPassword(userForm.pin) : "";
-    setUsers(prev => [...prev, { id: uid(), name: userForm.name, username: uname, password: hashed, pin: hashedPin, role: "staff" }]);
-    setUserForm({ name: "", username: "", password: "", pin: "" });
+    // 🆕 ধাপ ৫: single-business শপে (বর্তমান সব ৫০০ শপ) assignedBusinessType
+    // স্বয়ংক্রিয়ভাবে একমাত্র enabled টাইপ (বা বর্তমান businessType) হয় — no-op।
+    const assignedBusinessType = isMultiBusinessShop
+      ? userForm.assignedBusinessType
+      : (enabledBusinessTypes[0] || businessType || null);
+    setUsers(prev => [...prev, { id: uid(), name: userForm.name, username: uname, password: hashed, pin: hashedPin, role: "staff", assignedBusinessType }]);
+    setUserForm({ name: "", username: "", password: "", pin: "", assignedBusinessType: businessType });
     setShowNewUser(false);
     showToast("নতুন স্টাফ অ্যাকাউন্ট যোগ হয়েছে");
+  };
+
+  // 🆕 ধাপ ৫: existing স্টাফের business assignment বদলানো — updateAutoSchedule-এর
+  // মতোই verifyPermissionSync দিয়ে সার্ভারে সত্যিই পৌঁছেছে কিনা নিশ্চিত করা হয়।
+  const updateAssignedBusinessType = (u, newType) => {
+    if (!enabledBusinessTypes.includes(newType)) return;
+    const updatedUser = { ...u, assignedBusinessType: newType };
+    setUsers(prev => prev.map(x => x.id === u.id ? updatedUser : x));
+    setEditingBizStaffId(null);
+    showToast(`${u.name}-কে ${BUSINESS_TYPE_REGISTRY[newType]?.label || newType}-এ এসাইন করা হয়েছে`);
+    verifyPermissionSync(
+      u.id,
+      (fresh) => fresh.assignedBusinessType === newType,
+      () => updatedUser,
+      showToast,
+      `${u.name}-এর বিজনেস এসাইনমেন্ট`
+    );
   };
 
   const deleteUser = (id) => {
@@ -27967,6 +28030,30 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
               type="tel" inputMode="numeric" pattern="[0-9]*" maxLength={6} placeholder="৪-৬ সংখ্যা (ঐচ্ছিক)"
               value={userForm.pin}
               onChange={e => setUserForm(f => ({ ...f, pin: e.target.value.replace(/[^0-9]/g,"") }))} />
+            {isMultiBusinessShop && (
+              <>
+                <label style={S.label}>কোন বিজনেসে এসাইন করবেন?</label>
+                <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom: 4 }}>
+                  {enabledBusinessTypes.map(bt => {
+                    const reg = BUSINESS_TYPE_REGISTRY[bt];
+                    const selected = userForm.assignedBusinessType === bt;
+                    return (
+                      <button key={bt} type="button"
+                        onClick={() => setUserForm(f => ({ ...f, assignedBusinessType: bt }))}
+                        style={{
+                          padding:"7px 12px", borderRadius:20, cursor:"pointer", fontFamily:"inherit",
+                          fontSize:12, fontWeight:700,
+                          background: selected ? `${reg?.color || "#8b5cf6"}33` : "transparent",
+                          border: `1.5px solid ${selected ? (reg?.color || "#8b5cf6") : T.border}`,
+                          color: selected ? (reg?.color || "#8b5cf6") : T.sub,
+                        }}>
+                        {reg?.label || bt}
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
             <button style={{ ...S.saveBtn, width:"100%", marginTop: 6 }} onClick={addUser}>
               ✓ স্টাফ অ্যাকাউন্ট তৈরি করুন
             </button>
@@ -28012,6 +28099,16 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
                         📦 পণ্য যোগ
                       </span>
                     )}
+                    {isMultiBusinessShop && (() => {
+                      const reg = BUSINESS_TYPE_REGISTRY[u.assignedBusinessType];
+                      return (
+                        <span
+                          onClick={() => setEditingBizStaffId(v => v === u.id ? null : u.id)}
+                          style={{ color: reg?.color || T.sub, fontSize:9.5, fontWeight:700, background:`${reg?.color || "#64748b"}22`, border:`1px solid ${reg?.color || "#64748b"}44`, borderRadius:20, padding:"1px 8px", cursor:"pointer" }}>
+                          🏷️ {reg?.label || "বিজনেস নির্ধারিত নেই"} ✎
+                        </span>
+                      );
+                    })()}
                   </div>
                 </div>
                 <button style={{ background: "#ef444415", border: "1px solid #ef444433", color: "#ef4444", borderRadius: 9, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}
@@ -28019,6 +28116,32 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
                   🗑️
                 </button>
               </div>
+
+              {/* 🆕 ধাপ ৫: বিজনেস এসাইনমেন্ট এডিটর — শুধু multi-business শপে দেখানো হয় */}
+              {isMultiBusinessShop && editingBizStaffId === u.id && (
+                <div style={{ borderTop:"1px solid #8b5cf622", padding:"10px 12px", background:"#8b5cf608" }}>
+                  <div style={{ fontSize:10.5, fontWeight:800, color:T.sub, marginBottom:8 }}>🏷️ কোন বিজনেসে এসাইন করবেন?</div>
+                  <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                    {enabledBusinessTypes.map(bt => {
+                      const reg = BUSINESS_TYPE_REGISTRY[bt];
+                      const selected = u.assignedBusinessType === bt;
+                      return (
+                        <button key={bt}
+                          onClick={() => updateAssignedBusinessType(u, bt)}
+                          style={{
+                            padding:"7px 12px", borderRadius:20, cursor:"pointer", fontFamily:"inherit",
+                            fontSize:12, fontWeight:700,
+                            background: selected ? `${reg?.color || "#8b5cf6"}33` : "transparent",
+                            border: `1.5px solid ${selected ? (reg?.color || "#8b5cf6") : T.border}`,
+                            color: selected ? (reg?.color || "#8b5cf6") : T.sub,
+                          }}>
+                          {reg?.label || bt}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* সাময়িক অনুমতি */}
               <div style={{ borderTop:"1px solid #8b5cf622", padding:"10px 12px", background:"#8b5cf608" }}>
