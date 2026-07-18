@@ -309,12 +309,21 @@ function bnMonthYear(dateStr) {
 //      product ডকুমেন্টে প্রয়োগ করে atomically লেখা যায় (নিচে দেখুন)।
 function computeStockDeductionFIFO(product, qty) {
   if (!product || product.productType === "service") {
-    return { newStock: product?.stock ?? 0, updatedBatches: product?.batches || [], batchNo: "", costPrice: product?.costPrice ?? 0, expiryDate: "" };
+    return { newStock: product?.stock ?? 0, updatedBatches: product?.batches || [], batchNo: "", costPrice: product?.costPrice ?? 0, expiryDate: "", batchBreakdown: [] };
   }
   const newStock = Math.max(0, (product.stock || 0) - qty);
   let remaining = qty;
   const sortedBatches = getSortedActiveBatches(product);
   let batchNo = "", costPrice = product.costPrice ?? 0, expiryDate = "";
+  // 🔴 ফিক্স (রুট কজ — একাধিক ব্যাচ থেকে একসাথে বিক্রি হলে ভয়েডে সব এক ব্যাচে
+  // মিশে যাওয়া): আগে এখানে শুধু sortedBatches[0]-এর batchNo/expiryDate রাখা
+  // হতো — বিক্রির qty একাধিক ব্যাচ থেকে কাটা হলেও (যেমন ব্যাচ-A থেকে ৩ +
+  // ব্যাচ-B থেকে ৩) সেই বিভাজনের তথ্য কোথাও সংরক্ষণ হতো না, তাই ভয়েড করার
+  // সময় সবকিছু একটা মাত্র ব্যাচ/এক্সপায়ারিতে ফেরত যেত। এখন প্রতিটা ব্যাচ থেকে
+  // কত কাটা হলো তার সম্পূর্ণ breakdown আলাদাভাবে রাখা হচ্ছে, যাতে caller
+  // (createInvoice) এটা ইনভয়েস আইটেমে সেভ করতে পারে আর voidInvoice() পরে
+  // প্রতিটা ব্যাচ আলাদাভাবে ঠিক তার নিজের qty/expiryDate সহ ফেরত দিতে পারে।
+  const batchBreakdown = [];
   if (sortedBatches.length > 0) {
     let calcRem = qty, totalC = 0, totalQ = 0;
     sortedBatches.forEach(b => {
@@ -323,6 +332,14 @@ function computeStockDeductionFIFO(product, qty) {
       totalC += d * (b.costPrice ?? product.costPrice ?? 0);
       totalQ += d;
       calcRem -= d;
+      if (d > 0) {
+        batchBreakdown.push({
+          batchNo: b.batchNo || "",
+          qty: d,
+          costPrice: b.costPrice ?? product.costPrice ?? 0,
+          expiryDate: b.expiryDate || b.expiry || "",
+        });
+      }
     });
     costPrice = totalQ > 0 ? totalC / totalQ : (product.costPrice ?? 0);
     batchNo = sortedBatches[0].batchNo || "";
@@ -334,6 +351,17 @@ function computeStockDeductionFIFO(product, qty) {
     // পাওয়া যেত না। এখন deduction গণনার এই মুহূর্তেই (ব্যাচ এখনো হাতে থাকা
     // অবস্থায়) মূল বিক্রিত ব্যাচের expiryDate সরাসরি সংরক্ষণ করা হচ্ছে।
     expiryDate = sortedBatches[0].expiryDate || sortedBatches[0].expiry || "";
+  } else {
+    // 🔴 ফিক্স (রুট কজ — batch-tracking ছাড়া legacy পণ্যে ভয়েডে এক্সপায়ারি হারানো):
+    // এই পণ্যের কোনো ট্র্যাক করা batches[] নেই (getSortedActiveBatches তাই []
+    // দিয়েছে) — কিন্তু getSellableStock()-এর legacy branch-এর মতোই, পণ্যের
+    // নিজের top-level expiryDate থাকতে পারে। আগে এই branch-এ expiryDate সবসময়
+    // "" থেকে যেত, তাই বিক্রির মুহূর্তেই এক্সপায়ারি হারিয়ে যেত আর ভয়েড করার
+    // সময় ফেরত দেওয়ার মতো কোনো তথ্যই থাকত না। এখন top-level expiryDate থেকে
+    // fallback করা হচ্ছে।
+    costPrice = product.costPrice ?? 0;
+    expiryDate = product.expiryDate || "";
+    if (qty > 0) batchBreakdown.push({ batchNo: "", qty, costPrice, expiryDate });
   }
   const updatedBatches = sortedBatches
     .map(b => {
@@ -343,7 +371,7 @@ function computeStockDeductionFIFO(product, qty) {
       return { ...b, qty: (b.qty || 0) - deduct };
     })
     .filter(b => b.qty > 0);
-  return { newStock, updatedBatches, batchNo, costPrice, expiryDate };
+  return { newStock, updatedBatches, batchNo, costPrice, expiryDate, batchBreakdown };
 }
 
 // ─── smartMatch — fuzzy/contains scorer for Bengali+English ───────────────────
@@ -2754,6 +2782,21 @@ const Notif = {
     } catch(e) { console.warn("Payment reminder error:", e); }
   },
 
+  // 🔴 ফিক্স (ভয়েড করা ইনভয়েসের বাকি-রিমাইন্ডার বাতিল না হওয়া): schedulePaymentReminder()
+  // দিয়ে শিডিউল করা নোটিফিকেশন এতদিন voidInvoice()-এ কখনো cancel হতো না —
+  // ইনভয়েস ভয়েড হয়ে যাওয়ার পরও কাস্টমারকে আর-নেই-এমন বাকি আদায়ের রিমাইন্ডার
+  // দেখানো হতো। schedulePaymentReminder()-এর ঠিক একই invId→idHash সূত্র
+  // ব্যবহার করে সেই একই নোটিফিকেশন id বাতিল করা হচ্ছে।
+  async cancelPaymentReminder(invId) {
+    try {
+      if (!invId) return;
+      const idHash = invId.split("").reduce((a, c) => a + c.charCodeAt(0), 0) % 2000000;
+      const { plugin: LocalNotifications } = await Notif._getLocalNotif();
+      if (!LocalNotifications) return;
+      await LocalNotifications.cancel({ notifications: [{ id: idHash }] });
+    } catch(e) { console.warn("Payment reminder cancel error:", e); }
+  },
+
   // FCM Push Notification setup
   async setupPushNotifications(shopName) {
     try {
@@ -5104,12 +5147,12 @@ const FSS = {
         const snap = await tx.get(ref);
         if (!snap.exists()) return null;
         const serverProduct = { id: snap.id, ...snap.data() };
-        const { newStock, updatedBatches, batchNo, costPrice, expiryDate } = computeStockDeductionFIFO(serverProduct, deductQty);
+        const { newStock, updatedBatches, batchNo, costPrice, expiryDate, batchBreakdown } = computeStockDeductionFIFO(serverProduct, deductQty);
         tx.update(ref, {
           stock: newStock, batches: updatedBatches, costPrice,
           lastUpdated: new Date().toISOString(), _updatedAt: Date.now(),
         });
-        return { stock: newStock, batches: updatedBatches, batchNo, costPrice, expiryDate };
+        return { stock: newStock, batches: updatedBatches, batchNo, costPrice, expiryDate, batchBreakdown };
       });
       return result;
     } catch (e) {
@@ -5176,6 +5219,56 @@ const FSS = {
       return result;
     } catch (e) {
       logErrorToCentral?.("transaction:restoreStock", e, { productId, restoreQty });
+      return null; // ব্যর্থ হলে caller local fallback ব্যবহার করবে
+    }
+  },
+
+  // 🔴 ফিক্স (একাধিক ব্যাচ থেকে একসাথে বিক্রি হলে ভয়েডে সব এক ব্যাচে মিশে
+  // যাওয়া): transactionRestoreStock()-এর মতোই সার্ভারের বর্তমান কপির ওপর
+  // atomically restore করে, কিন্তু একটার বদলে restoreItems অ্যারেতে দেওয়া
+  // প্রতিটা ব্যাচ আলাদাভাবে তার নিজের qty/costPrice/expiryDate সহ ফেরত দেয় —
+  // একই runTransaction()-এর ভেতরেই (একটাই read, একটাই write), তাই এখনো
+  // পুরোপুরি atomic। batchNo ফাঁকা থাকলে (batch-tracking ছাড়া legacy পণ্য)
+  // voidAdjBatchNo দিয়ে নতুন ব্যাচ তৈরি হয়, ঠিক transactionRestoreStock()-এর
+  // legacy আচরণের মতোই।
+  async transactionRestoreStockBatches(productId, restoreItems, voidAdjBatchNo) {
+    if (!this._db || !productId || !restoreItems || !restoreItems.length) return null;
+    try {
+      const ref = doc(this._db, "products", String(productId));
+      const result = await runTransaction(this._db, async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists()) return null;
+        const serverProduct = { id: snap.id, ...snap.data() };
+        let updatedBatches = serverProduct.batches ? [...serverProduct.batches] : [];
+        let totalRestore = 0;
+        restoreItems.forEach((ri, idx) => {
+          const qty = ri.qty || 0;
+          if (qty <= 0) return;
+          totalRestore += qty;
+          const batchNo = ri.batchNo || `${voidAdjBatchNo || "VOID-ADJ"}-L${idx}`;
+          const bIdx = updatedBatches.findIndex(b => b.batchNo === batchNo);
+          if (bIdx >= 0) {
+            updatedBatches[bIdx] = { ...updatedBatches[bIdx], qty: (updatedBatches[bIdx].qty || 0) + qty };
+          } else {
+            updatedBatches.push({
+              batchNo, qty,
+              costPrice: ri.costPrice ?? serverProduct.costPrice ?? 0,
+              expiryDate: ri.expiryDate || null,
+              addedAt: new Date().toISOString(),
+              note: "voidInvoice batch-breakdown restore",
+            });
+          }
+        });
+        const newStock = (serverProduct.stock || 0) + totalRestore;
+        tx.update(ref, {
+          stock: newStock, batches: updatedBatches,
+          lastUpdated: new Date().toISOString(), _updatedAt: Date.now(),
+        });
+        return { stock: newStock, batches: updatedBatches };
+      });
+      return result;
+    } catch (e) {
+      logErrorToCentral?.("transaction:restoreStockBatches", e, { productId, restoreItems });
       return null; // ব্যর্থ হলে caller local fallback ব্যবহার করবে
     }
   },
@@ -5549,9 +5642,10 @@ const FSS = {
                   const r = resMap.get(it.productId);
                   if (!r) return it;
                   const rExpiry = r.expiryDate || "";
-                  if (r.batchNo !== it.batchNo || r.costPrice !== it.costPrice || rExpiry !== (it.expiryDate || "")) {
+                  const rBreakdown = r.batchBreakdown || [];
+                  if (r.batchNo !== it.batchNo || r.costPrice !== it.costPrice || rExpiry !== (it.expiryDate || "") || JSON.stringify(rBreakdown) !== JSON.stringify(it.batchBreakdown || [])) {
                     itemsChanged = true;
-                    return { ...it, batchNo: r.batchNo, costPrice: r.costPrice, expiryDate: rExpiry };
+                    return { ...it, batchNo: r.batchNo, costPrice: r.costPrice, expiryDate: rExpiry, batchBreakdown: rBreakdown };
                   }
                   return it;
                 });
@@ -12758,6 +12852,16 @@ function SmartBusinessMgmt() {
 
   // ── Fix 4 (v2): Invoice Void — stock restore + correct balanceAfter + owner-only ─
   const voidInvoice = useCallback(async (inv, voidReason = "") => {
+    // 🔴 ফিক্স (ডাবল-ভয়েড race guard): দুইটা ডিভাইস প্রায় একসাথে (বা ডাবল-ট্যাপে)
+    // একই ইনভয়েস ভয়েড করার চেষ্টা করলে স্টক/ব্যালেন্স দুইবার রিস্টোর হয়ে যেতে
+    // পারত। রিটার্ন ফ্লো-তে (Invoice History) যেমন freshest getState() থেকে
+    // চেক করা হয়, এখানেও ঠিক তেমনি — কমিট করার ঠিক আগে সবচেয়ে সাম্প্রতিক
+    // invoices স্টেট থেকে দেখা হচ্ছে এই ইনভয়েস ইতিমধ্যে ভয়েড হয়ে গেছে কিনা।
+    const freshInv = useAppStore.getState().invoices.find(i => i.id === inv.id);
+    if (freshInv && freshInv.status === "voided") {
+      showToast("এই ইনভয়েস ইতিমধ্যে ভয়েড করা হয়ে গেছে", "#f59e0b");
+      return;
+    }
     // ── 1. Mark invoice as voided ────────────────────────────────────────────
     const voidedInv = { ...inv, status: "voided", voidedAt: new Date().toISOString(), voidReason };
     setInvoices(prev => prev.map(i => i.id === inv.id ? voidedInv : i));
@@ -12793,46 +12897,105 @@ function SmartBusinessMgmt() {
         // ফাংশনেরই fallback-এ ব্যবহৃত same প্যাটার্নে সরাসরি Zustand store
         // থেকে (getState()) সবচেয়ে সাম্প্রতিক products পড়া হচ্ছে, stale
         // closure-এর বদলে।
+        // 🔴 ফিক্স (রুট কজ — "পণ্য ডিলিট থাকলে ভয়েডে স্টক একদমই ফেরত আসে না"):
+        // আগে `if (!localP) return null;` ছিল — পণ্য বিক্রির পরে ডিলিট হলে
+        // (soft-delete, deletedProducts-এ যোগ হওয়ায় filterIncoming লোকাল
+        // products state থেকে সেটা বাদ দিয়ে দেয়) `localP` কখনো পাওয়া যেত না,
+        // আর পুরো restore ধাপটাই (Firestore transaction পর্যন্ত) নীরবে স্কিপ
+        // হয়ে যেত। এখন রিটার্ন ফ্লো-এর (Invoice History) একই safe প্যাটার্ন
+        // অনুসরণ করা হচ্ছে — localP শুধু ঐচ্ছিক costPrice fallback, কখনো
+        // পুরো restore-কে গার্ড করে না। soldItem নিজেই batchNo/costPrice/
+        // expiryDate ধরে রাখে, তাই localP আসলে না থাকলেও restore চলবে।
         const localP = useAppStore.getState().products.find(p => p.id === soldItem.productId);
-        if (!localP) return null;
         const soldBatchNo = soldItem.batchNo || "";
+        // 🔴 ফিক্স (রুট কজ — একাধিক ব্যাচ থেকে একসাথে বিক্রি হলে ভয়েডে সব এক
+        // ব্যাচে মিশে যাওয়া): এই আইটেম বিক্রির সময় যদি একাধিক ব্যাচ থেকে qty
+        // কাটা হয়ে থাকে (createInvoice() এখন সেই breakdown সেভ করে রাখে
+        // `soldItem.batchBreakdown`-এ), তাহলে এখন প্রতিটা ব্যাচ তার নিজের
+        // qty/costPrice/expiryDate সহ আলাদাভাবে ফেরত যাবে — আগের মতো একটা মাত্র
+        // ব্যাচে মিশে যাবে না। পুরনো ইনভয়েসে (এই ফিক্সের আগে তৈরি) breakdown
+        // নেই — সেগুলোর জন্য আগের single-batch আচরণই fallback হিসেবে চলবে।
+        const hasBreakdown = Array.isArray(soldItem.batchBreakdown) && soldItem.batchBreakdown.length > 0;
         if (FSS.isReady()) {
-          const txResult = await FSS.transactionRestoreStock(soldItem.productId, restoredQty, soldBatchNo, {
-            costPrice: soldItem.costPrice || localP.costPrice || 0,
-            expiryDate: soldItem.expiryDate || "",
-            voidAdjBatchNo: `VOID-ADJ-${inv.id.slice(-6)}`,
-          });
-          if (txResult) return { id: soldItem.productId, stock: txResult.stock, batches: txResult.batches };
+          const txResult = hasBreakdown
+            ? await FSS.transactionRestoreStockBatches(soldItem.productId, soldItem.batchBreakdown, `VOID-ADJ-${inv.id.slice(-6)}`)
+            : await FSS.transactionRestoreStock(soldItem.productId, restoredQty, soldBatchNo, {
+                costPrice: soldItem.costPrice || localP?.costPrice || 0,
+                expiryDate: soldItem.expiryDate || "",
+                voidAdjBatchNo: `VOID-ADJ-${inv.id.slice(-6)}`,
+              });
+          if (txResult) {
+            const mv = pushStockMovement({
+              id: "sm_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+              productId: soldItem.productId, productName: soldItem.name || localP?.name || "",
+              stock: txResult.stock, prevStock: (txResult.stock || 0) - restoredQty,
+              delta: restoredQty, at: new Date().toISOString(), dateKey: inv.dateKey || todayEn(), source: "void",
+            });
+            return { id: soldItem.productId, stock: txResult.stock, batches: txResult.batches, movement: mv };
+          }
         }
         // fallback — Firestore বন্ধ/ব্যর্থ হলে আগের মতো local হিসেব
         // 🔴 ফিক্স (স্টক race condition — void পাথ, checkout ফিক্সের প্যারালাল):
         // stale React closure `products`-এর বদলে সবচেয়ে সাম্প্রতিক product state
         // getState() থেকে পড়া হচ্ছে, যাতে পরপর দুইটা ইনভয়েস অফলাইনে ভয়েড হলে
         // দ্বিতীয়টার restore প্রথমটাকে ওভাররাইট করে হারিয়ে না যায়।
+        // 🔴 ফিক্স: পণ্য সত্যিই ডিলিট হয়ে থাকলে (Firestore-এও নেই/অফলাইন) freshP
+        // undefined হতে পারে — সেক্ষেত্রে local batches হিসেব সম্ভব না, তাই স্কিপ।
         const freshP = useAppStore.getState().products.find(p => p.id === soldItem.productId) || localP;
+        if (!freshP) return null;
         const existingBatches = freshP.batches ? [...freshP.batches] : [];
         // 🧪 shared formula (src/logic.js) — regression test suite এখন সরাসরি এই
         // একই restoreBatchQty() কোড টেস্ট করে, আলাদা "reference-copy" না।
-        const updatedBatches = soldBatchNo
-          ? restoreBatchQty(existingBatches, soldBatchNo, restoredQty, {
-              costPrice: soldItem.costPrice || freshP.costPrice || 0,
-              expiryDate: soldItem.expiryDate || "",
-            })
-          : restoreBatchQty(existingBatches, `VOID-ADJ-${inv.id.slice(-6)}`, restoredQty, {
-              costPrice: soldItem.costPrice || freshP.avgCost || freshP.costPrice || 0,
-              // 🔴 ফিক্স: soldItem.expiryDate থাকলে (বিক্রয়ের সময় সংরক্ষিত) সেটাই ব্যবহার করা হবে,
-              // আগে এখানেও হার্ডকোড null বসত।
-              expiryDate: soldItem.expiryDate || null,
+        let updatedBatches;
+        if (hasBreakdown) {
+          // প্রতিটা ব্যাচ আলাদাভাবে, তার নিজের qty/costPrice/expiryDate সহ ফেরত
+          updatedBatches = existingBatches;
+          soldItem.batchBreakdown.forEach((bi, idx) => {
+            const biQty = bi.qty || 0;
+            if (biQty <= 0) return;
+            const biBatchNo = bi.batchNo || `VOID-ADJ-${inv.id.slice(-6)}-L${idx}`;
+            updatedBatches = restoreBatchQty(updatedBatches, biBatchNo, biQty, {
+              costPrice: bi.costPrice ?? freshP.costPrice ?? 0,
+              expiryDate: bi.expiryDate || null,
               addedAt: new Date().toISOString(),
-              note: "voidInvoice legacy-item adjustment",
+              note: "voidInvoice batch-breakdown restore",
             });
-        return { id: soldItem.productId, stock: (freshP.stock || 0) + restoredQty, batches: updatedBatches };
+          });
+        } else {
+          updatedBatches = soldBatchNo
+            ? restoreBatchQty(existingBatches, soldBatchNo, restoredQty, {
+                costPrice: soldItem.costPrice || freshP.costPrice || 0,
+                expiryDate: soldItem.expiryDate || "",
+              })
+            : restoreBatchQty(existingBatches, `VOID-ADJ-${inv.id.slice(-6)}`, restoredQty, {
+                costPrice: soldItem.costPrice || freshP.avgCost || freshP.costPrice || 0,
+                // 🔴 ফিক্স: soldItem.expiryDate থাকলে (বিক্রয়ের সময় সংরক্ষিত) সেটাই ব্যবহার করা হবে,
+                // আগে এখানেও হার্ডকোড null বসত।
+                expiryDate: soldItem.expiryDate || null,
+                addedAt: new Date().toISOString(),
+                note: "voidInvoice legacy-item adjustment",
+              });
+        }
+        const mvFallback = pushStockMovement({
+          id: "sm_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+          productId: soldItem.productId, productName: soldItem.name || freshP.name || "",
+          stock: (freshP.stock || 0) + restoredQty, prevStock: freshP.stock || 0,
+          delta: restoredQty, at: new Date().toISOString(), dateKey: inv.dateKey || todayEn(), source: "void",
+        });
+        return { id: soldItem.productId, stock: (freshP.stock || 0) + restoredQty, batches: updatedBatches, movement: mvFallback };
       }));
-      const restoreMap = new Map(restoreResults.filter(Boolean).map(r => [r.id, r]));
+      const restoreResultsClean = restoreResults.filter(Boolean);
+      const restoreMap = new Map(restoreResultsClean.map(r => [r.id, r]));
       setProducts(prev => prev.map(p => {
         const r = restoreMap.get(p.id);
         return r ? { ...p, stock: r.stock, batches: r.batches, lastUpdated: new Date().toISOString() } : p;
       }));
+      if (restoreResultsClean.length) {
+        setStockMovements(prev => [
+          ...restoreResultsClean.map(r => r.movement).filter(Boolean),
+          ...(prev || []),
+        ]);
+      }
     }
 
     // ── 3. Reverse customer balance with CORRECT balanceAfter ─────────────────
@@ -12868,6 +13031,11 @@ function SmartBusinessMgmt() {
       }
     }
 
+    // 🔴 ফিক্স: এই ইনভয়েসের বাকির জন্য due-date reminder শিডিউল করা থাকলে
+    // (দেখুন createInvoice()-এর Notif.schedulePaymentReminder কল) সেটা এখন
+    // বাতিল করা হচ্ছে — নাহলে ভয়েড হয়ে যাওয়া বাকির জন্যও রিমাইন্ডার আসতে থাকত।
+    if (inv.dueDate) Notif.cancelPaymentReminder(inv.id);
+
     showToast("ইনভয়েস ভয়েড হয়েছে ও স্টক পুনরুদ্ধার হয়েছে", "#f59e0b");
     auditLog("INVOICE_VOID", {
       invoiceId: inv.id,
@@ -12886,7 +13054,7 @@ function SmartBusinessMgmt() {
                     : inv.payType === "partial" ? (inv.bakiAmount || 0) : 0;
       FSS.updateStats(inv.dateKey, { sale: -saleAmt, cash: -cashAmt, baki: -bakiAmt, profit: 0 });
     }
-  }, [setInvoices, setCustomers, setProducts, addTxn, showToast, auditLog]);
+  }, [setInvoices, setCustomers, setProducts, setStockMovements, addTxn, showToast, auditLog]);
 
   const connectBluetooth = useCallback(async () => {
     await BT.init();
@@ -15498,8 +15666,8 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       const freshP = useAppStore.getState().products.find(p => p.id === sold.productId)
         || products.find(p => p.id === sold.productId);
       if (!freshP || freshP.productType === "service") return null;
-      const { newStock, updatedBatches, batchNo, costPrice, expiryDate } = computeStockDeductionFIFO(freshP, sold.qty);
-      soldBatchMap[sold.productId] = { batchNo, costPrice, expiryDate: expiryDate || "" };
+      const { newStock, updatedBatches, batchNo, costPrice, expiryDate, batchBreakdown } = computeStockDeductionFIFO(freshP, sold.qty);
+      soldBatchMap[sold.productId] = { batchNo, costPrice, expiryDate: expiryDate || "", batchBreakdown };
       return { id: sold.productId, stock: newStock, batches: updatedBatches };
     });
     const stockUpdateMap = new Map(stockUpdates.filter(Boolean).map(u => [u.id, u]));
@@ -15516,10 +15684,16 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
         const soldBatch = soldBatchMap[i.productId];
         const batchNo = soldBatch?.batchNo || soldBatch || i.batchNo || "";
         const expiryDate = (soldBatch && typeof soldBatch === "object" ? soldBatch.expiryDate : "") || i.expiryDate || "";
+        // 🔴 ফিক্স (একাধিক ব্যাচ থেকে একসাথে বিক্রি হলে ভয়েডে সব এক ব্যাচে
+        // মিশে যাওয়া): কোন ব্যাচ থেকে কত কাটা হলো তার পূর্ণ breakdown এখন
+        // আইটেমের সাথেই সেভ থাকছে — voidInvoice() পরে এটা ব্যবহার করে প্রতিটা
+        // ব্যাচ আলাদাভাবে (তার নিজের qty ও expiryDate সহ) ফেরত দিতে পারবে।
+        const batchBreakdown = (soldBatch && typeof soldBatch === "object") ? (soldBatch.batchBreakdown || []) : [];
         return {
           ...i,
           batchNo,
           expiryDate,
+          batchBreakdown,
           costPrice: (soldBatch && typeof soldBatch === "object") ? soldBatch.costPrice : (i.costPrice ?? 0),
         };
       }),
@@ -15659,9 +15833,10 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                 const r = resMap.get(it.productId);
                 if (!r) return it;
                 const rExpiry = r.expiryDate || "";
-                if (r.batchNo !== it.batchNo || r.costPrice !== it.costPrice || rExpiry !== (it.expiryDate || "")) {
+                const rBreakdown = r.batchBreakdown || [];
+                if (r.batchNo !== it.batchNo || r.costPrice !== it.costPrice || rExpiry !== (it.expiryDate || "") || JSON.stringify(rBreakdown) !== JSON.stringify(it.batchBreakdown || [])) {
                   itemsChanged = true;
-                  return { ...it, batchNo: r.batchNo, costPrice: r.costPrice, expiryDate: rExpiry };
+                  return { ...it, batchNo: r.batchNo, costPrice: r.costPrice, expiryDate: rExpiry, batchBreakdown: rBreakdown };
                 }
                 return it;
               });
