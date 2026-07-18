@@ -968,6 +968,9 @@ window.renderUsers = function(search = '') {
         ${u.shopFirebaseConfig
           ? `<span class="tag-btn rec" style="color:#6ee7b7" onclick="openDeployLinkModal('${u.phone}')">✅ Firebase সংযুক্ত (${u.shopFirebaseConfig.projectId || ''})</span>`
           : `<span class="tag-btn pin" onclick="openDeployLinkModal('${u.phone}')">🔥 Firebase Deploy লিংক</span>`}
+        ${u.shopFirebaseConfig?.projectId
+          ? `<span class="tag-btn rec" style="color:#93c5fd" onclick="jumpToFirebaseDeploy('${u.phone}')">⚡ Rules/Index Sync</span>`
+          : ''}
       </div>
 
       ${u.pendingTxn ? `<button class="pay-cta" onclick="confirmPayment('${u.phone}')">✅ পেমেন্ট কনফার্ম করুন — TXN ${u.pendingTxn}</button>` : ''}
@@ -1749,7 +1752,29 @@ function fbInitTab() {
     document.getElementById('fbIndexesText').value = FB_DEFAULT_INDEXES;
     document.getElementById('fbRtdbText').value    = FB_DEFAULT_RTDB;
   }
+  // কোনো দোকানের তালিকা থেকে "⚡ Rules/Index Sync" চেপে এসে থাকলে,
+  // সেই দোকানের সংরক্ষিত shopFirebaseConfig থেকে Project ID আগে থেকেই বসিয়ে দেওয়া —
+  // যাতে প্রতিবার হাতে টাইপ করতে না হয় (কনফিগ অটো-ডিটেক্ট)।
+  if (fbPendingProjectId) {
+    document.getElementById('fbProjectId').value = fbPendingProjectId;
+    fbLog('দোকান থেকে Project ID অটো-ডিটেক্ট হয়েছে: ' + fbPendingProjectId + '। এখন Google account দিয়ে সংযুক্ত করুন।');
+    fbPendingProjectId = null;
+  }
 }
+
+// ── দোকানদার তালিকার একটা দোকান থেকে সরাসরি Firebase Deploy ট্যাবে
+// লাফ দিয়ে, তার সংরক্ষিত Project ID আগে থেকে বসিয়ে দেওয়া ──
+let fbPendingProjectId = null;
+window.jumpToFirebaseDeploy = function(phone) {
+  const u = users.find(x => x.phone === phone);
+  const projectId = u?.shopFirebaseConfig?.projectId;
+  if (!projectId) { toast('এই দোকানের Firebase Project ID পাওয়া যায়নি।', 'err'); return; }
+  fbPendingProjectId = projectId;
+  switchTab('fbdeploy');
+  // fbWorkArea কানেক্ট করার আগে hidden থাকে, কিন্তু ইনপুট এলিমেন্ট DOM-এ আছে —
+  // তাই এখনই মান বসিয়ে রাখা যায়, কানেক্ট করলেই দেখা যাবে।
+  document.getElementById('fbProjectId').value = projectId;
+};
 
 function fbWaitForGoogle(cb, tries) {
   tries = tries || 0;
@@ -1902,6 +1927,24 @@ async function fbCreateFirestoreDb(projectId, locationId) {
 
 // ── Firestore Rules deploy ──
 async function fbDeployFirestoreRules(projectId, rulesSource) {
+  const releaseName = 'projects/' + projectId + '/releases/cloud.firestore';
+
+  // আগে চেক করা হয় বর্তমান deploy করা rules-এর সাথে নতুনটা হুবহু মিলে কিনা।
+  // মিললে নতুন ruleset তৈরি না করে স্কিপ করা হয় — প্রতিটা "Deploy" ক্লিকে অপরিবর্তিত
+  // rules আবার আপলোড করলে ৫০০+ দোকানে প্রজেক্ট-প্রতি ruleset কোটা অযথা খরচ হয়।
+  try {
+    const release = await fbApiFetch('https://firebaserules.googleapis.com/v1/' + releaseName);
+    if (release.rulesetName) {
+      const currentRuleset = await fbApiFetch('https://firebaserules.googleapis.com/v1/' + release.rulesetName);
+      const currentContent = currentRuleset?.source?.files?.[0]?.content || '';
+      if (currentContent.trim() === rulesSource.trim()) {
+        fbLog('Firestore Rules আগে থেকেই হালনাগাদ আছে — স্কিপ করা হয়েছে।', 'ok');
+        return;
+      }
+    }
+  } catch (e) {
+    // release/ruleset এখনো নেই — স্বাভাবিক, নিচে নতুন তৈরি হবে
+  }
 
   fbLog('Firestore Rules ruleset তৈরি হচ্ছে...');
   const ruleset = await fbApiFetch('https://firebaserules.googleapis.com/v1/projects/' + projectId + '/rulesets', {
@@ -1911,9 +1954,8 @@ async function fbDeployFirestoreRules(projectId, rulesSource) {
   const rulesetName = ruleset.name;
   fbLog('Ruleset তৈরি হয়েছে: ' + rulesetName);
 
-  const releaseName = 'projects/' + projectId + '/releases/cloud.firestore';
   try {
-    await fbApiFetch('https://firebaserules.googleapis.com/v1/projects/' + projectId + '/releases/cloud.firestore');
+    await fbApiFetch('https://firebaserules.googleapis.com/v1/' + releaseName);
     // release আগে থেকেই আছে → update
     await fbApiFetch('https://firebaserules.googleapis.com/v1/' + releaseName, {
       method: 'PATCH',
@@ -1930,26 +1972,63 @@ async function fbDeployFirestoreRules(projectId, rulesSource) {
 }
 
 // ── Firestore Indexes deploy ──
+// আগে এখানে সরাসরি প্রতিটা index POST করে "already exists" catch করা হতো, যেটা
+// DB এখনো পুরোপুরি প্রস্তুত না থাকলে প্রতিটা index-এ আলাদা করে ব্যর্থ হতো এবং পুরো
+// batch retry হতো (স্ক্রিনশটে দেখা বারবার "does not exist" এর কারণ এটাও ছিল)।
+// এখন আগে বিদ্যমান index-গুলোর তালিকা একবারে এনে যেগুলো ইতিমধ্যে ঠিকভাবে সেট আপ
+// আছে সেগুলো সম্পূর্ণ স্কিপ করা হয় — ৫০০+ দোকানের জন্য এটাই আসল "আগে থেকে থাকলে
+// স্কিপ করবে" আচরণ, শুধু সাইলেন্ট catch না।
+function fbIndexSignature(collectionGroup, queryScope, fields) {
+  const cleanFields = (fields || []).filter(f => f.fieldPath !== '__name__');
+  return collectionGroup + '|' + (queryScope || 'COLLECTION') + '|' +
+    cleanFields.map(f => f.fieldPath + ':' + (f.order || f.arrayConfig || '')).join(',');
+}
+
+async function fbListExistingIndexes(projectId) {
+  // collectionGroups/-/indexes ('-' wildcard) দিয়ে প্রজেক্টের সব composite index একবারেই আসে
+  const res = await fbApiFetch(
+    'https://firestore.googleapis.com/v1/projects/' + projectId + '/databases/(default)/collectionGroups/-/indexes'
+  );
+  return (res.indexes || []).map(idx => {
+    const marker = '/collectionGroups/';
+    const afterCg = (idx.name || '').split(marker)[1] || '';
+    const collectionGroup = afterCg.split('/indexes/')[0];
+    return fbIndexSignature(collectionGroup, idx.queryScope, idx.fields);
+  });
+}
+
 async function fbDeployIndexes(projectId, indexesJsonText) {
   const parsed = JSON.parse(indexesJsonText);
   const list = parsed.indexes || [];
-  fbLog(list.length + 'টা Index deploy করা হচ্ছে...');
-  let ok = 0, skip = 0;
+  fbLog(list.length + 'টা Index চেক করা হচ্ছে...');
+
+  let existingSigs = new Set();
+  try {
+    existingSigs = new Set(await fbListExistingIndexes(projectId));
+  } catch (e) {
+    fbLog('বিদ্যমান index তালিকা আনতে সমস্যা (নতুন প্রজেক্ট হলে স্বাভাবিক): ' + e.message, 'warn');
+  }
+
+  let created = 0, skip = 0;
   for (const idx of list) {
     const fields = (idx.fields || []).filter(f => f.fieldPath !== '__name__');
+    if (existingSigs.has(fbIndexSignature(idx.collectionGroup, idx.queryScope, fields))) {
+      skip++;
+      continue;
+    }
     const body = { queryScope: idx.queryScope || 'COLLECTION', fields: fields };
     try {
       await fbApiFetch(
         'https://firestore.googleapis.com/v1/projects/' + projectId + '/databases/(default)/collectionGroups/' + idx.collectionGroup + '/indexes',
         { method: 'POST', body: JSON.stringify(body) }
       );
-      ok++;
+      created++;
     } catch (e) {
       if (e.message && e.message.toLowerCase().includes('already exists')) { skip++; }
       else { fbLog('Index ব্যর্থ (' + idx.collectionGroup + '): ' + e.message, 'warn'); throw e; }
     }
   }
-  fbLog('Indexes: ' + ok + 'টা তৈরি হয়েছে, ' + skip + 'টা আগে থেকেই ছিল।', 'ok');
+  fbLog('Indexes: ' + created + 'টা নতুন তৈরি হয়েছে, ' + skip + 'টা আগে থেকেই সেট আপ থাকায় স্কিপ হয়েছে।', 'ok');
 }
 
 // ── RTDB Rules কপি (অটো-ডিপ্লয় সম্ভব না — Google user-token RTDB legacy
