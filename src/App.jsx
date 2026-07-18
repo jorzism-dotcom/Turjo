@@ -71,8 +71,13 @@ const useAppStore = create(subscribeWithSelector((set) => ({
 
   // ── Shop / Auth ───────────────────────────────────────────────────────────
   shopName:          "SBM",
-  businessType:      "pharmacy", // "pharmacy" | "veterinary" — দোকানের ধরন, ডেটাসেট/লেবেল এটার উপর নির্ভর করে
+  businessType:      "pharmacy", // এখন থেকে এটাই "active" business type — একাধিক enabled থাকলে owner এটার মধ্যেই সুইচ করে
   businessTypeLocked: false, // 🔒 একবার সিলেক্ট করলে আর বদলানো যাবে না (দুই মোডের ডেটাসেট/পণ্য যাতে মিশে না যায়)
+  // 🆕 ধাপ ২ (Multi-Business System Plan): admin.html নির্ধারণ করে এই শপের জন্য
+  // কোন কোন বিজনেস টাইপ চালু আছে। ডিফল্ট/মাইগ্রেটেড single-business শপে সবসময়
+  // [businessType]-ই থাকে — length 1 থাকলে FSS কোনো collection-prefix লাগায় না,
+  // তাই existing শপের ডেটা/আচরণ এতটুকুও বদলায় না (দেখুন FSS._prefixed)।
+  enabledBusinessTypes: ["pharmacy"],
   currentUser:       null,
   authSession:       null,
   devContact:        null,
@@ -4053,7 +4058,7 @@ const GDRIVE_REFRESH_ENDPOINT = "https://melodious-axolotl-00b2e7.netlify.app/.n
 const SK = {
   customers: "sbm-customers", products: "sbm-products", invoices: "sbm-invoices",
   smsLog: "sbm-smslog", txns: "sbm-txns", users: "sbm-users",
-  shopName: "sbm-shopname", businessType: "sbm-business-type", businessTypeLocked: "sbm-business-type-locked", darkMode: "sbm-darkmode", activeTheme: "sbm-active-theme", fontSize: "sbm-font-size", deletedCustomers: "sbm-deleted-customers", deletedProducts: "sbm-deleted-products",
+  shopName: "sbm-shopname", businessType: "sbm-business-type", businessTypeLocked: "sbm-business-type-locked", enabledBusinessTypes: "sbm-enabled-business-types", darkMode: "sbm-darkmode", activeTheme: "sbm-active-theme", fontSize: "sbm-font-size", deletedCustomers: "sbm-deleted-customers", deletedProducts: "sbm-deleted-products",
   paymentInvoices: "sbm-payment-invoices", smsGateway: "sbm-sms-gateway",
   lastAutoBackup: "sbm-last-auto-backup", anthropicKey: "sbm-anthropic-key",
   lastLocalBackup: "sbm-last-local-backup",
@@ -4889,6 +4894,46 @@ const HealthMonitor = {
   },
 };
 
+// ─── ধাপ ২ (Multi-Business System Plan): Business Type Registry ──────────────
+// প্রতিটা বিজনেস টাইপের সংজ্ঞা এখানে কেন্দ্রীভূত। নতুন বিজনেস টাইপ (৪র্থ, ৫ম...)
+// যোগ করতে হলে এখানে নতুন এন্ট্রি + কোড দিয়ে টেস্ট করে deploy — admin.html থেকে
+// করা যাবে না (এটা UI behavior/logic, শুধু data assignment না)।
+const BUSINESS_TYPE_REGISTRY = {
+  pharmacy: {
+    id: "pharmacy",
+    label: "ফার্মেসি",
+    color: "#22c55e",
+    collectionPrefix: "pharmacy",
+    hiddenFields: { productForm: [], purchaseForm: [], invoiceCard: [] },
+    bulkImageEntry: true,
+    purchaseEntryRestrictToExisting: false,
+  },
+  veterinary: {
+    id: "veterinary",
+    label: "ভেটেরিনারি",
+    color: "#f59e0b",
+    collectionPrefix: "veterinary",
+    hiddenFields: { productForm: [], purchaseForm: [], invoiceCard: [] },
+    bulkImageEntry: true,
+    purchaseEntryRestrictToExisting: false,
+  },
+  semen: {
+    id: "semen",
+    label: "সিমেন বিজনেস",
+    color: "#a855f7",
+    collectionPrefix: "semen",
+    hiddenFields: {
+      productForm: ["sp", "expiryDate", "addBatchButton"],
+      purchaseForm: ["sp", "bonusStock", "expiryDate"],
+      invoiceCard: ["purchasePrice"],
+    },
+    bulkImageEntry: false,
+    purchaseEntryRestrictToExisting: true,
+    purchaseEntryAllFieldsMandatory: true,
+    purchaseEntryListOrder: "newestFirst",
+  },
+};
+
 const FSS = {
   _app: null,
   _db: null,
@@ -4901,6 +4946,44 @@ const FSS = {
   _authInitTried: false,
 
   isReady() { return !!this._db; },
+
+  // ─── ধাপ ১ (Multi-Business System Plan, ১৮ জুলাই ২০২৬): কেন্দ্রীয় collection-name
+  // প্রিফিক্স রেজলভার ───────────────────────────────────────────────────────────
+  // এই সেশনে শুধু ইনফ্রাস্ট্রাকচার তৈরি হচ্ছে — _businessPrefix ডিফল্ট null থাকে
+  // এবং এখনো কোথাও থেকে সেট করা হয় না (registry/enabledBusinessTypes/
+  // activeBusinessType ডেটা মডেল ধাপ ২-এ আসবে)। ফলে _prefixed(name) সবসময়
+  // অপরিবর্তিত name ফেরত দেয় — অর্থাৎ এই ধাপে কোনো collection-নাম/ব্যবহারকারীর
+  // দেখা ডেটা এতটুকুও বদলায় না (নিয়ম ৩: backward compatibility)। ধাপ ২-এ
+  // setBusinessPrefix() actual businessType/activeBusinessType দিয়ে কল হবে এবং
+  // existing শপগুলোর জন্য ডেটা-মাইগ্রেশন স্ক্রিপ্ট আলাদাভাবে সিদ্ধান্ত নিয়ে চালানো হবে।
+  _businessPrefix: null,
+
+  // এই কালেকশনগুলো কখনোই business-specific না (শপ-লেভেল কনফিগ/মেটা) — prefix
+  // চালু হয়ে গেলেও এগুলো সবসময় একটাই ভাগ করা কপি থাকবে, প্রতি বিজনেসে আলাদা না।
+  _NEVER_PREFIX: new Set(["settings", "meta"]),
+
+  setBusinessPrefix(prefix) {
+    this._businessPrefix = prefix || null;
+  },
+
+  _prefixed(name) {
+    if (!this._businessPrefix) return name;
+    if (this._NEVER_PREFIX.has(name)) return name;
+    return `${name}_${this._businessPrefix}`;
+  },
+
+  // কেন্দ্রীয় collection()/doc() হেল্পার — এখন থেকে FSS-এর ভেতরে ও বাইরে (App()
+  // কম্পোনেন্টে) সব জায়গায় সরাসরি collection(this._db/FSS._db, name) বা
+  // doc(this._db/FSS._db, name, id) না লিখে FSS.col(name) / FSS.doc(name, id)
+  // ব্যবহার করা হবে, যাতে ভবিষ্যতে business-prefix লজিক একটামাত্র জায়গায় বসে।
+  col(name) {
+    if (!this._db) return null;
+    return collection(this._db, this._prefixed(name));
+  },
+  doc(name, id) {
+    if (!this._db) return null;
+    return id === undefined ? doc(this._db, this._prefixed(name)) : doc(this._db, this._prefixed(name), String(id));
+  },
 
   // ফেজ ১: এই শপের Firebase project-এ বর্তমান ডিভাইসের Auth UID (এখনো কোনো
   // rules/permission এটার উপর নির্ভর করে না — শুধু availability দিলাম যাতে
@@ -5029,7 +5112,7 @@ const FSS = {
   subscribeCollection(name, callback, onError = null) {
     if (!this._db) return () => {};
     this.unsubscribe(name);
-    const colRef = collection(this._db, name);
+    const colRef = this.col(name);
     // 🔴 ফিক্স (আসল root cause — খালি products/customers কালেকশনে চিরকাল
     // fromCache:true আটকে থাকা): আগে includeMetadataChanges অপশন ছাড়া
     // onSnapshot কল করা হতো — Firestore SDK-এর ডিফল্ট আচরণে, ডেটা (ডকুমেন্ট
@@ -5082,7 +5165,7 @@ const FSS = {
   async forceRefreshDoc(name, id) {
     if (!this._db || !id) return null;
     try {
-      const snap = await getDocFromServer(doc(this._db, name, String(id)));
+      const snap = await getDocFromServer(this.doc(name, id));
       return snap.exists() ? { id: snap.id, ...snap.data() } : null;
     } catch (e) {
       return null; // অফলাইন বা নেটওয়ার্ক নেই — onSnapshot cache দিয়ে কাজ চলতে থাকুক
@@ -5092,7 +5175,7 @@ const FSS = {
   subscribeSettings(callback) {
     if (!this._db) return () => {};
     this.unsubscribe("__settings");
-    const ref = doc(this._db, "settings", "main");
+    const ref = this.doc("settings", "main");
     const unsub = onSnapshot(ref, (snap) => callback(snap.exists() ? snap.data() : null), () => {});
     this._unsubs["__settings"] = unsub;
     return unsub;
@@ -5114,7 +5197,7 @@ const FSS = {
   async transactionUpdateBalance(customerId, deltaFn) {
     if (!this._db || !customerId) return null;
     try {
-      const ref = doc(this._db, "customers", String(customerId));
+      const ref = this.doc("customers", customerId);
       const finalBalance = await runTransaction(this._db, async (tx) => {
         const snap = await tx.get(ref);
         const current = snap.exists() ? (snap.data().balance || 0) : 0;
@@ -5142,7 +5225,7 @@ const FSS = {
   async transactionUpdateStock(productId, deductQty) {
     if (!this._db || !productId) return null;
     try {
-      const ref = doc(this._db, "products", String(productId));
+      const ref = this.doc("products", productId);
       const result = await runTransaction(this._db, async (tx) => {
         const snap = await tx.get(ref);
         if (!snap.exists()) return null;
@@ -5175,7 +5258,7 @@ const FSS = {
   async transactionRestoreStock(productId, restoreQty, restoreBatchNo, batchMeta = {}) {
     if (!this._db || !productId) return null;
     try {
-      const ref = doc(this._db, "products", String(productId));
+      const ref = this.doc("products", productId);
       const result = await runTransaction(this._db, async (tx) => {
         const snap = await tx.get(ref);
         if (!snap.exists()) return null;
@@ -5234,7 +5317,7 @@ const FSS = {
   async transactionRestoreStockBatches(productId, restoreItems, voidAdjBatchNo) {
     if (!this._db || !productId || !restoreItems || !restoreItems.length) return null;
     try {
-      const ref = doc(this._db, "products", String(productId));
+      const ref = this.doc("products", productId);
       const result = await runTransaction(this._db, async (tx) => {
         const snap = await tx.get(ref);
         if (!snap.exists()) return null;
@@ -5295,7 +5378,7 @@ const FSS = {
   async transactionAddStock(productId, { qty, unitCost, unitSell, expiryDate, supplier, note, isFreeStock, batchNoHint } = {}) {
     if (!this._db || !productId || !qty) return null;
     try {
-      const ref = doc(this._db, "products", String(productId));
+      const ref = this.doc("products", productId);
       const result = await runTransaction(this._db, async (tx) => {
         const snap = await tx.get(ref);
         if (!snap.exists()) return null;
@@ -5355,7 +5438,7 @@ const FSS = {
   async transactionRemoveBatch(productId, batchNo, expiryDate) {
     if (!this._db || !productId) return null;
     try {
-      const ref = doc(this._db, "products", String(productId));
+      const ref = this.doc("products", productId);
       const result = await runTransaction(this._db, async (tx) => {
         const snap = await tx.get(ref);
         if (!snap.exists()) return null;
@@ -5401,7 +5484,7 @@ const FSS = {
       logErrorToCentral?.("schema:validationFailed", new Error(errors?.join("; ") || "invalid shape"), { coll, id: String(id) }).catch?.(() => {});
     }
     try {
-      await setDoc(doc(this._db, coll, String(id)), { ...data, _serverTs: serverTimestamp() });
+      await setDoc(this.doc(coll, id), { ...data, _serverTs: serverTimestamp() });
       return { ok: true };
     } catch (e) {
       return { ok: false, msg: e.message || "Firestore write ব্যর্থ" };
@@ -5412,7 +5495,7 @@ const FSS = {
   async deleteRecord(coll, id) {
     if (!this._db || id === undefined || id === null || id === "") return { ok: false, msg: "Firestore সংযুক্ত নেই" };
     try {
-      await deleteDoc(doc(this._db, coll, String(id)));
+      await deleteDoc(this.doc(coll, id));
       return { ok: true };
     } catch (e) {
       return { ok: false, msg: e.message || "Firestore delete ব্যর্থ" };
@@ -5422,7 +5505,7 @@ const FSS = {
   async setSettings(partial) {
     if (!this._db) return { ok: false, msg: "Firestore সংযুক্ত নেই" };
     try {
-      await setDoc(doc(this._db, "settings", "main"), partial, { merge: true });
+      await setDoc(this.doc("settings", "main"), partial, { merge: true });
       return { ok: true };
     } catch (e) {
       return { ok: false, msg: e.message || "Firestore write ব্যর্থ" };
@@ -5432,7 +5515,7 @@ const FSS = {
   async getSettingsOnce() {
     if (!this._db) return null;
     try {
-      const s = await getDoc(doc(this._db, "settings", "main"));
+      const s = await getDoc(this.doc("settings", "main"));
       return s.exists() ? s.data() : null;
     } catch { return null; }
   },
@@ -5440,7 +5523,7 @@ const FSS = {
   async getCollectionOnce(name) {
     if (!this._db) return [];
     try {
-      const s = await getDocs(collection(this._db, name));
+      const s = await getDocs(this.col(name));
       return s.docs.map(d => ({ id: d.id, ...d.data() }));
     } catch { return []; }
   },
@@ -5451,7 +5534,7 @@ const FSS = {
     const ok = this.init(cfg);
     if (!ok) return { ok: false, msg: "Project ID / API Key সঠিক না" };
     try {
-      await getDoc(doc(this._db, "settings", "main"));
+      await getDoc(this.doc("settings", "main"));
       return { ok: true, msg: "🎉 Firestore সংযোগ সফল! প্রস্তুত।" };
     } catch (e) {
       const msg = (e?.message || "").includes("permission")
@@ -5474,7 +5557,7 @@ const FSS = {
     let lastErr = "";
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        const snap = await getDocs(collection(this._db, coll));
+        const snap = await getDocs(this.col(coll));
         const docs = snap.docs;
         for (let i = 0; i < docs.length; i += 500) {
           const chunk = docs.slice(i, i + 500);
@@ -5491,7 +5574,7 @@ const FSS = {
             }
           }
         }
-        const verify = await getDocs(query(collection(this._db, coll), limit(1)));
+        const verify = await getDocs(query(this.col(coll), limit(1)));
         if (verify.empty) return { ok: true };
         lastLeft = -2; // কিছু রেকর্ড বাকি আছে, ঠিক সংখ্যা জানা নেই (হালকা চেক)
       } catch (e) {
@@ -5522,7 +5605,7 @@ const FSS = {
       done++;
       try { onProgress?.(done, total); } catch {}
     }));
-    try { await deleteDoc(doc(this._db, "settings", "main")); } catch {}
+    try { await deleteDoc(this.doc("settings", "main")); } catch {}
 
     // ✅ ভেরিফিকেশন এখন _clearCollectionWithRetry-এর ভেতরেই হয়ে গেছে (প্রতিটা
     // কালেকশন সত্যিই খালি না হওয়া পর্যন্ত retry করে) — তাই এখানে আলাদা করে আবার
@@ -5545,8 +5628,8 @@ const FSS = {
     upd.updatedAt = Date.now();
     try {
       await Promise.all([
-        setDoc(doc(this._db, "stats", dateKey),  upd, { merge: true }),
-        setDoc(doc(this._db, "stats", monthKey), upd, { merge: true }),
+        setDoc(this.doc("stats", dateKey),  upd, { merge: true }),
+        setDoc(this.doc("stats", monthKey), upd, { merge: true }),
       ]);
     } catch (e) {
       // 🔴 ফিক্স: আগে এখানে সম্পূর্ণ silent catch{} ছিল — লেখা ব্যর্থ হলে delta
@@ -5580,8 +5663,8 @@ const FSS = {
         if (item.delta.cash   !== undefined) upd.totalCash   = increment(item.delta.cash);
         upd.updatedAt = Date.now();
         await Promise.all([
-          setDoc(doc(this._db, "stats", item.dateKey),  upd, { merge: true }),
-          setDoc(doc(this._db, "stats", item.monthKey), upd, { merge: true }),
+          setDoc(this.doc("stats", item.dateKey),  upd, { merge: true }),
+          setDoc(this.doc("stats", item.monthKey), upd, { merge: true }),
         ]);
       } catch { remaining.push(item); }
     }
@@ -5681,14 +5764,14 @@ const FSS = {
   // একমাত্র নির্ভরযোগ্য সমাধান — "ফুল অ্যাপ চেকআপ"-এর অমিল ধরা পড়লে ব্যবহার করুন।
   async setStatsAbsolute(key, vals) {
     if (!this._db || !key) return;
-    await setDoc(doc(this._db, "stats", key), { ...vals, updatedAt: Date.now() }, { merge: false });
+    await setDoc(this.doc("stats", key), { ...vals, updatedAt: Date.now() }, { merge: false });
   },
 
   // 📊 stats doc একবার পড়া (Dashboard cold load)
   async getStats(key) {
     if (!this._db) return null;
     try {
-      const s = await getDoc(doc(this._db, "stats", key));
+      const s = await getDoc(this.doc("stats", key));
       return s.exists() ? s.data() : null;
     } catch { return null; }
   },
@@ -5696,7 +5779,7 @@ const FSS = {
   // 📊 stats doc real-time subscribe (Dashboard live update)
   subscribeStats(key, callback) {
     if (!this._db) return () => {};
-    const unsub = onSnapshot(doc(this._db, "stats", key), (snap) => {
+    const unsub = onSnapshot(this.doc("stats", key), (snap) => {
       callback(snap.exists() ? snap.data() : null);
     }, () => {});
     return unsub;
@@ -5712,11 +5795,11 @@ const FSS = {
   // push করে reset পূর্বাবস্থায় ফিরিয়ে দেবে না।
   async setResetMarker() {
     if (!this._db) return;
-    try { await setDoc(doc(this._db, "meta", "resetMarker"), { at: Date.now() }); } catch {}
+    try { await setDoc(this.doc("meta", "resetMarker"), { at: Date.now() }); } catch {}
   },
   subscribeResetMarker(callback) {
     if (!this._db) return () => {};
-    const unsub = onSnapshot(doc(this._db, "meta", "resetMarker"), (snap) => {
+    const unsub = onSnapshot(this.doc("meta", "resetMarker"), (snap) => {
       callback(snap.exists() ? (snap.data()?.at || 0) : 0);
     }, () => {});
     return unsub;
@@ -5728,13 +5811,18 @@ const FSS = {
   // ফোন আলাদা ডিভাইস হওয়ায় স্টাফের ফোন কখনো owner-এর সিলেক্ট করা মোড জানতেই
   // পারত না, ডিফল্ট "pharmacy"-তে চুপচাপ ভুল ধরে থাকত। এখন real-time listener
   // দিয়ে সব ডিভাইস (owner + staff, নতুন ইনস্টলসহ) একই মোড পাবে।
-  async setBusinessConfig(businessType, businessTypeLocked) {
+  // 🆕 ধাপ ২: enabledBusinessTypes ঐচ্ছিক ৩য় প্যারামিটার — না দিলে (পুরনো কল
+  // সাইট/পুরনো APK) [businessType] ধরে নেওয়া হয়, অর্থাৎ single-business শপের
+  // জন্য এতটুকুও আচরণ বদলায় না।
+  async setBusinessConfig(businessType, businessTypeLocked, enabledBusinessTypes) {
     if (!this._db) return;
-    try { await setDoc(doc(this._db, "meta", "businessConfig"), { businessType, businessTypeLocked, at: Date.now() }); } catch {}
+    const enabled = Array.isArray(enabledBusinessTypes) && enabledBusinessTypes.length
+      ? enabledBusinessTypes : [businessType];
+    try { await setDoc(this.doc("meta", "businessConfig"), { businessType, businessTypeLocked, enabledBusinessTypes: enabled, activeBusinessType: businessType, at: Date.now() }); } catch {}
   },
   subscribeBusinessConfig(callback) {
     if (!this._db) return () => {};
-    const unsub = onSnapshot(doc(this._db, "meta", "businessConfig"), (snap) => {
+    const unsub = onSnapshot(this.doc("meta", "businessConfig"), (snap) => {
       callback(snap.exists() ? snap.data() : null);
     }, () => {});
     return unsub;
@@ -11099,6 +11187,7 @@ function SmartBusinessMgmt() {
   const shopName         = useAppStore(s => s.shopName);
   const businessType     = useAppStore(s => s.businessType);
   const businessTypeLocked = useAppStore(s => s.businessTypeLocked);
+  const enabledBusinessTypes = useAppStore(s => s.enabledBusinessTypes);
   const currentUser      = useAppStore(s => s.currentUser);
   const authSession      = useAppStore(s => s.authSession);
   const devContact       = useAppStore(s => s.devContact);
@@ -11165,6 +11254,7 @@ function SmartBusinessMgmt() {
   const setShopName         = useCallback((v) => _set("shopName",         v), [_set]);
   const setBusinessType     = useCallback((v) => _set("businessType",     v), [_set]);
   const setBusinessTypeLocked = useCallback((v) => _set("businessTypeLocked", v), [_set]);
+  const setEnabledBusinessTypes = useCallback((v) => _set("enabledBusinessTypes", v), [_set]);
   const setLoaded           = useCallback((v) => _set("loaded",           v), [_set]);
   const setAuthChecked      = useCallback((v) => _set("authChecked",      v), [_set]);
   const setToast            = useCallback((v) => _set("toast",            v), [_set]);
@@ -11411,7 +11501,7 @@ function SmartBusinessMgmt() {
         SK.lastAutoBackup, SK.anthropicKey, SK.smsTemplates, SK.autoBackupEnabled,
         SK.lastMasterSync, SK.autoMasterSyncEnabled, SK.suppliers, SK.purchaseOrders,
         SK.stockMovements, SK.cashLogs, SK.expenses, SK.returns, SK.auditLogs,
-        SK.quotations, SK.supplierPayments, SK.businessType, SK.businessTypeLocked,
+        SK.quotations, SK.supplierPayments, SK.businessType, SK.businessTypeLocked, SK.enabledBusinessTypes,
       ];
       const boot1 = await loadMany(CRITICAL_KEYS);
       const rawCustomers    = boot1[SK.customers];
@@ -11531,6 +11621,12 @@ function SmartBusinessMgmt() {
           supplierPayments:      boot2[SK.supplierPayments]     || [],
           businessType:          boot2[SK.businessType]         || "pharmacy",
           businessTypeLocked:    boot2[SK.businessTypeLocked]   || false,
+          // 🆕 ধাপ ২ Migration: পুরনো ডিভাইসে এই key কখনো সেভ হয়নি — তখন বর্তমান
+          // businessType-কেই একমাত্র enabled টাইপ ধরে নেওয়া হয় (single-business
+          // আচরণ ষোলআনা অপরিবর্তিত)।
+          enabledBusinessTypes: (Array.isArray(boot2[SK.enabledBusinessTypes]) && boot2[SK.enabledBusinessTypes].length)
+            ? boot2[SK.enabledBusinessTypes]
+            : [boot2[SK.businessType] || "pharmacy"],
           settingsLoaded:        true, // 🔴 এখন থেকেই autoBackupEnabled/autoMasterSyncEnabled-এর real value store-এ বসলো — persistence effect চালু করা নিরাপদ
         });
       }, 0);
@@ -11664,15 +11760,33 @@ function SmartBusinessMgmt() {
         // remote-এ ডেটা আছে — এটাই সত্য উৎস, লোকাল স্টেট এর সাথে মিলিয়ে নাও
         if (typeof data.businessType === "string" && data.businessType !== businessType) setBusinessType(data.businessType);
         if (typeof data.businessTypeLocked === "boolean" && data.businessTypeLocked !== businessTypeLocked) setBusinessTypeLocked(data.businessTypeLocked);
+        // 🆕 ধাপ ২: enabledBusinessTypes — পুরনো ডকুমেন্টে (এই ফিল্ড লেখার আগে
+        // তৈরি) এটা না থাকতে পারে, তখন businessType-কেই একমাত্র enabled ধরা হয়
+        // (single-business আচরণ অপরিবর্তিত)।
+        const remoteEnabled = Array.isArray(data.enabledBusinessTypes) && data.enabledBusinessTypes.length
+          ? data.enabledBusinessTypes
+          : [data.businessType || businessType];
+        if (JSON.stringify(remoteEnabled) !== JSON.stringify(enabledBusinessTypes)) setEnabledBusinessTypes(remoteEnabled);
       } else if (businessTypeLocked) {
         // 🔴 এই দোকানের জন্য এখনো কোনো meta/businessConfig ডকুমেন্ট নেই (আপডেটের পর
         // প্রথমবার) — এই ডিভাইসের বর্তমান লক করা মোডটাই "seed" হিসেবে Firestore-এ
         // লিখে দাও, যাতে ডেটা হারানোর কোনো ঝুঁকি না থাকে
-        FSS.setBusinessConfig(businessType, businessTypeLocked);
+        FSS.setBusinessConfig(businessType, businessTypeLocked, enabledBusinessTypes);
       }
     });
     return () => unsub();
-  }, [fssReady, settingsLoaded, businessType, businessTypeLocked]);
+  }, [fssReady, settingsLoaded, businessType, businessTypeLocked, enabledBusinessTypes]);
+
+  // 🆕 ধাপ ২: enabledBusinessTypes.length > 1 (সত্যিকারের multi-business শপ)
+  // হলেই কেবল FSS.col()/doc() collection-prefix লাগায় — single-business শপে
+  // (বর্তমানে সবাই) prefix সবসময় null থাকে, ফলে Firestore-এ কোনো ডেটা migrate
+  // করার দরকারই পড়ে না (দেখুন Multi-Business-System-Plan.md-এ আলোচিত conflict)।
+  useEffect(() => {
+    if (!fssReady) return;
+    const isMultiBusiness = Array.isArray(enabledBusinessTypes) && enabledBusinessTypes.length > 1;
+    const prefix = isMultiBusiness ? (BUSINESS_TYPE_REGISTRY[businessType]?.collectionPrefix || null) : null;
+    FSS.setBusinessPrefix(prefix);
+  }, [fssReady, businessType, enabledBusinessTypes]);
 
   // ── প্রতিটা collection — local array ↔ Firestore (record-level, real-time) ──
   // 🔴 ফিক্স: customers-এও products-এর মতো একই bug ছিল — diff-ভিত্তিক অটো-ডিলিট
@@ -11703,7 +11817,7 @@ function SmartBusinessMgmt() {
     cutoffDate.setDate(cutoffDate.getDate() - 30);
     const cutoff = _dateKeyOf(cutoffDate); // "YYYY-MM-DD"
 
-    const colRef = collection(FSS._db, "invoices");
+    const colRef = FSS.col("invoices");
     const q = query(colRef, where("dateKey", ">=", cutoff), orderBy("dateKey", "desc"));
 
     let first = true;
@@ -11736,7 +11850,7 @@ function SmartBusinessMgmt() {
     cutoffDate.setDate(cutoffDate.getDate() - 30);
     const cutoff = _dateKeyOf(cutoffDate);
 
-    const colRef = collection(FSS._db, "txns");
+    const colRef = FSS.col("txns");
     const q = query(colRef, where("dateKey", ">=", cutoff), orderBy("dateKey", "desc"));
 
     const unsub = onSnapshot(q, (snap) => {
@@ -11765,7 +11879,7 @@ function SmartBusinessMgmt() {
     setCustomerTxnsFull({ customerId: detailCId, rows: null }); // লোডিং শুরু
     (async () => {
       try {
-        const colRef = collection(FSS._db, "txns");
+        const colRef = FSS.col("txns");
         const q = query(colRef, where("customerId", "==", detailCId), orderBy("dateKey", "desc"));
         const snap = await getDocs(q);
         if (cancelled) return;
@@ -11808,7 +11922,7 @@ function SmartBusinessMgmt() {
     cutoffDate.setDate(cutoffDate.getDate() - 30);
     const cutoff = _dateKeyOf(cutoffDate);
 
-    const colRef = collection(FSS._db, "stockMovements");
+    const colRef = FSS.col("stockMovements");
     const q = query(colRef, where("dateKey", ">=", cutoff), orderBy("dateKey", "desc"));
 
     const unsub = onSnapshot(q, (snap) => {
@@ -11836,7 +11950,7 @@ function SmartBusinessMgmt() {
     cutoffDate.setDate(cutoffDate.getDate() - 35);
     const cutoff = _dateKeyOf(cutoffDate);
 
-    const colRef = collection(FSS._db, "cashLogs");
+    const colRef = FSS.col("cashLogs");
     const q = query(colRef, where("dateKey", ">=", cutoff), orderBy("dateKey", "desc"));
 
     const unsub = onSnapshot(q, (snap) => {
@@ -11994,6 +12108,7 @@ function SmartBusinessMgmt() {
   useEffect(() => { if (settingsLoaded) save(SK.autoBackupEnabled, autoBackupEnabled); }, [autoBackupEnabled, settingsLoaded]);
   useEffect(() => { if (settingsLoaded) save(SK.businessType, businessType); }, [businessType, settingsLoaded]);
   useEffect(() => { if (settingsLoaded) save(SK.businessTypeLocked, businessTypeLocked); }, [businessTypeLocked, settingsLoaded]);
+  useEffect(() => { if (settingsLoaded) save(SK.enabledBusinessTypes, enabledBusinessTypes); }, [enabledBusinessTypes, settingsLoaded]);
   // 🔧 বদল: আগে এখানে একটা auto-lock effect ছিল — দোকানে পণ্য থাকলে (products.length > 0)
   // বর্তমান businessType-এ চুপচাপ লক করে দিত, এমনকি দোকানদার নিজে কখনো মোড
   // সিলেক্ট না করলেও। এখন এটা সম্পূর্ণ বাদ — লক শুধুই ম্যানুয়াল, যখন দোকানদার
@@ -18343,7 +18458,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     setExpMonthlyFetch({ key: 'all', rows: null });
     (async () => {
       try {
-        const colRef = collection(FSS._db, "stockMovements");
+        const colRef = FSS.col("stockMovements");
         const q = query(colRef, where("source", "==", "expired_removal"), orderBy("dateKey", "desc"));
         const snap = await getDocs(q);
         if (cancelled) return;
@@ -18446,7 +18561,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     setCashHistFull({ key: cashHistKeyStr, rows: null }); // লোডিং শুরু
     (async () => {
       try {
-        const colRef = collection(FSS._db, "cashLogs");
+        const colRef = FSS.col("cashLogs");
         const q = query(colRef, where("dateKey", ">=", hsKey), where("dateKey", "<=", heKey), orderBy("dateKey", "desc"));
         const snap = await getDocs(q);
         if (cancelled) return;
@@ -25182,7 +25297,7 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
     if (!FSS.isReady()) { setInvHistError("Firestore প্রস্তুত না — ইন্টারনেট/কনফিগ চেক করুন"); return; }
     setInvHistLoading(true); setInvHistError(null);
     try {
-      const colRef = collection(FSS._db, "invoices");
+      const colRef = FSS.col("invoices");
       const clauses = [];
       if (ihCustId)              clauses.push(where("customerId", "==", ihCustId));
       if (ihPayType !== "all")   clauses.push(where("payType", "==", ihPayType));
@@ -25244,7 +25359,7 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
     if (!FSS.isReady()) { setVhError("Firestore প্রস্তুত না — ইন্টারনেট/কনফিগ চেক করুন"); return; }
     setVhLoading(true); setVhError(null);
     try {
-      const colRef = collection(FSS._db, "invoices");
+      const colRef = FSS.col("invoices");
       let q;
       if (vhViewMode === "date") {
         q = query(colRef, where("status", "==", "voided"), where("dateKey", "==", vhNavDate), orderBy("createdAt", "desc"), limit(100));
@@ -28210,7 +28325,7 @@ function Settings_({ T, S, shopName,
         outOfWindow === 0 ? "pass" : "fail",
         outOfWindow === 0 ? `${localCount}টি এন্ট্রি, সবই ৩০ দিনের মধ্যে` : `${outOfWindow}টি এন্ট্রি ৩০ দিনের বাইরে চলে এসেছে — windowing কাজ করছে না`);
 
-      const fullSnap = await getDocs(collection(FSS._db, "stockMovements"));
+      const fullSnap = await getDocs(FSS.col("stockMovements"));
       add("stockMovements", "ব্যাকআপ ফুল-পুল (কোনো ডেটা হারায়নি কিনা)",
         fullSnap.size >= localCount ? "pass" : "fail",
         `Firestore-এ মোট ${fullSnap.size}টি, লোকাল windowed ${localCount}টি`);
@@ -28233,11 +28348,11 @@ function Settings_({ T, S, shopName,
           dateKey: _dateKeyOf(new Date()), source: "diagnostic-test",
         });
         await new Promise(r => setTimeout(r, 1500));
-        const snap = await getDoc(doc(FSS._db, "stockMovements", testId));
+        const snap = await getDoc(FSS.doc("stockMovements", testId));
         add("stockMovements", "Write→Read লাইভ টেস্ট (পুশ করে Firestore-এ সরাসরি যাচাই)",
           snap.exists() ? "pass" : "fail",
           snap.exists() ? "টেস্ট এন্ট্রি পুশ করার পর সরাসরি Firestore-এ পাওয়া গেছে — write path ঠিক আছে" : "টেস্ট এন্ট্রি Firestore-এ পাওয়া যায়নি — write path ভাঙা থাকতে পারে");
-        try { await deleteDoc(doc(FSS._db, "stockMovements", testId)); } catch {}
+        try { await deleteDoc(FSS.doc("stockMovements", testId)); } catch {}
       } catch (err) {
         add("stockMovements", "Write→Read লাইভ টেস্ট", "fail", err?.code || err?.message || "unknown error");
       }
@@ -28256,7 +28371,7 @@ function Settings_({ T, S, shopName,
       const sampleCustomerId = (customers || [])[0]?.id;
       if (sampleCustomerId) {
         try {
-          const q = query(collection(FSS._db, "txns"), where("customerId", "==", sampleCustomerId), orderBy("dateKey", "desc"), limit(1));
+          const q = query(FSS.col("txns"), where("customerId", "==", sampleCustomerId), orderBy("dateKey", "desc"), limit(1));
           const snap = await getDocs(q);
           add("txns", "কাস্টমার ডিটেইল on-demand কোয়েরি (composite index)", "pass",
             `সফল — কোনো এরর ছাড়া কোয়েরি চলেছে (${snap.size} রেকর্ড)`);
@@ -28268,7 +28383,7 @@ function Settings_({ T, S, shopName,
         add("txns", "কাস্টমার ডিটেইল on-demand কোয়েরি", "skip", "টেস্ট করার মতো কোনো কাস্টমার নেই");
       }
 
-      const fullSnap = await getDocs(collection(FSS._db, "txns"));
+      const fullSnap = await getDocs(FSS.col("txns"));
       add("txns", "ব্যাকআপ ফুল-পুল (কোনো ডেটা হারায়নি কিনা)",
         fullSnap.size >= localCount ? "pass" : "fail",
         `Firestore-এ মোট ${fullSnap.size}টি, লোকাল windowed ${localCount}টি`);
@@ -28286,11 +28401,11 @@ function Settings_({ T, S, shopName,
           }));
         }
         await new Promise(r => setTimeout(r, 1500));
-        const snap = await getDoc(doc(FSS._db, "txns", testId));
+        const snap = await getDoc(FSS.doc("txns", testId));
         add("txns", "Write→Read লাইভ টেস্ট (পুশ করে Firestore-এ সরাসরি যাচাই)",
           snap.exists() ? "pass" : "fail",
           snap.exists() ? "টেস্ট এন্ট্রি পুশ করার পর সরাসরি Firestore-এ পাওয়া গেছে — write path ঠিক আছে" : "টেস্ট এন্ট্রি Firestore-এ পাওয়া যায়নি — write path ভাঙা থাকতে পারে");
-        try { await deleteDoc(doc(FSS._db, "txns", testId)); } catch {}
+        try { await deleteDoc(FSS.doc("txns", testId)); } catch {}
       } catch (err) {
         add("txns", "Write→Read লাইভ টেস্ট", "fail", err?.code || err?.message || "unknown error");
       }
@@ -28309,7 +28424,7 @@ function Settings_({ T, S, shopName,
         outOfWindow === 0 ? `${localCount}টি এন্ট্রি, সবই ৩৫ দিনের মধ্যে` : `${outOfWindow}টি এন্ট্রি ৩৫ দিনের বাইরে চলে এসেছে — windowing কাজ করছে না`);
 
       try {
-        const q = query(collection(FSS._db, "cashLogs"), where("dateKey", ">=", cutoffCashKey), where("dateKey", "<=", _dateKeyOf(new Date())), orderBy("dateKey", "desc"), limit(1));
+        const q = query(FSS.col("cashLogs"), where("dateKey", ">=", cutoffCashKey), where("dateKey", "<=", _dateKeyOf(new Date())), orderBy("dateKey", "desc"), limit(1));
         const snap = await getDocs(q);
         add("cashLogs", "History রিপোর্ট on-demand রেঞ্জ-কোয়েরি", "pass", `সফল — কোনো এরর ছাড়া কোয়েরি চলেছে (${snap.size} রেকর্ড)`);
       } catch (err) {
@@ -28317,7 +28432,7 @@ function Settings_({ T, S, shopName,
           `ব্যর্থ — ${err?.code || err?.message}। Firestore Console → Indexes-এ cashLogs → dateKey ইনডেক্স লাগবে`);
       }
 
-      const fullSnap = await getDocs(collection(FSS._db, "cashLogs"));
+      const fullSnap = await getDocs(FSS.col("cashLogs"));
       add("cashLogs", "ব্যাকআপ ফুল-পুল (কোনো ডেটা হারায়নি কিনা)",
         fullSnap.size >= localCount ? "pass" : "fail",
         `Firestore-এ মোট ${fullSnap.size}টি, লোকাল windowed ${localCount}টি`);
@@ -28333,11 +28448,11 @@ function Settings_({ T, S, shopName,
           createdAt: new Date().toISOString(), by: "diagnostic-test",
         });
         await new Promise(r => setTimeout(r, 1500));
-        const snap = await getDoc(doc(FSS._db, "cashLogs", testId));
+        const snap = await getDoc(FSS.doc("cashLogs", testId));
         add("cashLogs", "Write→Read লাইভ টেস্ট (পুশ করে Firestore-এ সরাসরি যাচাই)",
           snap.exists() ? "pass" : "fail",
           snap.exists() ? "টেস্ট এন্ট্রি পুশ করার পর সরাসরি Firestore-এ পাওয়া গেছে — write path ঠিক আছে" : "টেস্ট এন্ট্রি Firestore-এ পাওয়া যায়নি — write path ভাঙা থাকতে পারে");
-        try { await deleteDoc(doc(FSS._db, "cashLogs", testId)); } catch {}
+        try { await deleteDoc(FSS.doc("cashLogs", testId)); } catch {}
       } catch (err) {
         add("cashLogs", "Write→Read লাইভ টেস্ট", "fail", err?.code || err?.message || "unknown error");
       }
@@ -28347,12 +28462,12 @@ function Settings_({ T, S, shopName,
 
     // ── ৪) Invoice History cursor pagination (Phase 2) ──
     try {
-      const q = query(collection(FSS._db, "invoices"), orderBy("dateKey", "desc"), orderBy("createdAt", "desc"), limit(1));
+      const q = query(FSS.col("invoices"), orderBy("dateKey", "desc"), orderBy("createdAt", "desc"), limit(1));
       const snap = await getDocs(q);
       add("Invoice History", "Cursor Pagination (Phase 2) কোয়েরি", "pass", `সফল — dateKey+createdAt কম্পোজিট কোয়েরি চলেছে (${snap.size} রেকর্ড)`);
       if (snap.docs.length) {
         try {
-          const q2 = query(collection(FSS._db, "invoices"), orderBy("dateKey", "desc"), orderBy("createdAt", "desc"), startAfter(snap.docs[0]), limit(1));
+          const q2 = query(FSS.col("invoices"), orderBy("dateKey", "desc"), orderBy("createdAt", "desc"), startAfter(snap.docs[0]), limit(1));
           await getDocs(q2);
           add("Invoice History", "startAfter cursor দিয়ে পরের পাতা", "pass", "সফল — cursor pagination কাজ করছে");
         } catch (err) {
@@ -28368,7 +28483,7 @@ function Settings_({ T, S, shopName,
     // বদলালে স্টাফ ফোনে না পৌঁছানোর মতো সমস্যা এখানেই ধরা পড়বে) ──
     try {
       const localUsersCount = (users || []).length;
-      const fullSnap = await getDocs(collection(FSS._db, "users"));
+      const fullSnap = await getDocs(FSS.col("users"));
       add("users/স্টাফ", "ব্যাকআপ ফুল-পুল (স্টাফ ডেটা হারায়নি কিনা)",
         fullSnap.size >= localUsersCount ? "pass" : "fail",
         `Firestore-এ মোট ${fullSnap.size}জন, লোকাল ${localUsersCount}জন`);
@@ -28380,7 +28495,7 @@ function Settings_({ T, S, shopName,
         const mismatches = [];
         for (const u of staffLocal) {
           try {
-            const remoteDoc = await getDoc(doc(FSS._db, "users", String(u.id)));
+            const remoteDoc = await getDoc(FSS.doc("users", String(u.id)));
             if (!remoteDoc.exists()) { mismatches.push(`${u.name} — Firestore-এ পাওয়াই যায়নি`); continue; }
             const remote = remoteDoc.data();
             const sameTemp = JSON.stringify(remote.tempPermissions || []) === JSON.stringify(u.tempPermissions || []);
@@ -28403,11 +28518,11 @@ function Settings_({ T, S, shopName,
         // টেস্ট-ডেটাই rule ভঙ্গ করছিল। এখন বৈধ role ব্যবহার করা হচ্ছে।
         if (FSS.isReady()) FSS.setRecord("users", testId, withTs({ id: testId, name: "ডায়াগনস্টিক টেস্ট", role: "staff" }));
         await new Promise(r => setTimeout(r, 1500));
-        const snap = await getDoc(doc(FSS._db, "users", testId));
+        const snap = await getDoc(FSS.doc("users", testId));
         add("users/স্টাফ", "Write→Read লাইভ টেস্ট (instant push path)",
           snap.exists() ? "pass" : "fail",
           snap.exists() ? "টেস্ট এন্ট্রি সাথে সাথে Firestore-এ পাওয়া গেছে — write path ঠিক আছে" : "টেস্ট এন্ট্রি Firestore-এ পাওয়া যায়নি — write path ভাঙা থাকতে পারে (Firestore Rules চেক করুন)");
-        try { await deleteDoc(doc(FSS._db, "users", testId)); } catch {}
+        try { await deleteDoc(FSS.doc("users", testId)); } catch {}
       } catch (err) {
         add("users/স্টাফ", "Write→Read লাইভ টেস্ট", "fail", err?.code || err?.message || "unknown error");
       }
