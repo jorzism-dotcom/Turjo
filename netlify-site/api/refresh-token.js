@@ -40,7 +40,7 @@ module.exports = async (req, res) => {
 
     const { refresh_token, grant_type, code, redirect_uri } = payload;
 
-    const CLIENT_ID = "359825185312-7ka6g11l93vb4l6r4cafs8kl9850tt54.apps.googleusercontent.com";
+    const CLIENT_ID = "359825185312-u3g22v54j5if5ghq4984fnn03c90rf5o.apps.googleusercontent.com";
     const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET; // Vercel env variable
 
     if (!CLIENT_SECRET) {
