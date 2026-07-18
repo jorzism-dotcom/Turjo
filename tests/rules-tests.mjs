@@ -163,6 +163,26 @@ async function main() {
     await assertSucceeds(setDoc(doc(db, "meta/resetMarker"), { anything: 123 }));
   });
 
+  // ── meta/businessConfig — ধাপ ২: enabledBusinessTypes/activeBusinessType ──
+  await check("meta/businessConfig: businessType=semen সফল হয়", async () => {
+    await assertSucceeds(setDoc(doc(db, "meta/businessConfig"), { businessType: "semen" }));
+  });
+  await check("meta/businessConfig: বৈধ enabledBusinessTypes array সফল হয়", async () => {
+    await assertSucceeds(setDoc(doc(db, "meta/businessConfig"), { enabledBusinessTypes: ["pharmacy", "semen"] }));
+  });
+  await check("meta/businessConfig: enabledBusinessTypes খালি array হলে ব্যর্থ হয়", async () => {
+    await assertFails(setDoc(doc(db, "meta/businessConfig"), { enabledBusinessTypes: [] }));
+  });
+  await check("meta/businessConfig: enabledBusinessTypes-এ অজানা টাইপ থাকলে ব্যর্থ হয়", async () => {
+    await assertFails(setDoc(doc(db, "meta/businessConfig"), { enabledBusinessTypes: ["pharmacy", "grocery"] }));
+  });
+  await check("meta/businessConfig: activeBusinessType enabledBusinessTypes-এর সদস্য হলে সফল হয়", async () => {
+    await assertSucceeds(setDoc(doc(db, "meta/businessConfig"), { enabledBusinessTypes: ["pharmacy", "semen"], activeBusinessType: "semen" }));
+  });
+  await check("meta/businessConfig: activeBusinessType enabledBusinessTypes-এর সদস্য না হলে ব্যর্থ হয়", async () => {
+    await assertFails(setDoc(doc(db, "meta/businessConfig"), { enabledBusinessTypes: ["pharmacy"], activeBusinessType: "semen" }));
+  });
+
   // ── open collections (এখনো schema rule লেখা হয়নি — roadmap ফেজ ১+) ──────
   for (const col of ["suppliers", "smsLog", "expenses", "returns", "auditLogs", "settings",
     "deletedCustomers", "deletedProducts", "quotations", "supplierPayments", "stats"]) {
