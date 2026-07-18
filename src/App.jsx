@@ -8260,6 +8260,25 @@ function medTypeAbbr(type) {
   return { abbr: String(type).split(" ")[0].slice(0, 6), color: "#94a3b8" };
 }
 
+// ম্যানুয়ালি বেছে নেওয়ার জন্য প্রিসেট ধরন তালিকা — যেসব পণ্যের নাম medicineDataset-এ
+// নেই (তাই dataset ম্যাচ থেকে dosageForm অটো বসেনি), সেগুলোর জন্য ইউজার নিজে থেকে
+// Tab/Cap/Syp ইত্যাদি বেছে দিতে পারবেন — একই medTypeAbbr() ব্যবহার করেই ব্যাজ+রঙ বসে।
+const DOSAGE_FORM_CHIPS = ["Tablet", "Capsule", "Syrup", "Injection", "Cream", "Drop", "Ointment", "Powder"];
+
+// ─── DosageBadge — নামের আগে Tab/Cap/Syp ইত্যাদি রঙিন ব্যাজ (JSX স্ক্রিনে দেখানোর জন্য) ───
+// dosageForm না থাকলে কিছুই রেন্ডার করে না — তাই সব জায়গায় নিরাপদে বসানো যায়।
+function DosageBadge({ dosageForm, style }) {
+  const ta = medTypeAbbr(dosageForm);
+  if (!ta) return null;
+  return <span style={{ color: ta.color, fontWeight: 900, marginRight: 5, ...style }}>{ta.abbr}</span>;
+}
+
+// ─── medBadgeHtmlStr — print/PDF/WhatsApp HTML স্ট্রিং টেমপ্লেটের জন্য একই ব্যাজের HTML ভার্সন ───
+function medBadgeHtmlStr(dosageForm) {
+  const ta = medTypeAbbr(dosageForm);
+  return ta ? `<span style="color:${ta.color};font-weight:900;margin-right:4px;">${ta.abbr}</span> ` : "";
+}
+
 // ফার্মেসির জন্য প্রিসেট একক
 const PRESET_UNITS = [
   "", // একক নেই
@@ -15120,7 +15139,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       const maxStockNew = getSellableStock(p);
       if (delta > 0 && maxStockNew > 0) {
         const startQty = maxStockNew !== Infinity ? Math.min(delta, maxStockNew) : delta;
-        return [...prev, { productId: p.id, name: p.name, serial: p.serial, qty: startQty, price: isSelfUse ? (p.costPrice || 0) : p.price, costPrice: p.costPrice, productType: p.productType || "product" }];
+        return [...prev, { productId: p.id, name: p.name, serial: p.serial, qty: startQty, price: isSelfUse ? (p.costPrice || 0) : p.price, costPrice: p.costPrice, productType: p.productType || "product", dosageForm: p.dosageForm || "" }];
       }
       if (delta > 0 && maxStockNew <= 0) {
         showToast?.("এই পণ্যের সচল (অ-মেয়াদোত্তীর্ণ) স্টক নেই — বিক্রি করা যাবে না", "#ef4444");
@@ -15144,7 +15163,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       const ex = prev.find(i => i.productId === pid);
       if (ex) return prev.map(i => i.productId === pid ? { ...i, qty: clamped } : i);
       if (!prod) return prev;
-      return [...prev, { productId: prod.id, name: prod.name, serial: prod.serial, qty: clamped, price: isSelfUse ? (prod.costPrice || 0) : prod.price, costPrice: prod.costPrice, productType: prod.productType || "product" }];
+      return [...prev, { productId: prod.id, name: prod.name, serial: prod.serial, qty: clamped, price: isSelfUse ? (prod.costPrice || 0) : prod.price, costPrice: prod.costPrice, productType: prod.productType || "product", dosageForm: prod.dosageForm || "" }];
     });
   };
 
@@ -15535,7 +15554,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     const css = `body{font-family:'Noto Sans Bengali','Hind Siliguri',sans-serif;background:#fff;color:#000;padding:16px;font-size:13px;max-width:400px;margin:0 auto;}.center{text-align:center;}.bold{font-weight:700;}.line{border-top:1px dashed #999;margin:8px 0;}table{width:100%;border-collapse:collapse;}th,td{padding:4px 2px;font-size:12px;}th{text-align:left;border-bottom:1px solid #ccc;}.right{text-align:right;}.total{font-size:15px;font-weight:800;color:#16a34a;}`;
     const rows = (inv.items||[]).map(it => {
       const _g = it.qty*it.price, _d = Math.min(Math.max(parseFloat(it.itemDiscount)||0,0), _g);
-      return `<tr><td>${it.name}</td><td class="right">${it.qty}</td><td class="right">৳${it.price}</td><td class="right" style="color:#16a34a">${_d>0?`–৳${_d}`:"—"}</td><td class="right">৳${_g-_d}</td></tr>`;
+      return `<tr><td>${medBadgeHtmlStr(it.dosageForm)}${it.name}</td><td class="right">${it.qty}</td><td class="right">৳${it.price}</td><td class="right" style="color:#16a34a">${_d>0?`–৳${_d}`:"—"}</td><td class="right">৳${_g-_d}</td></tr>`;
     }).join("");
     const payLabel = inv.payType==="baki"?"বাকি":inv.payType==="partial"?"আংশিক":"নগদ";
     const html = `<html><head><title>Invoice</title><style>${css}</style></head><body>
@@ -16039,7 +16058,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                   const cNet = cSub - cDisc;
                   return (
                   <div key={item.productId} style={{ display: "flex", gap: 3, alignItems: "center", background: `linear-gradient(135deg, ${cAccent}1a, rgba(0,0,0,0.3))`, border: `1px solid ${cAccent}55`, borderLeft: `2.5px solid ${cAccent}`, borderRadius: 7, padding: "3px 5px", minWidth: 0 }}>
-                    <div style={{ flex: 1, color: "#fde68a", fontSize: 11, fontWeight: 800, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", minWidth: 0 }}>{item.name}{item.unit ? <span style={{ color:"#f59e0b88", fontSize:9, marginLeft:2 }}>/{item.unit}</span> : null}</div>
+                    <div style={{ flex: 1, color: "#fde68a", fontSize: 11, fontWeight: 800, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", minWidth: 0 }}><DosageBadge dosageForm={item.dosageForm} style={{ marginRight:3 }} />{item.name}{item.unit ? <span style={{ color:"#f59e0b88", fontSize:9, marginLeft:2 }}>/{item.unit}</span> : null}</div>
                     <span style={{ background:"rgba(0,0,0,0.4)", border:`1px solid ${cAccent}66`, color:"#fde68a", borderRadius:5, padding:"2px 5px", fontSize:10.5, fontWeight:800, flexShrink:0, whiteSpace:"nowrap" }}>{item.qty}×৳{fmt(item.price)}</span>
                     <span style={{ background:"rgba(0,0,0,0.4)", border:`1px solid ${cAccent}66`, color: cDisc > 0 ? "#22c55e" : "#fbbf24", borderRadius:5, padding:"2px 5px", fontSize:11, fontWeight:800, flexShrink:0, whiteSpace:"nowrap" }}>৳{fmt(cNet)}{cDisc > 0 ? " 🏷️" : ""}</span>
                     <button style={{ background: "#ef444422", color: "#ef4444", border: "1px solid #ef444433", borderRadius: 5, width: 18, height: 18, cursor: "pointer", flexShrink: 0, fontSize: 9, display:"flex", alignItems:"center", justifyContent:"center" }}
@@ -16146,7 +16165,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
 
                   {/* পণ্যের নাম */}
                   <div style={{ color: T.text, fontWeight: 800, fontSize: 12.5, lineHeight: 1.25, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", paddingRight: isSelected ? 22 : 0 }}>
-                    {p.name}
+                    <DosageBadge dosageForm={p.dosageForm} />{p.name}
                   </div>
                   {(() => {
                     const supplierLabel = p.company || (p.category && p.category !== "অন্যান্য" ? p.category : "");
@@ -16357,7 +16376,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                           }}>
                             <div style={{ minWidth: 0, flex: 1 }}>
                               <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                                <span style={{ color: T.text, fontSize: 12, fontWeight: 700 }}>{item.name}</span>
+                                <span style={{ color: T.text, fontSize: 12, fontWeight: 700 }}><DosageBadge dosageForm={item.dosageForm} />{item.name}</span>
                                 <span style={{ background: accent + "22", border: `1px solid ${accent}55`, color: accent, fontSize: 10, fontWeight: 800, borderRadius: 10, padding: "1px 7px", flexShrink: 0, whiteSpace: "nowrap" }}>
                                   × {item.qty} @৳{fmt(item.price)}
                                 </span>
@@ -17166,7 +17185,7 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
         const buildExpHtml = (items, title, shopName_) => {
           const rows = items.map((p, i) => {
             const isPast = new Date(p.expiryDate) < now;
-            return `<tr><td class="serial">${i+1}</td><td>${p.name}</td><td class="num">${p.stock||0}${p.unit||""}</td><td class="num" style="color:${isPast?"#dc2626":"#d97706"}">${fmtExpiryMonth(p.expiryDate)}</td></tr>`;
+            return `<tr><td class="serial">${i+1}</td><td>${medBadgeHtmlStr(p.dosageForm)}${p.name}</td><td class="num">${p.stock||0}${p.unit||""}</td><td class="num" style="color:${isPast?"#dc2626":"#d97706"}">${fmtExpiryMonth(p.expiryDate)}</td></tr>`;
           }).join("");
           return buildPdfHtml(`<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্য</th><th class="num">স্টক</th><th class="num">মেয়াদ</th></tr></thead><tbody>${rows}</tbody></table></div>`, shopName_||"SBM", title);
         };
@@ -17500,7 +17519,7 @@ function ProfitStatementCard({ T, S, invoices, products, shopName, expenses = []
                   padding:"5px 0", borderBottom:"1px solid rgba(255,255,255,0.05)" }}>
                   <span style={{ color:"#e2e8f0", fontSize:12 }}>
                     <span style={{ color:"#a855f7", fontWeight:800, marginRight:6 }}>#{i+1}</span>
-                    {p.name}
+                    <DosageBadge dosageForm={p.dosageForm} />{p.name}
                   </span>
                   <span style={{ color:"#22c55e", fontWeight:700, fontSize:12 }}>৳{fmt(p.revenue)}</span>
                 </div>
@@ -17720,7 +17739,7 @@ function DashPurchaseEntryModal({ T, S, businessType = "pharmacy", products, set
                   }}
                   style={{ padding:"10px 14px", cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center", borderBottom:`1px solid ${T.border}` }}>
                   <div>
-                    <div style={{ color:T.text, fontWeight:700, fontSize:13 }}>{p.name}{p.unit ? <span style={{color:T.sub, fontSize:11}}> ({p.unit})</span> : null}</div>
+                    <div style={{ color:T.text, fontWeight:700, fontSize:13 }}><DosageBadge dosageForm={p.dosageForm} />{p.name}{p.unit ? <span style={{color:T.sub, fontSize:11}}> ({p.unit})</span> : null}</div>
                     <div style={{ color:T.sub, fontSize:11 }}>স্টক: {p.stock||0} · ক্রয়: ৳{p.costPrice||0}</div>
                   </div>
                   <div style={{ color:"#a78bfa", fontWeight:900, fontSize:12 }}>৳{p.price||0}</div>
@@ -18905,7 +18924,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             return (
               <div key={p.id}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
-                  <span style={{ color: "#e2e8f0", fontWeight: 800, fontSize: 14 }}>{p.name}</span>
+                  <span style={{ color: "#e2e8f0", fontWeight: 800, fontSize: 14 }}><DosageBadge dosageForm={p.dosageForm} />{p.name}</span>
                   <div style={{ textAlign: "right" }}>
                     <span style={{ color: labelColor, fontWeight: 900, fontSize: 15 }}>{p.stock||0}</span>
                     {expDays !== null && (
@@ -18995,7 +19014,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                     <tr key={row.rowId} style={{ background: i % 2 === 1 ? "#f8faff" : "#fff" }}>
                       <td style={{ padding:"9px 10px", fontSize:12, textAlign:"center", fontWeight:700, color:"#0369a1", borderBottom:"1px solid #f1f5f9" }}>{i+1}</td>
                       <td style={{ padding:"9px 10px", fontSize:12.5, color:"#0f172a", borderBottom:"1px solid #f1f5f9" }}>
-                        {p.name}{p.unit ? <span style={{ color:"#94a3b8", fontSize:11 }}> ({p.unit})</span> : null}
+                        <DosageBadge dosageForm={p.dosageForm} />{p.name}{p.unit ? <span style={{ color:"#94a3b8", fontSize:11 }}> ({p.unit})</span> : null}
                         {b.batchNo && <span style={{ color:"#94a3b8", fontSize:11 }}> — {b.batchNo}</span>}
                       </td>
                       <td style={{ padding:"9px 10px", fontSize:12, color:"#334155", borderBottom:"1px solid #f1f5f9" }}>{p.company || p.supplier || p.category || "অজ্ঞাত"}</td>
@@ -19042,7 +19061,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       const buildFlatPdfHtml = () => {
         const rows = sortedItems.map((p,i) => {
           const expCell = p.expiryDate ? fmtExpiryMonth(p.expiryDate) : "";
-          return `<tr><td class="serial">${i+1}</td><td>${p.name}</td><td>${p.company||p.category||"অজ্ঞাত"}</td><td class="num">${p.stock||0}${p.unit||""}</td>${isExpiryModal?`<td class="num">${expCell}</td>`:""}</tr>`;
+          return `<tr><td class="serial">${i+1}</td><td>${medBadgeHtmlStr(p.dosageForm)}${p.name}</td><td>${p.company||p.category||"অজ্ঞাত"}</td><td class="num">${p.stock||0}${p.unit||""}</td>${isExpiryModal?`<td class="num">${expCell}</td>`:""}</tr>`;
         }).join("");
         return buildPdfHtml(`<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্য</th><th>সাপ্লায়ার</th><th class="num">স্টক</th>${isExpiryModal?`<th class="num">মেয়াদ</th>`:""}</tr></thead><tbody>${rows}</tbody></table></div>`, shopName, title);
       };
@@ -19082,7 +19101,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
               return (
                 <div key={p.id} style={{ background:"#071a0f", border:`1px solid ${accent}33`, borderLeft:`3px solid ${accent}`, borderRadius:14, padding:"12px 14px" }}>
                   <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:4 }}>
-                    <span style={{ color:"#e2e8f0", fontWeight:800, fontSize:14 }}>{p.name}{p.unit ? <span style={{ color:"#64748b", fontSize:11 }}> ({p.unit})</span> : null}</span>
+                    <span style={{ color:"#e2e8f0", fontWeight:800, fontSize:14 }}><DosageBadge dosageForm={p.dosageForm} />{p.name}{p.unit ? <span style={{ color:"#64748b", fontSize:11 }}> ({p.unit})</span> : null}</span>
                     <span style={{ color:labelColor, fontWeight:900, fontSize:15 }}>{p.stock||0}{p.unit||""}</span>
                   </div>
                   <div style={{ color:"#94a3b8", fontSize:11, marginBottom:6 }}>🏭 {p.company || p.category || "অজ্ঞাত"}</div>
@@ -19132,7 +19151,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       const buildSupPdfHtml = () => {
         const rows = supItems.map((p,i) => {
           const expCell = p.expiryDate ? fmtExpiryMonth(p.expiryDate) : "";
-          return `<tr><td class="serial">${i+1}</td><td>${p.name}</td><td class="num">${p.stock||0}${p.unit||""}</td><td class="num">${p.costPrice||0}</td>${isExpiryModal ? `<td class="num">${expCell}</td>` : ""}</tr>`;
+          return `<tr><td class="serial">${i+1}</td><td>${medBadgeHtmlStr(p.dosageForm)}${p.name}</td><td class="num">${p.stock||0}${p.unit||""}</td><td class="num">${p.costPrice||0}</td>${isExpiryModal ? `<td class="num">${expCell}</td>` : ""}</tr>`;
         }).join("");
         const headers = `<th class="serial">#</th><th>পণ্য</th><th class="num">স্টক</th><th class="num">ক্রয়মূল্য</th>${isExpiryModal ? `<th class="num">মেয়াদ</th>` : ""}`;
         return buildPdfHtml(`<div class="section"><h2>${selectedSupplier}</h2><table><thead><tr>${headers}</tr></thead><tbody>${rows}</tbody></table></div>`, shopName, `${title} — ${selectedSupplier}`);
@@ -19181,7 +19200,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
               return (
                 <div key={p.id} style={{ background:"#071a0f", border:`1px solid ${accent}22`, borderRadius:14, padding:"12px 14px" }}>
                   <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6 }}>
-                    <span style={{ color:"#e2e8f0", fontWeight:800, fontSize:14 }}>{p.name}{p.unit ? <span style={{ color:"#64748b", fontSize:11 }}> ({p.unit})</span> : null}</span>
+                    <span style={{ color:"#e2e8f0", fontWeight:800, fontSize:14 }}><DosageBadge dosageForm={p.dosageForm} />{p.name}{p.unit ? <span style={{ color:"#64748b", fontSize:11 }}> ({p.unit})</span> : null}</span>
                     <div style={{ textAlign:"right" }}>
                       <span style={{ color:labelColor, fontWeight:900, fontSize:15 }}>{p.stock||0}{p.unit||""}</span>
                       {expDays !== null && (
@@ -19228,7 +19247,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     const buildAllPdfHtml = () => {
       const rows = items.map((p,i) => {
         const expCell = p.expiryDate ? fmtExpiryMonth(p.expiryDate) : "";
-        return `<tr><td class="serial">${i+1}</td><td>${p.name}</td><td>${p.company||p.category||"অজ্ঞাত"}</td><td class="num">${p.stock||0}${p.unit||""}</td>${isExpiryModal?`<td class="num">${expCell}</td>`:""}</tr>`;
+        return `<tr><td class="serial">${i+1}</td><td>${medBadgeHtmlStr(p.dosageForm)}${p.name}</td><td>${p.company||p.category||"অজ্ঞাত"}</td><td class="num">${p.stock||0}${p.unit||""}</td>${isExpiryModal?`<td class="num">${expCell}</td>`:""}</tr>`;
       }).join("");
       return buildPdfHtml(`<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্য</th><th>সাপ্লায়ার</th><th class="num">স্টক</th>${isExpiryModal?`<th class="num">মেয়াদ</th>`:""}</tr></thead><tbody>${rows}</tbody></table></div>`, shopName, title);
     };
@@ -19335,7 +19354,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                               borderBottom: i < productMatches.length - 1 ? "1px solid #ffffff10" : "none",
                             }}>
                             <div style={{ minWidth:0, flex:1 }}>
-                              <div style={{ color:"#e2e8f0", fontWeight:700, fontSize:13, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{p.name}</div>
+                              <div style={{ color:"#e2e8f0", fontWeight:700, fontSize:13, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}><DosageBadge dosageForm={p.dosageForm} />{p.name}</div>
                               <div style={{ color:accent, fontSize:11, marginTop:2 }}>🏭 {supName}</div>
                             </div>
                             <span style={{ color:"#cbd5e1", fontSize:11.5, fontWeight:700, flexShrink:0 }}>{p.stock||0}{p.unit||""}</span>
@@ -19617,7 +19636,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     };
     const buildDayOrderHtml = (dateKey) => {
       const items = mergeItemsForDay(dateKey);
-      const rows = items.map((p,i) => `<tr><td class="serial">${i+1}</td><td>${p.name}</td><td>${p.supplier}</td><td class="num">${p.qty}${p.unit||""}</td></tr>`).join('');
+      const rows = items.map((p,i) => `<tr><td class="serial">${i+1}</td><td>${medBadgeHtmlStr(p.dosageForm)}${p.name}</td><td>${p.supplier}</td><td class="num">${p.qty}${p.unit||""}</td></tr>`).join('');
       return buildPdfHtml(`<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্যের নাম</th><th>সাপ্লায়ার</th><th class="num">অর্ডার পরিমাণ</th></tr></thead><tbody>${rows}</tbody><tfoot><tr class="total-row"><td class="serial"></td><td colspan="2"><b>মোট পণ্য</b></td><td class="num">${items.length}</td></tr></tfoot></table></div>`, shopName, `ক্রয় অর্ডার — ${dayLabelPO(dateKey)}`);
     };
     const sendDayWhatsApp = (dateKey) => {
@@ -19641,7 +19660,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           {!isOrdered && <div style={{ position:"absolute", top:10, right:12, color:"#e2e8f0", fontWeight:900, fontSize:22, fontFamily:"monospace", lineHeight:1, userSelect:"none" }}>{String(idx+1).padStart(2,"0")}</div>}
           <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:6, paddingRight:36 }}>
             <span style={{ color:PRINT.textDark, fontWeight:800, fontSize:14 }}>
-              {p.name}{p.unit && <span style={{ color:PRINT.textMuted, fontSize:11, fontWeight:600 }}> ({p.unit})</span>}
+              <DosageBadge dosageForm={p.dosageForm} />{p.name}{p.unit && <span style={{ color:PRINT.textMuted, fontSize:11, fontWeight:600 }}> ({p.unit})</span>}
             </span>
             {demandBadge(p)}
             <span style={{ background: `${accentC}18`, color: accentC, fontSize:10, fontWeight:800, borderRadius:6, padding:"2px 8px", border:`1px solid ${accentC}44` }}>
@@ -19894,7 +19913,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                   <div key={p.id} style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 12px", borderBottom: i<reviewItems.length-1 ? `1px solid ${PRINT.rowBorder}` : "none", background: i%2===1 ? PRINT.rowEven : "#fff" }}>
                     <div style={{ width:24, color:PRINT.serial, fontWeight:700, fontSize:12.5, textAlign:"center", flexShrink:0 }}>{i+1}</div>
                     <div style={{ flex:1.3, minWidth:0, color:PRINT.textDark, fontWeight:700, fontSize:13 }}>
-                      {p.name}{p.unit?<span style={{ color:PRINT.textMuted, fontSize:11 }}> ({p.unit})</span>:null}
+                      <DosageBadge dosageForm={p.dosageForm} />{p.name}{p.unit?<span style={{ color:PRINT.textMuted, fontSize:11 }}> ({p.unit})</span>:null}
                     </div>
                     <div style={{ flex:1, minWidth:0, color:PRINT.textDark, fontSize:12.5 }}>{supplierOf(p)}</div>
                     <div style={{ width:108, display:"flex", alignItems:"center", gap:6, justifyContent:"flex-end", flexShrink:0 }}>
@@ -19963,7 +19982,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                 {items.map((it, i) => (
                   <div key={it.productId} style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 12px", borderBottom: i<items.length-1?`1px solid ${PRINT.rowBorder}`:"none", background: i%2===1 ? PRINT.rowEven : "#fff" }}>
                     <div style={{ width:24, color:PRINT.serial, fontWeight:700, fontSize:12.5, textAlign:"center", flexShrink:0 }}>{i+1}</div>
-                    <div style={{ flex:1, minWidth:0, color:PRINT.textDark, fontWeight:700, fontSize:13 }}>{it.name}{it.unit?<span style={{ color:PRINT.textMuted, fontSize:11 }}> ({it.unit})</span>:null}</div>
+                    <div style={{ flex:1, minWidth:0, color:PRINT.textDark, fontWeight:700, fontSize:13 }}><DosageBadge dosageForm={it.dosageForm} />{it.name}{it.unit?<span style={{ color:PRINT.textMuted, fontSize:11 }}> ({it.unit})</span>:null}</div>
                     <div style={{ flex:1, minWidth:0, color:PRINT.textDark, fontSize:12.5 }}>{it.supplier}</div>
                     <div style={{ flex:1, color:PRINT.textDark, fontWeight:800, fontSize:13.5, textAlign:"right" }}>{it.qty}</div>
                   </div>
@@ -20001,7 +20020,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       const poOrdersByCreated = [...allPOOrders].sort((a,b) => (a.createdAt||"").localeCompare(b.createdAt||""));
       const recSerial = poOrdersByCreated.findIndex(r => r.id === rec.id) + 1;
       const buildRecOrderHtml = () => {
-        const rows = items.map((it,i) => `<tr><td class="serial">${i+1}</td><td>${it.name}${it.unit?` (${it.unit})`:""}</td><td>${it.supplier}</td><td class="num">${it.qty}</td></tr>`).join('');
+        const rows = items.map((it,i) => `<tr><td class="serial">${i+1}</td><td>${medBadgeHtmlStr(it.dosageForm)}${it.name}${it.unit?` (${it.unit})`:""}</td><td>${it.supplier}</td><td class="num">${it.qty}</td></tr>`).join('');
         return buildPdfHtml(`<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্যের নাম</th><th>সাপ্লায়ার</th><th class="num">অর্ডার পরিমাণ</th></tr></thead><tbody>${rows}</tbody><tfoot><tr class="total-row"><td class="serial"></td><td colspan="2"><b>মোট পণ্য</b></td><td class="num">${items.length}</td></tr></tfoot></table></div>`, shopName, `ক্রয় অর্ডার-${recSerial} — ${dayLabelPO(rec.dateKey)}`);
       };
       const sendRecWhatsApp = () => {
@@ -20032,7 +20051,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                 {items.map((it, i) => (
                   <div key={it.productId} style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 12px", borderBottom: i<items.length-1?`1px solid ${PRINT.rowBorder}`:"none", background: i%2===1 ? PRINT.rowEven : "#fff" }}>
                     <div style={{ width:24, color:PRINT.serial, fontWeight:700, fontSize:12.5, textAlign:"center", flexShrink:0 }}>{i+1}</div>
-                    <div style={{ flex:1, minWidth:0, color:PRINT.textDark, fontWeight:700, fontSize:13 }}>{it.name}{it.unit?<span style={{ color:PRINT.textMuted, fontSize:11 }}> ({it.unit})</span>:null}</div>
+                    <div style={{ flex:1, minWidth:0, color:PRINT.textDark, fontWeight:700, fontSize:13 }}><DosageBadge dosageForm={it.dosageForm} />{it.name}{it.unit?<span style={{ color:PRINT.textMuted, fontSize:11 }}> ({it.unit})</span>:null}</div>
                     <div style={{ flex:1, minWidth:0, color:PRINT.textDark, fontSize:12.5 }}>{it.supplier}</div>
                     <div style={{ flex:1, color:PRINT.textDark, fontWeight:800, fontSize:13.5, textAlign:"right" }}>{it.qty}</div>
                   </div>
@@ -22067,7 +22086,7 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
     const itemRows = (inv.items||[]).map((item,i) => {
       const _g = item.qty*item.price, _d = Math.min(Math.max(parseFloat(item.itemDiscount)||0,0), _g);
       const _p = _g > 0 ? Math.round((_d / _g) * 10000) / 100 : 0;
-      return `<tr><td class="serial">${i+1}</td><td>${item.name}</td><td class="num">${item.qty}</td><td class="num">৳${fmtMoney(item.price)}</td><td class="num" style="color:#16a34a;">${_d>0?`–৳${fmtMoney(_d)}${_p>0?` (${_p}%)`:""}`:"—"}</td><td class="amount" style="color:#3b82f6;">৳${fmtMoney(_g-_d)}</td></tr>`;
+      return `<tr><td class="serial">${i+1}</td><td>${medBadgeHtmlStr(item.dosageForm)}${item.name}</td><td class="num">${item.qty}</td><td class="num">৳${fmtMoney(item.price)}</td><td class="num" style="color:#16a34a;">${_d>0?`–৳${fmtMoney(_d)}${_p>0?` (${_p}%)`:""}`:"—"}</td><td class="amount" style="color:#3b82f6;">৳${fmtMoney(_g-_d)}</td></tr>`;
     }).join("");
     const content = `
       <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
@@ -22145,7 +22164,7 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
               }}>
                 <div style={{ minWidth: 0, flex: 1, display: "flex", alignItems: "center", gap: 6 }}>
                   <span style={{ color: T.sub, fontSize: 10.5, fontWeight: 700, flexShrink: 0 }}>{idx+1}.</span>
-                  <span style={{ color: T.text, fontSize: 12, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</span>
+                  <span style={{ color: T.text, fontSize: 12, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><DosageBadge dosageForm={item.dosageForm} />{item.name}</span>
                   <span style={{ background: _ac + "22", border: `1px solid ${_ac}55`, color: _ac, fontSize: 9.5, fontWeight: 800, borderRadius: 8, padding: "1px 6px", flexShrink: 0, whiteSpace: "nowrap" }}>×{item.qty} @৳{item.price}</span>
                 </div>
                 <div style={{ textAlign: "right", flexShrink: 0 }}>
@@ -22228,7 +22247,7 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
             const itemRows = (inv.items||[]).map((item,i) => {
               const _g = item.qty*item.price, _d = Math.min(Math.max(parseFloat(item.itemDiscount)||0,0), _g);
               const _p = _g > 0 ? Math.round((_d / _g) * 10000) / 100 : 0;
-              return `<tr><td>${i+1}</td><td>${item.name}${_d>0?` <span style="color:#16a34a;font-size:10px;">(–৳${fmtMoney(_d)}${_p>0?` ${_p}%`:""})</span>`:""}</td><td class="right">${item.qty}</td><td class="right">৳${fmtMoney(item.price)}</td><td class="right" style="color:#3b82f6;">৳${fmtMoney(_g-_d)}</td></tr>`;
+              return `<tr><td>${i+1}</td><td>${medBadgeHtmlStr(item.dosageForm)}${item.name}${_d>0?` <span style="color:#16a34a;font-size:10px;">(–৳${fmtMoney(_d)}${_p>0?` ${_p}%`:""})</span>`:""}</td><td class="right">${item.qty}</td><td class="right">৳${fmtMoney(item.price)}</td><td class="right" style="color:#3b82f6;">৳${fmtMoney(_g-_d)}</td></tr>`;
             }).join("");
             const content = `<div class="info"><span class="info-l">কাস্টমার:</span><span class="info-r">${inv.customerName}</span></div>
               <div class="info"><span class="info-l">ইনভয়েস:</span><span class="info-r">#${(inv.id||"").toUpperCase()}</span></div>
@@ -22281,7 +22300,7 @@ function InvoiceReceiptPrint({ inv, customer, type }) {
             const _d = Math.min(Math.max(parseFloat(item.itemDiscount)||0, 0), _g);
             const _p = _g > 0 ? Math.round((_d / _g) * 10000) / 100 : 0;
             return (
-              <tr key={i}><td style={{ color: "#666", fontSize: 10 }}>{i+1}</td><td>{item.name}</td><td className="right">{item.qty}</td><td className="right">৳{fmtMoney(item.price)}</td><td className="right" style={{ color: "#16a34a" }}>{_d>0?`–৳${fmtMoney(_d)}${_p>0?` (${_p}%)`:""}`:"—"}</td><td className="right" style={{ color: "#3b82f6" }}>৳{fmtMoney(_g-_d)}</td></tr>
+              <tr key={i}><td style={{ color: "#666", fontSize: 10 }}>{i+1}</td><td><DosageBadge dosageForm={item.dosageForm} />{item.name}</td><td className="right">{item.qty}</td><td className="right">৳{fmtMoney(item.price)}</td><td className="right" style={{ color: "#16a34a" }}>{_d>0?`–৳${fmtMoney(_d)}${_p>0?` (${_p}%)`:""}`:"—"}</td><td className="right" style={{ color: "#3b82f6" }}>৳{fmtMoney(_g-_d)}</td></tr>
             );
           })}
         </tbody>
@@ -23065,7 +23084,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                       onChange={e => setPeInvoiceItems(arr => arr.map((x,i) => i===idx ? { ...x, productId: e.target.value, include: !!e.target.value && x.include !== false ? true : x.include } : x))}
                       style={{ ...S.input, marginBottom:8, border: !it.productId && it.include ? "1.5px solid #ef4444" : S.input.border }}>
                       <option value="">— পণ্য বেছে নিন —</option>
-                      {products.map(p => <option key={p.id} value={p.id}>{p.name}{p.unit ? ` (${p.unit})` : ""}</option>)}
+                      {products.map(p => { const ta = medTypeAbbr(p.dosageForm); return <option key={p.id} value={p.id}>{ta ? `${ta.abbr} ` : ""}{p.name}{p.unit ? ` (${p.unit})` : ""}</option>; })}
                     </select>
                     <div style={{ display:"flex", gap:8 }}>
                       <div style={{ flex:1 }}>
@@ -23171,7 +23190,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                         {peForm.productSearch.trim() && (
                           <div
                             onMouseDown={() => {
-                              setPeNewProduct({ name: peForm.productSearch.trim(), unit: "", company: "", price: "" });
+                              setPeNewProduct({ name: peForm.productSearch.trim(), unit: "", company: "", price: "", dosageForm: "" });
                               setPeCompanyCustom(false);
                               setPeSearchOpen(false);
                             }}
@@ -23211,6 +23230,30 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                         value={peNewProduct.unit === "__typing__" ? "" : peNewProduct.unit}
                         onChange={e => setPeNewProduct(v => ({ ...v, unit: e.target.value || "__typing__" }))} autoFocus autoComplete="off" />
                     )}
+
+                    {/* ── ধরন (Tab/Cap/Syp) — এই নাম যেহেতু medicineDataset-এ পাওয়া যায়নি, তাই ম্যানুয়ালি বেছে নিন ── */}
+                    <div style={{ marginBottom: 8 }}>
+                      <label style={S.label}>💊 ধরন (ঐচ্ছিক)</label>
+                      {peNewProduct.dosageForm ? (
+                        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                          <DosageBadge dosageForm={peNewProduct.dosageForm} style={{ fontSize:12, background:`${medTypeAbbr(peNewProduct.dosageForm)?.color}1a`, border:`1px solid ${medTypeAbbr(peNewProduct.dosageForm)?.color}55`, borderRadius:6, padding:"3px 8px" }} />
+                          <button type="button" onClick={() => setPeNewProduct(v => ({ ...v, dosageForm: "" }))}
+                            style={{ background:"none", border:"none", color:T.sub, fontSize:11, cursor:"pointer" }}>✕ বদলান</button>
+                        </div>
+                      ) : (
+                        <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
+                          {DOSAGE_FORM_CHIPS.map(dfOpt => {
+                            const ta = medTypeAbbr(dfOpt);
+                            return (
+                              <button key={dfOpt} type="button" onClick={() => setPeNewProduct(v => ({ ...v, dosageForm: dfOpt }))}
+                                style={{ background:`${ta.color}1a`, border:`1px solid ${ta.color}55`, color:ta.color, borderRadius:8, padding:"4px 9px", fontSize:11, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
+                                {ta.abbr}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
 
                     {/* সাপ্লায়ার */}
                     <label style={S.label}>🏭 সাপ্লায়ার</label>
@@ -23440,7 +23483,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                       // (দেখুন নতুন-পণ্য ফর্মের একই ফিক্সের কমেন্ট)।
                       spPrice: peForm.spPrice !== "" && peForm.spPrice !== undefined ? (parseFloat(peForm.spPrice) || 0) : null,
                       stock: qty, minStockAlert: 5, category: "অন্যান্য", company,
-                      productType: "product", expiryDate: peForm.expiryDate || "", barcode: "", lastUpdated: now,
+                      productType: "product", expiryDate: peForm.expiryDate || "", barcode: "", lastUpdated: now, dosageForm: peNewProduct.dosageForm || "",
                       batches: [firstBatch],
                     }]);
                     const mvNewProd = pushStockMovement({
@@ -23877,9 +23920,28 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                 <div style={{ marginTop: 4, display:"flex", alignItems:"center", gap:5 }}>
                   <span style={{ color: ta.color, fontWeight:900, fontSize:11, background:`${ta.color}1a`, border:`1px solid ${ta.color}44`, borderRadius:6, padding:"1px 7px" }}>{ta.abbr}</span>
                   <span style={{ color:T.sub, fontSize:10.5 }}>{form.dosageForm}</span>
+                  <button type="button" onClick={() => setForm(f => ({ ...f, dosageForm: "" }))}
+                    style={{ background:"none", border:"none", color:T.sub, fontSize:11, cursor:"pointer", padding:0, marginLeft:2 }}>✕ বদলান</button>
                 </div>
               ) : null;
             })()}
+            {/* ── medicineDataset-এ নাম না মিললে (কোনো সাজেশন নেই) — ম্যানুয়াল ধরন (Tab/Cap/Syp) বেছে নেওয়ার চিপ ── */}
+            {!nameSuggestOpen && !form.dosageForm && form.productType !== "service" && form.name.trim().length >= 2 && nameSuggestions.length === 0 && (
+              <div style={{ marginTop: 6 }}>
+                <div style={{ color:T.sub, fontSize:10.5, marginBottom:4 }}>ধরন (ঐচ্ছিক) — নামের আগে প্রিফিক্স হিসেবে বসবে:</div>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
+                  {DOSAGE_FORM_CHIPS.map(dfOpt => {
+                    const ta = medTypeAbbr(dfOpt);
+                    return (
+                      <button key={dfOpt} type="button" onClick={() => setForm(f => ({ ...f, dosageForm: dfOpt }))}
+                        style={{ background:`${ta.color}1a`, border:`1px solid ${ta.color}55`, color:ta.color, borderRadius:8, padding:"4px 9px", fontSize:11, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
+                        {ta.abbr}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
           {/* 🔴 ফিক্স: টাইপ করার সাথে সাথেই ডুপ্লিকেট নাম নোটিফাই — ফর্ম সাবমিটের অপেক্ষা করে না */}
           {liveDupProduct && (
@@ -24137,7 +24199,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                 <div style={{ color:"#fbbf24", fontWeight:800, fontSize:12, marginBottom:7, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
                   <div style={{ display:"flex", alignItems:"center", gap:5 }}>
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-                    পণ্য আপডেট: {p.name}
+                    পণ্য আপডেট: <DosageBadge dosageForm={p.dosageForm} />{p.name}
                   </div>
                   <button style={{ background:"#ef444418", border:"1px solid #ef444444", color:"#ef4444", borderRadius:8, padding:"3px 8px", fontSize:10, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}
                     onClick={() => {
@@ -24165,6 +24227,16 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                     <label style={{ ...S.label, fontSize:10, color:"#fde68a" }}>বিক্রয়মূল্য (৳)</label>
                     <input style={{ ...S.input, fontSize:12, padding:"6px 8px", background:"rgba(0,0,0,0.3)", border:"1px solid #f59e0b55", color:"#fde68a", marginBottom:0 }} type="number" value={form.price} onChange={e => setForm({...form, price:e.target.value})} inputMode="numeric" />
                   </div>
+                  {form.productType !== "service" && (<>
+                  <div>
+                    <label style={{ ...S.label, fontSize:10, color:"#fde68a" }}>ক্রয়মূল্য (৳)</label>
+                    <input style={{ ...S.input, fontSize:12, padding:"6px 8px", background:"rgba(0,0,0,0.3)", border:"1px solid #f59e0b55", color:"#fde68a", marginBottom:0 }} type="number" value={form.costPrice} onChange={e => setForm({...form, costPrice:e.target.value})} inputMode="numeric" />
+                  </div>
+                  <div>
+                    <label style={{ ...S.label, fontSize:10, color:"#fde68a" }}>মিনিমাম স্টক অ্যালার্ট</label>
+                    <input style={{ ...S.input, fontSize:12, padding:"6px 8px", background:"rgba(0,0,0,0.3)", border:"1px solid #f59e0b55", color:"#fde68a", marginBottom:0 }} type="number" value={form.minStockAlert} onChange={e => setForm({...form, minStockAlert:e.target.value})} inputMode="numeric" />
+                  </div>
+                  </>)}
                 </div>
                 <div style={{ display:"flex", gap:7 }}>
                   <button style={{ ...S.cancelBtn, flex:1, padding:"8px", fontSize:12 }} onClick={() => { setEditId(null); }}>বাতিল</button>
@@ -25289,7 +25361,7 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
                     <div key={item.productId + "_" + idx}
                       style={{ background:T.bg, border:`1px solid ${T.border}`, borderRadius:12, padding:"10px 12px", marginBottom:10 }}>
                       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
-                        <div style={{ color:T.text, fontWeight:800, fontSize:13 }}>{item.name}</div>
+                        <div style={{ color:T.text, fontWeight:800, fontSize:13 }}><DosageBadge dosageForm={item.dosageForm} />{item.name}</div>
                         <div style={{ color:T.sub, fontSize:11 }}>বিক্রি: {item.qty} {item.unit || ""}{alreadyReturned > 0 ? ` · আগে ফেরত: ${alreadyReturned}` : ""}</div>
                       </div>
                       {maxReturnable <= 0 ? (
@@ -30349,7 +30421,7 @@ onChange={()=>{}} />
                 <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, background: T.bg, borderRadius: 10, padding: "8px 10px", border: "1px solid #f9731633", marginBottom: 6 }}>
                   <div style={{ width: 32, height: 32, borderRadius: 8, background: "linear-gradient(135deg,#ea580c22,#f9731622)", border: "1px solid #f9731633", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, flexShrink: 0 }}>📦</div>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ color: T.text, fontWeight: 700, fontSize: 12 }}>{p.name}</div>
+                    <div style={{ color: T.text, fontWeight: 700, fontSize: 12 }}><DosageBadge dosageForm={p.dosageForm} />{p.name}</div>
                     <div style={{ color: T.sub, fontSize: 10 }}>৳{fmt(p.price)} · স্টক: {p.stock || 0}</div>
                   </div>
                   <button style={{ background: "#f9731618", border: "1px solid #f9731644", color: "#f97316", borderRadius: 7, padding: "4px 9px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}
