@@ -6671,10 +6671,29 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
     const run = () => {
       nextMap.forEach((rec, id) => {
         const old = prevMap.get(id);
-        if (!old || !recEq(old, rec)) {
+        // 🔴 ফিক্স (রুট কজ — কাস্টমার বাকি ডাবল-কাউন্ট): customers কালেকশনে
+        // balance ফিল্ড শুধুমাত্র FSS.transactionUpdateBalance()-এর (atomic
+        // read-modify-write) মাধ্যমেই সার্ভারে লেখা উচিত। কিন্তু এই generic
+        // diff-push effect আগে optimistic local balance বদলানোর মাত্র ৫০ms পরেই
+        // balance-সহ পুরো রেকর্ড plain setDoc() (non-merge, full overwrite) দিয়ে
+        // পাঠিয়ে দিত। সেই overwrite যদি transactionUpdateBalance()-এর serverBal
+        // read-এর *আগে* সার্ভারে পৌঁছে যেত, transaction তখন ইতিমধ্যে-আপডেট-হওয়া
+        // মানের ওপর আবার নিজের delta যোগ করত — একই বিক্রি/বাকির টাকা দুইবার
+        // যোগ হয়ে যেত (দেখুন ১৯ জুলাই স্ক্রিনশট — Shima-র বাকি ১,১৫০ থেকে
+        // ভুতুড়েভাবে ২,৩০০ হয়ে যাওয়া)। এখন বিদ্যমান কাস্টমার রেকর্ডে (old
+        // থাকলে) balance-বাদে বাকি ফিল্ড দিয়ে change-detect করা হচ্ছে — শুধু
+        // balance বদলালে কোনো push-ই ট্রিগার হবে না, আর অন্য ফিল্ড বদলে push
+        // হলেও balance-এ পুরনো (old, অর্থাৎ সবশেষ known-good) মানই পাঠানো
+        // হবে, যাতে সার্ভারের atomic-committed balance ভুলবশত ওভাররাইট না হয়।
+        // নতুন কাস্টমার তৈরিতে (old না থাকা) initial balance-সহ পুরো রেকর্ড
+        // আগের মতোই যাবে — এই সুরক্ষা শুধু existing-record আপডেটে প্রযোজ্য।
+        const isCustomerUpdate = name === "customers" && !!old;
+        const oldForCompare = isCustomerUpdate ? { ...old, balance: rec.balance } : old;
+        if (!old || !recEq(oldForCompare, rec)) {
           if (DBG) traceDebug("push_record_setRecord_call", { name, id });
           // _updatedAt inject করো (নতুন বা পরিবর্তিত record-এ) — Master Sync merge-এর জন্য
-          const recWithTs = rec._updatedAt ? rec : withTs(rec);
+          const recWithTsRaw = rec._updatedAt ? rec : withTs(rec);
+          const recWithTs = isCustomerUpdate ? { ...recWithTsRaw, balance: old.balance } : recWithTsRaw;
           pending.current.set(id, { rec: recWithTs, old: old || null, ts: Date.now() });
           // 🔴 ফিক্স (durable outbox): Firestore write-এর ফলাফলের অপেক্ষা না করেই
           // সাথে সাথে IndexedDB-তে persist করা হচ্ছে — অ্যাপ এখনই kill হলেও এই
@@ -7223,26 +7242,32 @@ const _idb = (() => {
   });
   return {
     async get(key) {
-      try {
-        const db = await open();
-        return new Promise((res, rej) => {
-          const tx = db.transaction(STORE, "readonly");
-          const req = tx.objectStore(STORE).get(key);
-          req.onsuccess = () => res(req.result ?? null);
-          req.onerror   = e => rej(e.target.error);
-        });
-      } catch { return null; }
+      // 🔴 ফিক্স (রুট কজ — লোকাল স্টোরেজ নিঃশব্দে সেভ ব্যর্থ হওয়া): আগে এই
+      // try/catch নিজের ভেতরেই error গিলে ফেলত (rethrow করত না), ফলে বাইরের
+      // storage.get()-এর localStorage fallback/migration লজিক কখনো ট্রিগারই
+      // হতো না — IndexedDB open()/transaction ব্যর্থ হলে কোনো error ছাড়াই
+      // সবসময় null রিটার্ন হতো (Full App Checkup-এর "মেমোরিতে ডেটা আছে, ডিভাইস
+      // স্টোরেজে নেই" এই কারণেই)। এখন error rethrow করা হচ্ছে, যাতে বাইরের
+      // wrapper আসল ব্যর্থতা জানতে পারে ও ঠিকমতো fallback করতে পারে।
+      const db = await open();
+      return new Promise((res, rej) => {
+        const tx = db.transaction(STORE, "readonly");
+        const req = tx.objectStore(STORE).get(key);
+        req.onsuccess = () => res(req.result ?? null);
+        req.onerror   = e => rej(e.target.error);
+      });
     },
     async set(key, val) {
-      try {
-        const db = await open();
-        return new Promise((res, rej) => {
-          const tx = db.transaction(STORE, "readwrite");
-          tx.objectStore(STORE).put(val, key);
-          tx.oncomplete = res;
-          tx.onerror    = e => rej(e.target.error);
-        });
-      } catch {}
+      // 🔴 ফিক্স (একই রুট কজ, দেখুন get()-এর কমেন্ট): error rethrow করা হচ্ছে,
+      // যাতে বাইরের storage.set()-এর catch ব্লক আসলেই localStorage fallback-এ
+      // লিখতে পারে — নাহলে ডেটা কোথাও না গিয়েই নীরবে হারিয়ে যেত।
+      const db = await open();
+      return new Promise((res, rej) => {
+        const tx = db.transaction(STORE, "readwrite");
+        tx.objectStore(STORE).put(val, key);
+        tx.oncomplete = res;
+        tx.onerror    = e => rej(e.target.error);
+      });
     },
     // 🔴 পারফরম্যান্স ফিক্স: বুট-টাইমে ৩০+টা key আলাদা get() কল করলে প্রতিটা
     // নিজের transaction খোলে (৩০+ transaction ওভারহেড)। এই getMany() একটাই
@@ -7298,21 +7323,30 @@ const storage = (() => {
   if (_hasIDB) {
     return {
       async get(key) {
-        try {
-          const val = await _idb.get(key);
-          if (val !== null) return val;
-          // migrate from localStorage if exists
-          if (typeof localStorage !== "undefined") {
+        // 🔴 ফিক্স (রুট কজ — লোকাল স্টোরেজ নিঃশব্দে সেভ ব্যর্থ হওয়া): আগে
+        // _idb.get() ব্যর্থ হলে (throw করলে) এই catch ব্লক সরাসরি null রিটার্ন
+        // করে দিত — নিচের localStorage মাইগ্রেশন/fallback চেকটা তখন কখনোই চলত
+        // না। এখন IndexedDB সত্যিই ব্যর্থ হলে (throw) localStorage-কে আসল
+        // fallback হিসেবে ব্যবহার করা হচ্ছে, শুধু IndexedDB-তে key না-পাওয়া
+        // (val === null, ব্যর্থ না) কেসেই আগের মাইগ্রেশন লজিক চলবে।
+        let val = null, idbFailed = false;
+        try { val = await _idb.get(key); } catch { idbFailed = true; }
+        if (val !== null) return val;
+        // migrate from localStorage if exists (বা IndexedDB সম্পূর্ণ ব্যর্থ হলে সরাসরি fallback হিসেবে পড়ো)
+        if (typeof localStorage !== "undefined") {
+          try {
             const lsVal = localStorage.getItem(key);
             if (lsVal) {
               const parsed = JSON.parse(lsVal);
-              await _idb.set(key, parsed);
-              try { localStorage.removeItem(key); } catch {}
+              if (!idbFailed) {
+                await _idb.set(key, parsed).catch(() => {});
+                try { localStorage.removeItem(key); } catch {}
+              }
               return parsed;
             }
-          }
-          return null;
-        } catch { return null; }
+          } catch { /* ignore */ }
+        }
+        return null;
       },
       // 🔴 পারফরম্যান্স ফিক্স: একসাথে অনেকগুলো key পড়ার জন্য — বুট-টাইমে
       // ৩০+ আলাদা IndexedDB transaction-এর বদলে একটাই transaction ব্যবহার করে।
