@@ -24,6 +24,22 @@ rules_version = '2';
 // প্রতিটা দোকানের Firebase Console → Firestore Database → Rules ট্যাব → এই
 // পুরো কন্টেন্ট paste করে "Publish" চাপুন। ৫০০টা প্রজেক্টে ম্যানুয়ালি একই কাজ,
 // Firebase Management API script দিয়ে automate করা সম্ভব (আলাদা কাজ)।
+//
+// 🆕 ফিক্স (১৯ জুলাই ২০২৬ — Multi-Business Rules Gap): Multi-Business System
+// চালু হলে (enabledBusinessTypes.length > 1) App.jsx-এর FSS._prefixed() প্রতিটা
+// collection-এর নামের শেষে সক্রিয় business type suffix যোগ করে দেয় (যেমন
+// "users" হয়ে যায় "users_veterinary", "products" হয়ে যায় "products_semen")।
+// আগে এই rules ফাইলে শুধু আসল (un-suffixed) নাম দিয়ে match ব্লক ছিল — Firestore-এ
+// কোনো collection path কোনো match ব্লকের সাথে না মিললে ডিফল্টভাবে সম্পূর্ণ deny
+// হয়ে যায়। ফলে ২টা+ business type enable করা যেকোনো দোকানে users/products/
+// customers/invoices ইত্যাদি প্রায় সব collection-এই "Missing or insufficient
+// permissions" error দিয়ে write ব্লক হয়ে যাচ্ছিল (root cause: চিরেন দোকানে
+// veterinary+semen enable করার পর staff permission sync ব্যর্থ হওয়া বাগ)।
+// এখন প্রতিটা schema-validated collection-এর জন্য একটা করে reusable validation
+// function (validXxx()) বানানো হয়েছে, আর বেস নাম + প্রতিটা রেজিস্ট্রি business
+// type suffix (_pharmacy/_veterinary/_semen) — মোট ৪টা match ব্লকে একই function
+// কল করা হচ্ছে, যাতে ভবিষ্যতে নতুন business type যোগ হলে এখানেও অবশ্যই আপডেট
+// করতে হয় (দেখুন BUSINESS_TYPE_REGISTRY, App.jsx-এ)।
 // ═══════════════════════════════════════════════════════════════════════════
 
 service cloud.firestore {
@@ -35,67 +51,202 @@ service cloud.firestore {
     function isStr(v)      { return v is string; }
 
     // ── customers ── balance/loyaltyPoints ঋণাত্মক হতে পারবে না
+    function validCustomer(data) {
+      return
+        (!("balance" in data) || isNonNegNum(data.balance)) &&
+        (!("loyaltyPoints" in data) || isNonNegNum(data.loyaltyPoints)) &&
+        (!("name" in data) || isStr(data.name));
+    }
     match /customers/{id} {
       allow read: if true;
-      allow create, update: if
-        (!("balance" in request.resource.data) || isNonNegNum(request.resource.data.balance)) &&
-        (!("loyaltyPoints" in request.resource.data) || isNonNegNum(request.resource.data.loyaltyPoints)) &&
-        (!("name" in request.resource.data) || isStr(request.resource.data.name));
+      allow create, update: if validCustomer(request.resource.data);
+      allow delete: if true;
+    }
+    match /customers_pharmacy/{id} {
+      allow read: if true;
+      allow create, update: if validCustomer(request.resource.data);
+      allow delete: if true;
+    }
+    match /customers_veterinary/{id} {
+      allow read: if true;
+      allow create, update: if validCustomer(request.resource.data);
+      allow delete: if true;
+    }
+    match /customers_semen/{id} {
+      allow read: if true;
+      allow create, update: if validCustomer(request.resource.data);
       allow delete: if true;
     }
 
     // ── products ── stock ঋণাত্মক হতে পারবে না, price/costPrice সংখ্যা হতে হবে
+    function validProduct(data) {
+      return
+        (!("stock" in data) || isNonNegNum(data.stock)) &&
+        (!("price" in data) || isNonNegNum(data.price)) &&
+        (!("costPrice" in data) || isNonNegNum(data.costPrice));
+    }
     match /products/{id} {
       allow read: if true;
-      allow create, update: if
-        (!("stock" in request.resource.data) || isNonNegNum(request.resource.data.stock)) &&
-        (!("price" in request.resource.data) || isNonNegNum(request.resource.data.price)) &&
-        (!("costPrice" in request.resource.data) || isNonNegNum(request.resource.data.costPrice));
+      allow create, update: if validProduct(request.resource.data);
+      allow delete: if true;
+    }
+    match /products_pharmacy/{id} {
+      allow read: if true;
+      allow create, update: if validProduct(request.resource.data);
+      allow delete: if true;
+    }
+    match /products_veterinary/{id} {
+      allow read: if true;
+      allow create, update: if validProduct(request.resource.data);
+      allow delete: if true;
+    }
+    match /products_semen/{id} {
+      allow read: if true;
+      allow create, update: if validProduct(request.resource.data);
       allow delete: if true;
     }
 
     // ── invoices ── total/status অবশ্যই সঠিক shape-এ, status শুধু নির্দিষ্ট মান
+    function validInvoice(data) {
+      return
+        (!("total" in data) || isNonNegNum(data.total)) &&
+        (!("status" in data) || data.status in ["active", "voided"]) &&
+        (!("payType" in data) ||
+          data.payType in ["cash", "baki", "partial", "walkin", "selfuse"]);
+    }
     match /invoices/{id} {
       allow read: if true;
-      allow create, update: if
-        (!("total" in request.resource.data) || isNonNegNum(request.resource.data.total)) &&
-        (!("status" in request.resource.data) ||
-          request.resource.data.status in ["active", "voided"]) &&
-        (!("payType" in request.resource.data) ||
-          request.resource.data.payType in ["cash", "baki", "partial", "walkin", "selfuse"]);
+      allow create, update: if validInvoice(request.resource.data);
+      allow delete: if true;
+    }
+    match /invoices_pharmacy/{id} {
+      allow read: if true;
+      allow create, update: if validInvoice(request.resource.data);
+      allow delete: if true;
+    }
+    match /invoices_veterinary/{id} {
+      allow read: if true;
+      allow create, update: if validInvoice(request.resource.data);
+      allow delete: if true;
+    }
+    match /invoices_semen/{id} {
+      allow read: if true;
+      allow create, update: if validInvoice(request.resource.data);
       allow delete: if true;
     }
 
     // ── txns ── amount ঋণাত্মক না, type সীমিত মানের মধ্যে
+    function validTxn(data) {
+      return
+        (!("amount" in data) || isNonNegNum(data.amount)) &&
+        (!("type" in data) || data.type in ["baki", "joma"]);
+    }
     match /txns/{id} {
       allow read: if true;
-      allow create, update: if
-        (!("amount" in request.resource.data) || isNonNegNum(request.resource.data.amount)) &&
-        (!("type" in request.resource.data) ||
-          request.resource.data.type in ["baki", "joma"]);
+      allow create, update: if validTxn(request.resource.data);
+      allow delete: if true;
+    }
+    match /txns_pharmacy/{id} {
+      allow read: if true;
+      allow create, update: if validTxn(request.resource.data);
+      allow delete: if true;
+    }
+    match /txns_veterinary/{id} {
+      allow read: if true;
+      allow create, update: if validTxn(request.resource.data);
+      allow delete: if true;
+    }
+    match /txns_semen/{id} {
+      allow read: if true;
+      allow create, update: if validTxn(request.resource.data);
       allow delete: if true;
     }
 
     // ── purchaseOrders / stockMovements / cashLogs / paymentInvoices ──
     // এখনো সাধারণ shape validation (amount/qty ঋণাত্মক না) — বিস্তারিত rule পরে বাড়ানো যায়
+    function validPO(data) { return !("totalAmount" in data) || isNonNegNum(data.totalAmount); }
     match /purchaseOrders/{id} {
       allow read: if true;
-      allow create, update: if !("totalAmount" in request.resource.data) || isNonNegNum(request.resource.data.totalAmount);
+      allow create, update: if validPO(request.resource.data);
       allow delete: if true;
     }
+    match /purchaseOrders_pharmacy/{id} {
+      allow read: if true;
+      allow create, update: if validPO(request.resource.data);
+      allow delete: if true;
+    }
+    match /purchaseOrders_veterinary/{id} {
+      allow read: if true;
+      allow create, update: if validPO(request.resource.data);
+      allow delete: if true;
+    }
+    match /purchaseOrders_semen/{id} {
+      allow read: if true;
+      allow create, update: if validPO(request.resource.data);
+      allow delete: if true;
+    }
+
+    function validQty(data) { return !("qty" in data) || isNum(data.qty); }
     match /stockMovements/{id} {
       allow read: if true;
-      allow create, update: if !("qty" in request.resource.data) || isNum(request.resource.data.qty);
+      allow create, update: if validQty(request.resource.data);
       allow delete: if true;
     }
+    match /stockMovements_pharmacy/{id} {
+      allow read: if true;
+      allow create, update: if validQty(request.resource.data);
+      allow delete: if true;
+    }
+    match /stockMovements_veterinary/{id} {
+      allow read: if true;
+      allow create, update: if validQty(request.resource.data);
+      allow delete: if true;
+    }
+    match /stockMovements_semen/{id} {
+      allow read: if true;
+      allow create, update: if validQty(request.resource.data);
+      allow delete: if true;
+    }
+
+    function validAmount(data) { return !("amount" in data) || isNonNegNum(data.amount); }
     match /cashLogs/{id} {
       allow read: if true;
-      allow create, update: if !("amount" in request.resource.data) || isNonNegNum(request.resource.data.amount);
+      allow create, update: if validAmount(request.resource.data);
+      allow delete: if true;
+    }
+    match /cashLogs_pharmacy/{id} {
+      allow read: if true;
+      allow create, update: if validAmount(request.resource.data);
+      allow delete: if true;
+    }
+    match /cashLogs_veterinary/{id} {
+      allow read: if true;
+      allow create, update: if validAmount(request.resource.data);
+      allow delete: if true;
+    }
+    match /cashLogs_semen/{id} {
+      allow read: if true;
+      allow create, update: if validAmount(request.resource.data);
       allow delete: if true;
     }
     match /paymentInvoices/{id} {
       allow read: if true;
-      allow create, update: if !("amount" in request.resource.data) || isNonNegNum(request.resource.data.amount);
+      allow create, update: if validAmount(request.resource.data);
+      allow delete: if true;
+    }
+    match /paymentInvoices_pharmacy/{id} {
+      allow read: if true;
+      allow create, update: if validAmount(request.resource.data);
+      allow delete: if true;
+    }
+    match /paymentInvoices_veterinary/{id} {
+      allow read: if true;
+      allow create, update: if validAmount(request.resource.data);
+      allow delete: if true;
+    }
+    match /paymentInvoices_semen/{id} {
+      allow read: if true;
+      allow create, update: if validAmount(request.resource.data);
       allow delete: if true;
     }
 
@@ -104,13 +255,30 @@ service cloud.firestore {
     // (থাকলে) শুধু registry-তে থাকা মান হতে পারবে — বাকি সব validation (এটা
     // owner-এর enabledBusinessTypes-এর সদস্য কিনা) client-side-এ হয়, এখানে শুধু
     // হালকা shape validation (ভুল টাইপ/মান ডাটাবেজ পর্যন্ত পৌঁছাতে পারবে না)।
+    function validUser(data) {
+      return (!("role" in data) || data.role in ["admin", "staff"]) &&
+        (!("assignedBusinessType" in data) ||
+         data.assignedBusinessType == null ||
+         data.assignedBusinessType in ["pharmacy", "veterinary", "semen"]);
+    }
     match /users/{id} {
       allow read: if true;
-      allow create, update: if (!("role" in request.resource.data) ||
-        request.resource.data.role in ["admin", "staff"]) &&
-        (!("assignedBusinessType" in request.resource.data) ||
-         request.resource.data.assignedBusinessType == null ||
-         request.resource.data.assignedBusinessType in ["pharmacy", "veterinary", "semen"]);
+      allow create, update: if validUser(request.resource.data);
+      allow delete: if true;
+    }
+    match /users_pharmacy/{id} {
+      allow read: if true;
+      allow create, update: if validUser(request.resource.data);
+      allow delete: if true;
+    }
+    match /users_veterinary/{id} {
+      allow read: if true;
+      allow create, update: if validUser(request.resource.data);
+      allow delete: if true;
+    }
+    match /users_semen/{id} {
+      allow read: if true;
+      allow create, update: if validUser(request.resource.data);
       allow delete: if true;
     }
 
@@ -122,6 +290,9 @@ service cloud.firestore {
     // 🆕 ধাপ ২ (Multi-Business System Plan): enabledBusinessTypes এখন একটা array
     // (আগে এই ফিল্ডই ছিল না — পুরনো ডকুমেন্টে অনুপস্থিত থাকাটাও বৈধ, migration
     // ক্লায়েন্ট-সাইডে হয়) এবং activeBusinessType অবশ্যই সেই array-এর সদস্য হতে হবে।
+    // (meta ও settings — App.jsx-এর FSS._NEVER_PREFIX সেটে থাকায় — কখনোই
+    // business-suffix পায় না, তাই এখানে অতিরিক্ত _pharmacy/_veterinary/_semen
+    // ভ্যারিয়েন্ট লাগবে না।)
     match /meta/{id} {
       allow read: if true;
       allow write: if id != "businessConfig" ||
@@ -140,18 +311,59 @@ service cloud.firestore {
     }
 
     // ── বাকি সব collection (suppliers, smsLog, expenses, returns, auditLogs, settings) ──
-    // এখনো নির্দিষ্ট schema rule লেখা হয়নি — খোলা থাকছে, ভবিষ্যতে বাড়ানো যায়
-    match /suppliers/{id}   { allow read, write: if true; }
-    match /smsLog/{id}      { allow read, write: if true; }
-    match /expenses/{id}    { allow read, write: if true; }
-    match /returns/{id}     { allow read, write: if true; }
-    match /auditLogs/{id}   { allow read, write: if true; }
+    // এখনো নির্দিষ্ট schema rule লেখা হয়নি — খোলা থাকছে, ভবিষ্যতে বাড়ানো যায়।
+    // settings কখনো prefix পায় না (উপরের নোট দেখুন), বাকিগুলো পায় — তাই প্রতিটার
+    // জন্য বেস + ৩টা business-suffix ভ্যারিয়েন্ট রাখা হলো।
     match /settings/{id}    { allow read, write: if true; }
 
+    match /suppliers/{id}   { allow read, write: if true; }
+    match /suppliers_pharmacy/{id}   { allow read, write: if true; }
+    match /suppliers_veterinary/{id} { allow read, write: if true; }
+    match /suppliers_semen/{id}      { allow read, write: if true; }
+
+    match /smsLog/{id}      { allow read, write: if true; }
+    match /smsLog_pharmacy/{id}   { allow read, write: if true; }
+    match /smsLog_veterinary/{id} { allow read, write: if true; }
+    match /smsLog_semen/{id}      { allow read, write: if true; }
+
+    match /expenses/{id}    { allow read, write: if true; }
+    match /expenses_pharmacy/{id}   { allow read, write: if true; }
+    match /expenses_veterinary/{id} { allow read, write: if true; }
+    match /expenses_semen/{id}      { allow read, write: if true; }
+
+    match /returns/{id}     { allow read, write: if true; }
+    match /returns_pharmacy/{id}   { allow read, write: if true; }
+    match /returns_veterinary/{id} { allow read, write: if true; }
+    match /returns_semen/{id}      { allow read, write: if true; }
+
+    match /auditLogs/{id}   { allow read, write: if true; }
+    match /auditLogs_pharmacy/{id}   { allow read, write: if true; }
+    match /auditLogs_veterinary/{id} { allow read, write: if true; }
+    match /auditLogs_semen/{id}      { allow read, write: if true; }
+
     match /deletedCustomers/{id}  { allow read, write: if true; }
+    match /deletedCustomers_pharmacy/{id}   { allow read, write: if true; }
+    match /deletedCustomers_veterinary/{id} { allow read, write: if true; }
+    match /deletedCustomers_semen/{id}      { allow read, write: if true; }
+
     match /deletedProducts/{id}   { allow read, write: if true; }
+    match /deletedProducts_pharmacy/{id}   { allow read, write: if true; }
+    match /deletedProducts_veterinary/{id} { allow read, write: if true; }
+    match /deletedProducts_semen/{id}      { allow read, write: if true; }
+
     match /quotations/{id}        { allow read, write: if true; }
+    match /quotations_pharmacy/{id}   { allow read, write: if true; }
+    match /quotations_veterinary/{id} { allow read, write: if true; }
+    match /quotations_semen/{id}      { allow read, write: if true; }
+
     match /supplierPayments/{id}  { allow read, write: if true; }
+    match /supplierPayments_pharmacy/{id}   { allow read, write: if true; }
+    match /supplierPayments_veterinary/{id} { allow read, write: if true; }
+    match /supplierPayments_semen/{id}      { allow read, write: if true; }
+
     match /stats/{id}             { allow read, write: if true; }
+    match /stats_pharmacy/{id}   { allow read, write: if true; }
+    match /stats_veterinary/{id} { allow read, write: if true; }
+    match /stats_semen/{id}      { allow read, write: if true; }
   }
 }
