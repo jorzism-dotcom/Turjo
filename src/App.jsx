@@ -8947,10 +8947,25 @@ function medLearnEntry(name, unit, company) {
 // veterinary ছাড়া অন্য যেকোনো businessType (semen, ভবিষ্যতে নতুন যেকোনো টাইপ) তার
 // নিজের সম্পূর্ণ আলাদা localStorage key-তে (otherLearnEntry) সেভ হয় — কোনো মার্জ ছাড়াই।
 function learnMedicineEntry(businessType, name, unit, company) {
-  if (businessType === "veterinary") vetLearnEntry(name, unit, company);
-  else if (businessType === "pharmacy") medLearnEntry(name, unit, company);
-  else otherLearnEntry(businessType, name, unit, company);
+  // 🔴 বন্ধ করা হলো (২০ জুলাই ২০২৬ — ব্যবহারকারীর অনুরোধে): নতুন পণ্য যোগ করার সময়
+  // dataset-এ না-পাওয়া নাম আর সেলফ-লার্নিং হিসেবে মনে রাখা হবে না (কোনো business type-এই না)।
+  return;
 }
+
+// ─── 🔴 এককালীন পরিষ্কার (২০ জুলাই ২০২৬): উপরের ফিচার বন্ধ হওয়ার আগে এতোদিনে প্রতিটি
+// ডিভাইসে localStorage-এ যা সেলফ-লার্নড ডেটা জমা হয়েছিল (pharmacy/veterinary/অন্যান্য
+// business type — সব মিলিয়ে), অ্যাপ পরবর্তীবার ওপেন হওয়ার সাথে সাথেই একবারের জন্য মুছে
+// দেওয়া হয়। flag (sbm_med_learn_purged_v1) দিয়ে বারবার রিপিট হওয়া আটকানো হয়েছে।
+try {
+  if (typeof localStorage !== "undefined" && !localStorage.getItem("sbm_med_learn_purged_v1")) {
+    Object.keys(localStorage).forEach(k => {
+      if (k === "sbm-pharm-med-learned" || k === "sbm-vet-med-learned" || k.startsWith("sbm-med-learned-")) {
+        localStorage.removeItem(k);
+      }
+    });
+    localStorage.setItem("sbm_med_learn_purged_v1", "1");
+  }
+} catch {}
 
 // ─── 🆕 অন্যান্য বিজনেস টাইপ (pharmacy/veterinary ছাড়া — semen ইত্যাদি) — সম্পূর্ণ
 // আলাদা, ফাঁকা self-learned স্টোর। ইচ্ছাকৃতভাবে কোনো static dataset নেই (pharmacy/
