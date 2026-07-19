@@ -5013,7 +5013,14 @@ const FSS = {
 
   // এই কালেকশনগুলো কখনোই business-specific না (শপ-লেভেল কনফিগ/মেটা) — prefix
   // চালু হয়ে গেলেও এগুলো সবসময় একটাই ভাগ করা কপি থাকবে, প্রতি বিজনেসে আলাদা না।
-  _NEVER_PREFIX: new Set(["settings", "meta"]),
+  // 🔴 ফিক্স (১৯ জুলাই ২০২৬): "users" আগে এই সেটে ছিল না — ফলে multi-business
+  // শপে বিজনেস-টাইপ সুইচ করলেই স্টাফ/ইউজার লিস্ট আলাদা prefixed collection-এ
+  // (users_veterinary, users_semen ইত্যাদি) চলে যেত, যেখানে নতুন বিজনেস-টাইপের
+  // জন্য কোনো ইউজার নেই — ফলে সুইচ করার পর currentUser/staff লিস্ট হুট করে খালি/
+  // ভুল দেখাতো, এমনকি লগইন সেশনও ভেঙে যেতে পারত। BACKUP_FIELDS-এও (sync.js)
+  // "users" ইচ্ছাকৃতভাবে FSS_COLLECTIONS-এর বাইরে আলাদা রাখা হয়েছে ঠিক এই কারণেই
+  // — অর্থাৎ ডিজাইন-ইন্টেন্টই ছিল users শপ-লেভেল, প্রতি-বিজনেস না।
+  _NEVER_PREFIX: new Set(["settings", "meta", "users"]),
 
   setBusinessPrefix(prefix) {
     this._businessPrefix = prefix || null;
@@ -6121,6 +6128,34 @@ function useResyncTick() {
   return tick;
 }
 
+// 🆕 ফিক্স (১৯ জুলাই ২০২৬ — বিজনেস সুইচে পুরনো/ভুল বিজনেসের ডেটা কিছুক্ষণের
+// জন্য দেখা যাওয়া): resyncTick heartbeat/resume/online-এ resubscribe করলে
+// firstRemote/firstRemoteEverSet রিসেট হয় না (ইচ্ছাকৃতভাবে — নাহলে push effect
+// ভেঙে যায়, দেখুন useFSSCollection-এর কমেন্ট), আর পুরনো `value` array-ও ক্লিয়ার
+// হয় না — ফলে নতুন business-এর collection-এ resubscribe হওয়ার পর তার
+// server-confirmed snapshot না আসা পর্যন্ত আগের business-এর local state-ই UI-তে
+// দেখা যায়। businessSwitchTick আলাদা — এটা শুধু handleSwitchBusiness() থেকেই
+// bump হয় (heartbeat/resume/online থেকে না), আর useFSSCollection এটা দেখে
+// বুঝতে পারে এবার আসলেই আরেকটা business-এর collection-এ যাচ্ছে — তাই সেক্ষেত্রে
+// পুরনো value সাথে সাথে খালি করে দেয় এবং firstRemote/lastSynced/pending পুরোপুরি
+// ফ্রেশ mount-এর মতো রিসেট করে (নাহলে নতুন business-এর প্রথম snapshot-কে ভুলবশত
+// আগের business-এর ডেটার সাথে merge/diff করে ফেলার ঝুঁকি থাকে)।
+const _businessSwitchListeners = new Set();
+let _businessSwitchTickGlobal = 0;
+function _bumpBusinessSwitch() {
+  _businessSwitchTickGlobal += 1;
+  _businessSwitchListeners.forEach(fn => { try { fn(_businessSwitchTickGlobal); } catch {} });
+}
+function useBusinessSwitchTick() {
+  const [tick, setTick] = useState(_businessSwitchTickGlobal);
+  useEffect(() => {
+    const fn = (t) => setTick(t);
+    _businessSwitchListeners.add(fn);
+    return () => { _businessSwitchListeners.delete(fn); };
+  }, []);
+  return tick;
+}
+
 // ─── 🔴 SyncOutbox — durable offline write queue (এন্টারপ্রাইজ-লেভেল ফিক্স) ──
 // সমস্যা: আগে pending local write শুধু in-memory `pending` Map-এ ট্র্যাক হতো।
 // স্টাফ ফোনে (যেখানে ৯৯% ইনপুট হয়) অফলাইন অবস্থায় Android OS হঠাৎ অ্যাপ kill
@@ -6243,6 +6278,8 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
   const valueRef    = useRef(value);
   const pending     = useRef(new Map()); // id(string) -> { rec, old, ts } — push হয়েছে, echo বাকি
   const resyncTick  = useResyncTick(); // 🔴 ফেজ ৩ ফিক্স — resume/online/heartbeat-এ re-subscribe
+  const businessSwitchTick = useBusinessSwitchTick(); // 🆕 real business-type সুইচ শনাক্তের জন্য (heartbeat থেকে আলাদা)
+  const lastBusinessSwitchTick = useRef(businessSwitchTick);
   // 🔍 TEMP DEBUG — শুধু products/customers-এর জন্য ট্রেস চালু (সমাধান হলে মুছে ফেলুন)
   const DBG = name === "products" || name === "customers";
   useEffect(() => { valueRef.current = value; }, [value]);
@@ -6281,6 +6318,19 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
 
   // remote → local
   useEffect(() => {
+    // 🆕 ফিক্স (বিজনেস সুইচ ক্রস-কনটামিনেশন): এটা normal heartbeat/resume না,
+    // আসলেই একটা নতুন business-এর collection-এ subscribe হতে যাচ্ছে — তাই
+    // আগের business-এর local state/sync-বুককিপিং সম্পূর্ণ ফ্রেশ mount-এর মতো
+    // রিসেট করা হচ্ছে, নাহলে নতুন business-এর প্রথম snapshot না আসা পর্যন্ত
+    // পুরনো business-এর ডেটাই UI-তে থেকে যায় (বা ভুলভাবে diff/merge হয়ে যায়)।
+    if (businessSwitchTick !== lastBusinessSwitchTick.current) {
+      lastBusinessSwitchTick.current = businessSwitchTick;
+      firstRemote.current = false;
+      firstRemoteEverSet.current = false;
+      lastSynced.current = null;
+      pending.current = new Map();
+      setValue([]);
+    }
     if (!ready) { if (!firstRemoteEverSet.current) firstRemote.current = false; return; }
     if (!firstRemoteEverSet.current) firstRemote.current = false;
     pending.current = new Map();
@@ -6430,9 +6480,7 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
     }, (err) => { onSync?.("error"); logErrorToCentral("sync:" + name, err); });
     return () => { FSS.unsubscribe(name); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, resyncTick]);
-
-  // 🔴 ফিক্স (এন্টারপ্রাইজ-লেভেল সিঙ্ক স্ট্যাবিলিটি): আগে রেকর্ড বদলেছে কিনা বোঝা
+  }, [ready, resyncTick, businessSwitchTick]);
   // হতো object reference (`old !== rec`) দিয়ে — সস্তা কিন্তু বিপজ্জনক, কারণ এই
   // ২৭,০০০+ লাইনের ফাইলে অ্যাপের অন্য কোনো জায়গায় (এখন বা ভবিষ্যতে) যদি কেউ
   // কোনো record object সরাসরি mutate করে তারপর array spread করে (যেমন
@@ -8581,9 +8629,56 @@ function medLearnEntry(name, unit, company) {
   }
 }
 // businessType অনুযায়ী সঠিক লার্নিং স্টোরে পাঠায় — নতুন পণ্য/পারচেজ এন্ট্রির সময় কল হয়
+// 🔴 ফিক্স (১৯ জুলাই ২০২৬ — "সিমেন বিজনেসে ভেটেরিনারি/ফার্মেসির অটো-সাজেস্ট আসছে"):
+// আগে এখানে শুধু veterinary বনাম "বাকি সব = pharmacy" — এই বাইনারি চেক ছিল। "semen"
+// বিজনেস টাইপ (BUSINESS_TYPE_REGISTRY-তে অনেক পরে যোগ হয়েছে) veterinary না হওয়ায়
+// সরাসরি pharmacy-র শেয়ার্ড self-learned স্টোরে (MED_LEARNED_KEY) গিয়ে সেভ হতো, আর
+// pharmacy-র ২০,৫০০+ এন্ট্রির static dataset থেকেই সাজেশন দেখাত — সম্পূর্ণ অপ্রাসঙ্গিক,
+// আর সিমেনের এন্ট্রিগুলো উল্টো pharmacy-র সাজেশনেও স্থায়ীভাবে মিশে যেত। এখন pharmacy ও
+// veterinary ছাড়া অন্য যেকোনো businessType (semen, ভবিষ্যতে নতুন যেকোনো টাইপ) তার
+// নিজের সম্পূর্ণ আলাদা localStorage key-তে (otherLearnEntry) সেভ হয় — কোনো মার্জ ছাড়াই।
 function learnMedicineEntry(businessType, name, unit, company) {
   if (businessType === "veterinary") vetLearnEntry(name, unit, company);
-  else medLearnEntry(name, unit, company);
+  else if (businessType === "pharmacy") medLearnEntry(name, unit, company);
+  else otherLearnEntry(businessType, name, unit, company);
+}
+
+// ─── 🆕 অন্যান্য বিজনেস টাইপ (pharmacy/veterinary ছাড়া — semen ইত্যাদি) — সম্পূর্ণ
+// আলাদা, ফাঁকা self-learned স্টোর। ইচ্ছাকৃতভাবে কোনো static dataset নেই (pharmacy/
+// veterinary-এর মতো ২০,৫০০+/~1100 এন্ট্রি লোড হয় না) — শুধু দোকানদার নিজে যা এন্ট্রি
+// করেন তা থেকেই সাজেশন গড়ে ওঠে, আর pharmacy/veterinary-এর সাথে কখনো মার্জ হয় না।
+const _otherLearnedByType = new Map(); // businessType -> array (ইন-মেমরি ক্যাশ)
+function _otherLearnedKey(businessType) { return `sbm-med-learned-${businessType}`; }
+function ensureOtherLearnedLoaded(businessType) {
+  if (!_otherLearnedByType.has(businessType)) {
+    let list = [];
+    try {
+      const raw = localStorage.getItem(_otherLearnedKey(businessType));
+      list = raw ? JSON.parse(raw) : [];
+    } catch { list = []; }
+    _otherLearnedByType.set(businessType, list);
+  }
+  return _otherLearnedByType.get(businessType);
+}
+function saveOtherLearned(businessType) {
+  try { localStorage.setItem(_otherLearnedKey(businessType), JSON.stringify(_otherLearnedByType.get(businessType) || [])); } catch {}
+}
+function otherLearnEntry(businessType, name, unit, company) {
+  const n = String(name || "").trim();
+  if (!n) return;
+  const u = unit ? String(unit).trim() : "";
+  const c = company ? String(company).trim() : "";
+  const list = ensureOtherLearnedLoaded(businessType);
+  const row = list.find(([en, eu]) => en === n && (eu || "") === u);
+  if (!row) {
+    list.unshift([n, u, c]);
+    if (list.length > 5000) list.length = 5000; // নিরাপত্তা সীমা
+    saveOtherLearned(businessType);
+    _medListeners.forEach(fn => fn());
+  } else if (c && !row[2]) {
+    row[2] = c;
+    saveOtherLearned(businessType);
+  }
 }
 
 function ensureMedicineDataset(businessType = "pharmacy") {
@@ -8599,6 +8694,12 @@ function ensureMedicineDataset(businessType = "pharmacy") {
         _vetDataset = EMPTY_MED_ARR; // ফাইল না থাকলেও চুপচাপ সেলফ-লার্নড দিয়েই কাজ চলবে
         _medListeners.forEach(fn => fn());
       });
+    return;
+  }
+  if (businessType !== "pharmacy") {
+    // 🆕 semen ইত্যাদি — কোনো static dataset লোড করা হয় না (অপ্রাসঙ্গিক + অকারণ
+    // ভারী চাংক লোড এড়াতে), শুধু নিজের ফাঁকা self-learned স্টোর সিঙ্ক্রোনাসলি রেডি
+    ensureOtherLearnedLoaded(businessType);
     return;
   }
   ensureMedLearnedLoaded(); // সিঙ্ক্রোনাস — ফার্মেসির সেলফ-লার্নড এন্ট্রি সবসময় সাথে সাথে পাওয়া যায়
@@ -8619,12 +8720,13 @@ function ensureMedicineDataset(businessType = "pharmacy") {
     });
 }
 // কম্পোনেন্ট থেকে ব্যবহারের জন্য হুক — প্রথমবার কল হলেই লেজি-লোড ট্রিগার হয়, লোড শেষ হলে re-render
-// businessType === "veterinary" হলে pharmacy JSON-এর বদলে সেলফ-লার্নড লোকাল ডেটাসেট ফেরত দেয়
+// businessType === "veterinary" হলে pharmacy JSON-এর বদলে সেলফ-লার্নড লোকাল ডেটাসেট ফেরত দেয়,
+// pharmacy/veterinary ছাড়া অন্য যেকোনো businessType-এর জন্য সম্পূর্ণ আলাদা, ফাঁকা (কোনো মার্জ ছাড়া) ডেটাসেট
 function useMedicineDataset(businessType = "pharmacy") {
   const [, force] = useState(0);
   useEffect(() => {
-    if (businessType === "veterinary") {
-      ensureMedicineDataset(businessType); // learned (sync) + static vetMedicineDataset.json (লেজি)
+    if (businessType === "veterinary" || businessType !== "pharmacy") {
+      ensureMedicineDataset(businessType); // veterinary: learned+static; অন্যান্য: শুধু নিজের learned
       const listener = () => force(v => v + 1);
       _medListeners.add(listener);
       return () => { _medListeners.delete(listener); };
@@ -8660,6 +8762,13 @@ function useMedicineDataset(businessType = "pharmacy") {
     const learnedCompanies = learned.map(([, , c]) => c).filter(Boolean);
     const companies = [...new Set([...VET_SEED_COMPANIES, ...staticCompanies, ...learnedCompanies])].sort((a, b) => a.localeCompare(b, "bn"));
     return { dataset: merged, labelsLC, companies, ready: true };
+  }
+  if (businessType !== "pharmacy") {
+    // 🆕 semen ইত্যাদি — সম্পূর্ণ আলাদা, ফাঁকা (pharmacy/veterinary-এর সাথে কোনো merge নেই)
+    const otherLearned = _otherLearnedByType.get(businessType) || EMPTY_MED_ARR;
+    const otherLabelsLC = otherLearned.map(([n, p]) => (p ? `${n} ${p}` : n).toLowerCase());
+    const otherCompanies = [...new Set(otherLearned.map(([, , c]) => c).filter(Boolean))].sort((a, b) => a.localeCompare(b, "bn"));
+    return { dataset: otherLearned, labelsLC: otherLabelsLC, companies: otherCompanies, ready: true };
   }
   const learnedMed = _medLearnedList || EMPTY_MED_ARR;
   const staticMed = _medDataset || EMPTY_MED_ARR;
@@ -13652,7 +13761,8 @@ function SmartBusinessMgmt() {
     const prefix = isMultiBusiness ? (BUSINESS_TYPE_REGISTRY[newType]?.collectionPrefix || null) : null;
     FSS.setBusinessPrefix(prefix);
     if (FSS.isReady()) FSS.setBusinessConfig(newType, businessTypeLocked, enabledBusinessTypes);
-    _bumpGlobalResync(); // 🆕 সাথে সাথে resubscribe — পরের heartbeat-এর জন্য অপেক্ষা না করে
+    _bumpBusinessSwitch(); // 🆕 useFSSCollection-কে বলে দেয় এটা business switch — পুরনো state সাথে সাথে খালি করে fresh resubscribe করবে
+    _bumpGlobalResync(); // সাথে সাথে resubscribe — পরের heartbeat-এর জন্য অপেক্ষা না করে
     try {
       await FSS.waitForNextSnapshot(
         ["products", "customers", "invoices", "txns", "stockMovements", "cashLogs"],
