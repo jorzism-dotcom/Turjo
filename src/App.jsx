@@ -885,23 +885,41 @@ async function traceDebug(step, data = {}) {
 }
 
 // ─── Storage Helper ───────────────────────────────────────────────────────────
+// 🔴 ফিক্স (১৯ জুলাই ২০২৬ — "সাবস্ক্রিপশন ৩০ দিন বাকি থাকা সত্ত্বেও offline_lock"):
+// root cause ছিল window.Capacitor.Plugins.Preferences.get() কল — cold start-এর
+// ঠিক পরপরই (বিশেষত ব্যাটারি কম থাকলে/Android power-saving mode-এ) native bridge
+// এখনো পুরোপুরি রেডি না থাকলে এই কল কখনো কখনো resolve/reject কিছুই না করে অনির্দিষ্ট
+// সময়ের জন্য ঝুলে থাকে। SubscriptionGate-এর ৮s ফলব্যাক timeout এই ঝুলে-থাকা
+// getStorage("sbm_phone") কলের ওপর নির্ভরশীল ছিল — ফলে সেটাও কখনো resolve হতো না,
+// আর `sbm_phone_sync` লোকাল-স্টোরেজে সেট হওয়ার আগেই লক স্ক্রিন দেখাত (আসল
+// সাবস্ক্রিপশন cache বৈধ থাকা সত্ত্বেও)। এখন: (১) setStorage() সবসময় plain
+// localStorage-এও একটা মিরর কপি রাখে (Preferences-এর পাশাপাশি, best-effort),
+// (২) getStorage() Preferences.get()-কে ৩ সেকেন্ডে bound করে — না resolve হলে
+// সরাসরি সেই localStorage মিরর থেকে পড়ে (আগে fallback থাকলেও কার্যত খালি থাকত,
+// কারণ mirror লেখাই হতো না) — তাই bridge ঝুলে গেলেও সঠিক ভ্যালু পাওয়া যায়,
+// ঝুলে থেকে বা ভুলভাবে "unregistered"/"offline_lock" দেখায় না।
 async function getStorage(key) {
   try {
     if (window.Capacitor?.Plugins?.Preferences) {
-      const { value } = await window.Capacitor.Plugins.Preferences.get({ key });
-      return value;
+      const value = await Promise.race([
+        window.Capacitor.Plugins.Preferences.get({ key }).then(r => r.value),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("prefs_timeout")), 3000)),
+      ]);
+      if (value !== null && value !== undefined) return value;
     }
   } catch {}
   try { return localStorage.getItem(key); } catch { return null; }
 }
 async function setStorage(key, value) {
+  try { localStorage.setItem(key, value); } catch {} // মিরর — bridge ধীর/আটকে গেলেও fallback পড়া যায়
   try {
     if (window.Capacitor?.Plugins?.Preferences) {
-      await window.Capacitor.Plugins.Preferences.set({ key, value });
-      return;
+      await Promise.race([
+        window.Capacitor.Plugins.Preferences.set({ key, value }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("prefs_timeout")), 3000)),
+      ]);
     }
   } catch {}
-  try { localStorage.setItem(key, value); } catch {}
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -5001,6 +5019,46 @@ const FSS = {
     this._businessPrefix = prefix || null;
   },
 
+  // 🆕 Business Switcher স্মুথনেস ফিক্স (১৯ জুলাই ২০২৬): বিজনেস সোয়াপ করার পর
+  // আগে একটা অন্ধ ৭০০ms setTimeout দিয়ে "switching" ওভারলে সরানো হতো — কিন্তু
+  // নতুন prefix-এর কালেকশনগুলো (windowed listener + useFSSCollection) আসলে
+  // resubscribe করে server-confirmed snapshot পেতে ৭০০ms-এর বেশি বা কম যেকোনো
+  // সময় লাগতে পারত, ফলে পুরনো বিজনেসের ডেটা কিছু সেকেন্ড দেখা যেত (ওভারলে
+  // আগেই সরে গেছে কিন্তু ডেটা তখনো stale) — অথবা ভালো নেটওয়ার্কে দরকারের চেয়ে
+  // বেশি অপেক্ষা হতো। এই waiter সিস্টেম দিয়ে caller সত্যিকারের snapshot না আসা
+  // পর্যন্ত অপেক্ষা করতে পারে (timeout ফলব্যাকসহ, যাতে ধীর/অফলাইন নেটওয়ার্কে
+  // ইউজার আটকে না থাকে)।
+  _snapshotWaiters: {},
+  _notifySnapshotWaiters(name) {
+    const set = this._snapshotWaiters[name];
+    if (!set || !set.size) return;
+    const fns = Array.from(set);
+    set.clear();
+    fns.forEach(fn => { try { fn(); } catch {} });
+  },
+  waitForNextSnapshot(names, timeoutMs = 1800) {
+    const list = Array.isArray(names) ? names : [names];
+    return new Promise((resolve) => {
+      if (!list.length) { resolve(); return; }
+      let remaining = list.length;
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(finish, timeoutMs);
+      list.forEach(name => {
+        if (!this._snapshotWaiters[name]) this._snapshotWaiters[name] = new Set();
+        this._snapshotWaiters[name].add(() => {
+          remaining -= 1;
+          if (remaining <= 0) finish();
+        });
+      });
+    });
+  },
+
   _prefixed(name) {
     if (!this._businessPrefix) return name;
     if (this._NEVER_PREFIX.has(name)) return name;
@@ -5174,6 +5232,9 @@ const FSS = {
       // 🔴 ফিক্স (অপশন ১): snap.metadata.fromCache পাস করি, যাতে caller বুঝতে
       // পারে এই স্ন্যাপশট লোকাল ক্যাশ থেকে এসেছে নাকি সার্ভার-কনফার্মড।
       callback(arr, snap.metadata.fromCache);
+      // 🆕 Business Switcher waiter: শুধু server-confirmed স্ন্যাপশটেই নোটিফাই
+      // করা হয়, cache-এর সম্ভাব্য stale/আগের-বিজনেসের ডেটায় না।
+      if (!snap.metadata.fromCache) this._notifySnapshotWaiters(name);
     }, (err) => {
       // আগে silent ছিল ( () => {} ) — এখন caller কে জানানো হয়, বিশেষ করে
       // "users" (staff permission) collection-এ এটা জরুরি: কানেকশন সমস্যা
@@ -12080,6 +12141,7 @@ function SmartBusinessMgmt() {
         const unconfirmedLocal = prev.filter(p => !recentIds.has(p.id) && !p._serverTs);
         return [...unconfirmedLocal, ...recent];
       });
+      FSS._notifySnapshotWaiters("invoices"); // 🆕 Business Switcher waiter
       if (first) { first = false; setSyncToast?.({ msg: "ইনভয়েস sync হয়েছে", ok: true }); }
     }, () => { /* offline — Firestore cache থেকে কাজ চলবে */ });
 
@@ -12109,6 +12171,7 @@ function SmartBusinessMgmt() {
         const unconfirmedLocal = prev.filter(p => !recentIds.has(p.id) && !p._serverTs);
         return [...unconfirmedLocal, ...recent];
       });
+      FSS._notifySnapshotWaiters("txns"); // 🆕 Business Switcher waiter
     }, () => { /* offline — Firestore cache থেকে কাজ চলবে */ });
 
     return () => unsub();
@@ -12179,6 +12242,7 @@ function SmartBusinessMgmt() {
         const unconfirmedLocal = prev.filter(p => !recentIds.has(p.id) && !p._serverTs);
         return [...unconfirmedLocal, ...recent];
       });
+      FSS._notifySnapshotWaiters("stockMovements"); // 🆕 Business Switcher waiter
     }, () => { /* offline — Firestore cache থেকে কাজ চলবে */ });
 
     return () => unsub();
@@ -12207,6 +12271,7 @@ function SmartBusinessMgmt() {
         const unconfirmedLocal = prev.filter(p => !recentIds.has(p.id) && !p._serverTs);
         return [...unconfirmedLocal, ...recent];
       });
+      FSS._notifySnapshotWaiters("cashLogs"); // 🆕 Business Switcher waiter
     }, () => { /* offline — Firestore cache থেকে কাজ চলবে */ });
 
     return () => unsub();
@@ -13558,15 +13623,37 @@ function SmartBusinessMgmt() {
   // অনুযায়ী prefix রিজলভ করে — ধাপ ১-২ থেকেই আছে)।
   const [showBizSwitcherList, setShowBizSwitcherList] = useState(false);
   const [switchingBusiness, setSwitchingBusiness] = useState(false);
-  const handleSwitchBusiness = useCallback((newType) => {
+  // 🆕 ফিক্স (১৯ জুলাই ২০২৬ — "সোয়াপ করলে ২-৫ সেকেন্ড আগের বিজনেসের ড্যাশবোর্ড
+  // দেখা যাচ্ছে"): root cause ছিল — FSS.setBusinessPrefix() আগে একটা useEffect-এর
+  // মধ্যে (businessType বদলানোর পর, পরের রি-রেন্ডারে) কল হতো, আর windowed
+  // listener/useFSSCollection-গুলো শুধু resyncTick বদলালেই resubscribe করত
+  // (heartbeat/resume/online — সোয়াপে কখনোই ট্রিগার হতো না)। ফলে resubscribe
+  // দূরে থাক, subscribeCollection পরের হার্টবিট (worst-case ২০s) পর্যন্ত পুরনো
+  // prefix-এর কালেকশনেই আটকে থাকত, আর ৭০০ms পর ওভারলে অন্ধভাবে সরে গিয়ে সেই
+  // পুরনো ডেটা দেখিয়ে দিত। এখন: (১) prefix এই ফাংশনের মধ্যেই সিঙ্ক্রোনাসলি বসানো
+  // হয় (effect-এর জন্য অপেক্ষা না করেই), (২) তার পরপরই _bumpGlobalResync() কল
+  // করে সব windowed listener/useFSSCollection-কে তৎক্ষণাৎ নতুন prefix দিয়ে
+  // resubscribe করতে বাধ্য করা হয়, (৩) ওভারলে ততক্ষণ থাকে যতক্ষণ না মূল
+  // কালেকশনগুলোর server-confirmed snapshot সত্যিই আসে (timeout ফলব্যাকসহ, ধীর/
+  // অফলাইন নেটওয়ার্কে ইউজার আটকে না থাকার জন্য)।
+  const handleSwitchBusiness = useCallback(async (newType) => {
     if (newType === businessType) { setShowBizSwitcherList(false); return; }
     setShowBizSwitcherList(false);
     setShowMoreMenu(false);
     setSwitchingBusiness(true);
     setBusinessType(newType);
+    const isMultiBusiness = Array.isArray(enabledBusinessTypes) && enabledBusinessTypes.length > 1;
+    const prefix = isMultiBusiness ? (BUSINESS_TYPE_REGISTRY[newType]?.collectionPrefix || null) : null;
+    FSS.setBusinessPrefix(prefix);
     if (FSS.isReady()) FSS.setBusinessConfig(newType, businessTypeLocked, enabledBusinessTypes);
-    // পুরনো cache-এর ডেটা মুহূর্তের জন্যও ভুলভাবে না দেখানোর জন্য সংক্ষিপ্ত লোডিং স্টেট
-    setTimeout(() => setSwitchingBusiness(false), 700);
+    _bumpGlobalResync(); // 🆕 সাথে সাথে resubscribe — পরের heartbeat-এর জন্য অপেক্ষা না করে
+    try {
+      await FSS.waitForNextSnapshot(
+        ["products", "customers", "invoices", "txns", "stockMovements", "cashLogs"],
+        1800 // নেটওয়ার্ক ধীর/অফলাইন হলে সর্বোচ্চ এই সময় পর ওভারলে এমনিতেই সরে যাবে
+      );
+    } catch {}
+    setSwitchingBusiness(false);
   }, [businessType, businessTypeLocked, enabledBusinessTypes, setBusinessType]);
 
   // Hide HTML splash screen once React is fully ready (data loaded + auth checked)
@@ -14411,9 +14498,31 @@ function SmartBusinessMgmt() {
           }}>
             <div style={{ color:T.headingColor, fontWeight:900, fontSize:15, padding:"4px 8px 14px" }}>অন্যান্য মডিউল</div>
             {/* 🆕 ধাপ ৩: Business Switcher — শুধু multi-business শপে (enabledBusinessTypes.length >= 2), staff দেখবে না */}
+            {/* 🆕 রিডিজাইন (১৯ জুলাই ২০২৬ — "সোয়াপ বাটন ল্যাগি/স্লো" ফিডব্যাক): আগে
+                কোনো hover/press transition ছিল না (ট্যাপ করলে UI-তে কোনো তাৎক্ষণিক
+                ফিডব্যাক ছাড়াই সরাসরি state বদলাত — মনে হতো "কিছু হয়নি" বা "আটকে
+                গেছে")। এখন স্কেল/গ্লো transition, chevron-এর smooth rotate, আর
+                dropdown-এর প্রতিটা আইটেম staggered bounceIn দিয়ে খোলে — বিদ্যমান
+                keyframes (glow/bounceIn/qc-press প্যাটার্ন) পুনরায় ব্যবহার করা
+                হয়েছে, নতুন কিছু বানানো হয়নি। */}
             {!isStaff && isMultiBusinessActive && (
               <div style={{ marginBottom: 6 }}>
+                <style>{`
+                  @keyframes bizSwitchGlow { 0%,100%{ box-shadow: 0 0 0px ${businessAccentColor}00; } 50%{ box-shadow: 0 0 16px ${businessAccentColor}55; } }
+                  .biz-switch-btn {
+                    transition: transform 0.15s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.25s ease, background 0.25s ease, border-color 0.25s ease;
+                  }
+                  .biz-switch-btn:active { transform: scale(0.97); }
+                  .biz-switch-btn.is-open { animation: bizSwitchGlow 1.8s ease-in-out infinite; }
+                  .biz-switch-item {
+                    transition: transform 0.15s cubic-bezier(0.34,1.56,0.64,1), background 0.2s ease, border-color 0.2s ease;
+                    animation: bounceIn 0.32s cubic-bezier(0.34,1.56,0.64,1) both;
+                  }
+                  .biz-switch-item:active { transform: scale(0.96); }
+                  .biz-switch-item:hover { background: ${businessAccentColor}14; border-color: ${businessAccentColor}66; }
+                `}</style>
                 <button
+                  className={`biz-switch-btn${showBizSwitcherList ? " is-open" : ""}`}
                   onClick={() => setShowBizSwitcherList(v => !v)}
                   style={{
                     display:"flex", alignItems:"center", gap:10, width:"100%",
@@ -14425,13 +14534,13 @@ function SmartBusinessMgmt() {
                     <div style={{ color:businessAccentColor, fontWeight:800, fontSize:12.5 }}>সক্রিয় বিজনেস</div>
                     <div style={{ color:T.headingColor, fontWeight:700, fontSize:13.5 }}>{BUSINESS_TYPE_REGISTRY[businessType]?.label || businessType}</div>
                   </div>
-                  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke={businessAccentColor} strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" style={{ transform: showBizSwitcherList ? "rotate(180deg)" : "none", transition:"transform 0.2s" }}><polyline points="6 9 12 15 18 9"/></svg>
+                  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke={businessAccentColor} strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" style={{ transform: showBizSwitcherList ? "rotate(180deg)" : "none", transition:"transform 0.25s cubic-bezier(0.34,1.56,0.64,1)" }}><polyline points="6 9 12 15 18 9"/></svg>
                 </button>
                 {showBizSwitcherList && (
                   <div style={{ marginTop:6, display:"flex", flexDirection:"column", gap:4, paddingLeft:4 }}>
-                    {enabledBusinessTypes.filter(bt => bt !== businessType).map(bt => (
-                      <button key={bt} onClick={() => handleSwitchBusiness(bt)}
-                        style={{ display:"flex", alignItems:"center", gap:10, background:"transparent", border:`1px solid ${T.border}`, borderRadius:10, padding:"9px 12px", cursor:"pointer", fontFamily:"inherit", textAlign:"left", color:`${T.headingColor}cc` }}>
+                    {enabledBusinessTypes.filter(bt => bt !== businessType).map((bt, i) => (
+                      <button key={bt} className="biz-switch-item" onClick={() => handleSwitchBusiness(bt)}
+                        style={{ display:"flex", alignItems:"center", gap:10, background:"transparent", border:`1px solid ${T.border}`, borderRadius:10, padding:"9px 12px", cursor:"pointer", fontFamily:"inherit", textAlign:"left", color:`${T.headingColor}cc`, animationDelay:`${i * 40}ms` }}>
                         <span style={{ fontSize:13.5, fontWeight:600 }}>{BUSINESS_TYPE_REGISTRY[bt]?.label || bt}</span>
                       </button>
                     ))}
@@ -14491,12 +14600,19 @@ function SmartBusinessMgmt() {
         </div>
       )}
 
-      {/* 🆕 ধাপ ৩: Business Switcher — সংক্ষিপ্ত লোডিং স্টেট, যাতে পুরনো cache-এর
-          ডেটা মুহূর্তের জন্যও ভুলভাবে না দেখায় (প্ল্যান ৫.২ / ৯.২) */}
+      {/* 🆕 ধাপ ৩ + রিডিজাইন (১৯ জুলাই ২০২৬): এখন real server-confirmed snapshot
+          না আসা পর্যন্ত (waitForNextSnapshot, timeout ফলব্যাকসহ) এই ওভারলে থাকে —
+          তাই আগের অন্ধ ৭০০ms এর জায়গায় নমনীয় সময়। সাথে fadeIn + glow pulse
+          দিয়ে অ্যানিমেশন আরও স্মুথ/আধুনিক করা হয়েছে (বিদ্যমান keyframes পুনরায়
+          ব্যবহার করে — fadeIn, glow)। */}
       {switchingBusiness && (
-        <div style={{ position:"fixed", inset:0, zIndex:9998, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:14, background: T.bg }}>
-          <div style={{ width:40, height:40, borderRadius:"50%", border:`3px solid ${businessAccentColor || T.accent}33`, borderTopColor: businessAccentColor || T.accent, animation:"spin 0.8s linear infinite" }} />
-          <div style={{ color:T.headingColor, fontWeight:700, fontSize:13.5 }}>বিজনেস পরিবর্তন হচ্ছে…</div>
+        <div style={{ position:"fixed", inset:0, zIndex:9998, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:14, background: T.bg, animation:"fadeIn 0.18s ease" }}>
+          <div style={{
+            width:48, height:48, borderRadius:"50%",
+            border:`3px solid ${businessAccentColor || T.accent}33`, borderTopColor: businessAccentColor || T.accent,
+            animation:"spin 0.8s linear infinite, glow 1.6s ease-in-out infinite",
+          }} />
+          <div style={{ color:T.headingColor, fontWeight:700, fontSize:13.5, animation:"fadeUp 0.25s ease" }}>বিজনেস পরিবর্তন হচ্ছে…</div>
         </div>
       )}
 
