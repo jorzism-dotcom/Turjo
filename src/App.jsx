@@ -5050,8 +5050,9 @@ const BUSINESS_TYPE_REGISTRY = {
     color: "#22c55e",
     collectionPrefix: "pharmacy",
     hiddenFields: { productForm: [], purchaseForm: [], invoiceCard: [] },
-    bulkImageEntry: true,
-    purchaseEntryRestrictToExisting: false,
+    bulkImageEntry: false,
+    purchaseEntryRestrictToExisting: true,
+    purchaseEntryListOrder: "newestFirst",
   },
   veterinary: {
     id: "veterinary",
@@ -5059,8 +5060,9 @@ const BUSINESS_TYPE_REGISTRY = {
     color: "#f59e0b",
     collectionPrefix: "veterinary",
     hiddenFields: { productForm: [], purchaseForm: [], invoiceCard: [] },
-    bulkImageEntry: true,
-    purchaseEntryRestrictToExisting: false,
+    bulkImageEntry: false,
+    purchaseEntryRestrictToExisting: true,
+    purchaseEntryListOrder: "newestFirst",
   },
   semen: {
     id: "semen",
@@ -23939,10 +23941,16 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     peForm.productId ? calcNextBatch(peForm.productId, products, purchaseOrders) : "—"
   ), [peForm.productId, products, purchaseOrders]);
   const peDisplayed = useMemo(() => {
-    return peAllEntries
+    const list = peAllEntries
       .filter(e => peViewMode === "day" ? e.dateKey === peNavDate : (e.dateKey || "").startsWith(peNavMonth))
       .filter(e => !peSearch || e.productName?.includes(peSearch) || (e.batch || "").includes(peSearch));
-  }, [peAllEntries, peViewMode, peNavDate, peNavMonth, peSearch]);
+    // 🆕 LIFO — bizCfg.purchaseEntryListOrder === "newestFirst" হলে সবচেয়ে
+    // সাম্প্রতিক এন্ট্রি সবার উপরে দেখাবে (ফার্মেসি/ভেটেরিনারি/সিমেন)
+    if (bizCfg.purchaseEntryListOrder === "newestFirst") {
+      return [...list].sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0));
+    }
+    return list;
+  }, [peAllEntries, peViewMode, peNavDate, peNavMonth, peSearch, bizCfg.purchaseEntryListOrder]);
   const peDisplayedTotal = useMemo(() => peDisplayed.reduce((s, e) => s + (e.totalCost || 0), 0), [peDisplayed]);
   // ── নেভিগেশন হ্যান্ডলার (দিন/মাস শিফট — এক্সপেন্স ট্রেকারের প্যাটার্নে) ──
   const peShiftDay = useCallback((delta) => {
@@ -25442,8 +25450,11 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                 </div>
               ) : null;
             })()}
-            {/* ── medicineDataset-এ নাম না মিললে (কোনো সাজেশন নেই) — ম্যানুয়াল ধরন (Tab/Cap/Syp) বেছে নেওয়ার চিপ ── */}
-            {!nameSuggestOpen && !form.dosageForm && form.productType !== "service" && form.name.trim().length >= 2 && nameSuggestions.length === 0 && (
+            {/* ── medicineDataset-এ নাম না মিললে (কোনো সাজেশন নেই) — ম্যানুয়াল ধরন (Tab/Cap/Syp) বেছে নেওয়ার চিপ ──
+                🆕 আগে `!nameSuggestOpen` শর্ত থাকায় ফোকাস/টাইপ করার সময় (পরের ফিল্ডে না যাওয়া পর্যন্ত) এটা
+                দেখাত না — এখন নাম টাইপ করার সাথে সাথেই (medicineDataset-এ না থাকলে) অটো শো হবে।
+                🆕 সিমেন বিজনেসে এই প্রিফিক্স-চিপ অপ্রয়োজনীয়, তাই এখানেই বাদ। */}
+            {businessType !== "semen" && !form.dosageForm && form.productType !== "service" && form.name.trim().length >= 2 && nameSuggestions.length === 0 && (
               <div style={{ marginTop: 6 }}>
                 <div style={{ color:T.sub, fontSize:10.5, marginBottom:4 }}>ধরন (ঐচ্ছিক) — নামের আগে প্রিফিক্স হিসেবে বসবে:</div>
                 {form.dosageFormCustomOpen ? (
@@ -25509,7 +25520,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
             {formErrors.price && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ সার্ভিস চার্জ আবশ্যক</div>}
           </>) : (<>
           {businessType === "veterinary" && (<>
-          <label style={S.label}>🏷️ SP (৳) <span style={{ color:T.sub, fontWeight:500, fontSize:11 }}>— শুধু রেফারেন্সের জন্য, ঐচ্ছিক</span></label>
+          <label style={S.label}>🏷️ TP (৳) <span style={{ color:T.sub, fontWeight:500, fontSize:11 }}>— শুধু রেফারেন্সের জন্য</span></label>
           <input style={{ ...S.input }} placeholder="" type="number" value={form.spPrice} onChange={e => setForm({ ...form, spPrice: e.target.value })} inputMode="numeric" pattern="[0-9]*" />
           </>)}
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
