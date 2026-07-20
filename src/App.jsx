@@ -29584,7 +29584,13 @@ async function downloadAndInstallApk(url, version, onProgress) {
     }
     return { ok: true, installed: false, path: fileUri };
   } catch (e) {
-    return { ok: false, error: e?.message || "ডাউনলোড ব্যর্থ হয়েছে" };
+    // 🔴 ডায়াগনস্টিক: আগে শুধু e?.message দেখানো হতো যা প্রায়ই জেনেরিক
+    // ("Unsupported url" ইত্যাদি) — এখন পুরো নেটিভ এরর অবজেক্ট (code/message/
+    // stack) console.error-এ লগ হয় (adb logcat-এ দেখা যাবে) এবং code+message
+    // দুটোই status টেক্সটে দেখানো হয় যাতে পরের বার আসল কারণ বোঝা যায়।
+    console.error("[downloadAndInstallApk] native error:", { code: e?.code, message: e?.message, stack: e?.stack, raw: e });
+    const detail = [e?.code, e?.message].filter(Boolean).join(": ");
+    return { ok: false, error: detail || "ডাউনলোড ব্যর্থ হয়েছে" };
   } finally {
     try { progressHandle?.remove?.(); } catch {}
   }
