@@ -691,12 +691,12 @@
   }
   #tab-update .glass.card:active{ transform:scale(0.995); }
 
-  /* ── live/current version hero card ──────────────────────────────────── */
-  #tab-update .live-update-card{ padding:28px 24px; }
-  #tab-update .lu-ver{ font-size:34px; font-weight:900; letter-spacing:-0.5px; filter:drop-shadow(0 0 18px rgba(34,211,238,0.35)); }
-  #tab-update .lu-notes{ font-size:14.5px; padding:16px 18px; border-radius:16px; line-height:1.8; border:1px solid rgba(148,163,184,0.12); }
-  #tab-update .lu-meta{ font-size:13px; margin-top:12px; word-break:break-all; }
-  #tab-update .lu-head{ margin-bottom:4px; }
+  /* ── live/current version card (compact) ───────────────────────────────── */
+  #tab-update .live-update-card{ padding:14px 16px; margin-bottom:16px; }
+  #tab-update .lu-ver{ font-size:20px; font-weight:900; letter-spacing:-0.3px; filter:drop-shadow(0 0 10px rgba(34,211,238,0.28)); }
+  #tab-update .lu-notes{ font-size:12.5px; padding:10px 12px; border-radius:12px; line-height:1.6; border:1px solid rgba(148,163,184,0.12); }
+  #tab-update .lu-meta{ font-size:11.5px; margin-top:8px; word-break:break-all; }
+  #tab-update .lu-head{ margin-bottom:2px; }
 
   /* ── form fields, bigger & premium ───────────────────────────────────── */
   #tab-update .form-group{ margin-bottom:20px; }
@@ -731,8 +731,8 @@
   #tab-update .slider::before{ width:22px; height:22px; }
   #tab-update .switch input:checked + .slider::before{ transform:translateX(22px); }
 
-  #tab-update #upd-shop-picker{ font-size:14px; padding:10px; border-radius:14px; }
-  #tab-update #upd-shop-selected{ font-size:13px; margin-top:10px; }
+  #tab-update #upd-shop-picker{ font-size:13px; padding:6px; border-radius:12px; max-height:170px; }
+  #tab-update #upd-shop-selected{ font-size:12px; margin-top:6px; }
 
   /* ── badges, bigger + glow ───────────────────────────────────────────── */
   #tab-update .badge{ font-size:12.5px; padding:7px 15px; font-weight:800; }
@@ -959,7 +959,7 @@
           <label>নির্দিষ্ট দোকানে পাঠান (ঐচ্ছিক)</label>
           <div class="hint" style="margin-bottom:6px">কিছু না বাছলে <b>সব দোকান</b> এই আপডেট দেখবে (আগের মতো)। নির্দিষ্ট কিছু দোকান বাছলে <b>শুধু তারাই</b> দেখবে — বাকিরা পুরনো ভার্সনেই থাকবে। নতুন বিল্ড আগে টেস্ট দোকানে যাচাই করতে এটা কাজে লাগে।</div>
           <input id="upd-shop-search" placeholder="দোকান খুঁজুন (নাম/ফোন)..." oninput="renderUpdShopPicker()">
-          <div id="upd-shop-picker" style="max-height:220px;overflow-y:auto;margin-top:8px;border:1px solid var(--border);border-radius:10px;padding:6px;"></div>
+          <div id="upd-shop-picker" style="max-height:170px;overflow-y:auto;margin-top:6px;border:1px solid var(--border);border-radius:10px;padding:6px;"></div>
           <div id="upd-shop-selected" style="font-size:12px;margin-top:8px;color:var(--sub)"></div>
         </div>
 
@@ -1293,7 +1293,7 @@
 // (এমনকি doLogin() ফাংশনও) কখনো এক্সিকিউট হতো না — ব্রাউজারে স্পিনার চিরকাল
 // ঘুরতেই থাকত। তাই SDK ফাইল দুটো এখন সাইটের নিজের vendor/ ফোল্ডারে সেল্ফ-হোস্টেড।
 import { initializeApp } from "./vendor/firebasejs/10.12.0/firebase-app.js";
-import { getFirestore, collection, getDocs, doc, setDoc, updateDoc, deleteDoc, getDoc, query, orderBy, limit, addDoc } from "./vendor/firebasejs/10.12.0/firebase-firestore.js";
+import { getFirestore, collection, getDocs, doc, setDoc, updateDoc, deleteDoc, getDoc, query, orderBy, limit, addDoc, arrayUnion } from "./vendor/firebasejs/10.12.0/firebase-firestore.js";
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyBzQKeQzVt-GRL1XVe6cNebh89ghi5f_Fc",
@@ -1528,6 +1528,19 @@ window.openUserDetail = function(phone) {
       </div>
 
       ${u.pendingTxn ? `<button class="pay-cta" onclick="confirmPayment('${u.phone}')">✅ পেমেন্ট কনফার্ম করুন — TXN ${u.pendingTxn}</button><div style="height:16px"></div>` : ''}
+
+      <div class="detail-info-cell full" style="margin-bottom:14px">
+        <div class="lbl">💳 পেমেন্ট হিস্ট্রি</div>
+        ${(u.paymentHistory && u.paymentHistory.length)
+          ? `<div style="margin-top:6px;display:flex;flex-direction:column;gap:6px;max-height:180px;overflow-y:auto">
+              ${u.paymentHistory.slice().reverse().map(p => `
+                <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:rgba(255,255,255,0.02)">
+                  <span>৳${(p.amount || 0).toLocaleString('bn-BD')}${p.txn ? ` · TXN ${p.txn}` : ''}</span>
+                  <span style="color:var(--sub)">${p.date ? new Date(p.date).toLocaleDateString('bn-BD') : ''}</span>
+                </div>`).join('')}
+             </div>`
+          : `<div class="val" style="color:var(--sub);font-weight:400">এখনো কোনো পেমেন্ট রেকর্ড নেই</div>`}
+      </div>
 
       <div class="detail-status-row ${isActive ? 'is-active' : 'is-blocked'}">
         <span class="stl">${isActive ? 'সক্রিয় আছে' : (u.status === 'blocked' ? 'ব্লক করা আছে' : 'নিষ্ক্রিয়')}</span>
@@ -1906,9 +1919,16 @@ window.toggleDevPanel = async function(phone, next) {
 window.confirmPayment = async function(phone) {
   if (!confirm(`${phone} এর পেমেন্ট কনফার্ম করবেন?`)) return;
   try {
+    const u = users.find(x => x.phone === phone);
     const newExpiry = new Date(Date.now() + 30*86400000).toISOString().split('T')[0];
+    const historyEntry = {
+      amount: MONTHLY_PRICE,
+      txn: (u && u.pendingTxn) || null,
+      date: new Date().toISOString(),
+    };
     await updateDoc(doc(db, "subscriptions", phone), {
-      status: 'active', expiryDate: newExpiry, pendingTxn: null, pendingTxnTime: null, updatedAt: new Date().toISOString()
+      status: 'active', expiryDate: newExpiry, pendingTxn: null, pendingTxnTime: null, updatedAt: new Date().toISOString(),
+      paymentHistory: arrayUnion(historyEntry),
     });
     await loadUsers(); renderPayments(); renderUsers();
     toast('✅ পেমেন্ট কনফার্ম হয়েছে! মেয়াদ ৩০ দিন বাড়ানো হয়েছে।', 'ok', 4500);
@@ -2276,14 +2296,18 @@ let updSelectedPhones = [];
 window.renderUpdShopPicker = function() {
   const box = document.getElementById('upd-shop-picker');
   const q = (document.getElementById('upd-shop-search').value || '').trim().toLowerCase();
-  const list = (typeof users !== 'undefined' ? users : []).filter(u =>
-    !q || (u.shopName || '').toLowerCase().includes(q) || (u.phone || '').includes(q) || (u.name || '').toLowerCase().includes(q)
-  ).slice(0, 60);
-  box.innerHTML = list.length ? list.map(u => `
-    <label style="display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;font-size:13px;">
-      <input type="checkbox" onchange="toggleUpdShop('${u.phone}')" ${updSelectedPhones.includes(u.phone) ? 'checked' : ''}>
-      <span>${u.shopName || 'নাম নেই'} — ${u.phone || ''}</span>
-    </label>`).join('') : `<div style="font-size:12px;color:var(--sub);padding:6px">কোনো দোকান পাওয়া যায়নি</div>`;
+  if (!q) {
+    box.innerHTML = `<div style="font-size:12px;color:var(--sub);padding:6px">🔍 দোকান খুঁজতে টাইপ করুন</div>`;
+  } else {
+    const list = (typeof users !== 'undefined' ? users : []).filter(u =>
+      (u.shopName || '').toLowerCase().includes(q) || (u.phone || '').includes(q) || (u.name || '').toLowerCase().includes(q)
+    ).slice(0, 60);
+    box.innerHTML = list.length ? list.map(u => `
+      <label style="display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;font-size:13px;">
+        <input type="checkbox" onchange="toggleUpdShop('${u.phone}')" ${updSelectedPhones.includes(u.phone) ? 'checked' : ''}>
+        <span>${u.shopName || 'নাম নেই'} — ${u.phone || ''}</span>
+      </label>`).join('') : `<div style="font-size:12px;color:var(--sub);padding:6px">কোনো দোকান পাওয়া যায়নি</div>`;
+  }
   const selBox = document.getElementById('upd-shop-selected');
   selBox.textContent = updSelectedPhones.length ? `✅ ${updSelectedPhones.length}টি দোকান নির্বাচিত (খালি রাখলে সব দোকান পাবে)` : 'কিছু নির্বাচিত নেই → আপডেট সব দোকানে যাবে';
 };
