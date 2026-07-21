@@ -15,8 +15,8 @@
   "coverageAnalysis": "off",
   "thresholds": {
     "high": 80,
-    "low": 60,
-    "break": null
+    "low": 65,
+    "break": 65
   },
   "timeoutMS": 10000,
   "concurrency": 2,
@@ -26,9 +26,17 @@
     "testRunner:'command' ব্যবহার করা হয়েছে কারণ এই প্রজেক্টে jest/mocha/vitest",
     "নেই — plain Node script (tests/logic-tests.mjs) দিয়েই regression টেস্ট চলে,",
     "সেটাকেই Stryker প্রতিটা মিউটেশনের পর রান করে exit-code দেখে pass/fail বোঝে।",
-    "thresholds.break:null মানে এখনই কোনো স্কোরের নিচে গেলে CI ব্যর্থ হবে না —",
-    "এটা প্রথম রান, তাই baseline score কত আসে সেটা দেখার পরই একটা বাস্তবসম্মত",
-    "threshold (যেমন ৭০%) বসানো উচিত, নাহলে গুরুত্বপূর্ণ কাজ অকারণে আটকে যেতে পারে।",
-    "রান করুন: npm run test:mutation (এই মুহূর্তে CI gate-এর অংশ না, ম্যানুয়ালি রান করার জন্য)।"
+    "২২ জুলাই ২০২৬: sandbox-এ baseline রান করে ৭২.৫৩% মিউটেশন স্কোর পাওয়া গেছে",
+    "(২৬৪ killed / ১০০ survived, মোট ৩৬৪টা covered mutant)। break:65 বসানো",
+    "হয়েছে বেসলাইনের প্রায় ৭.৫ পয়েন্ট নিচে — যাতে সামান্য ওঠানামায় (নতুন কোড",
+    "যোগে সাময়িক কভারেজ কমা ইত্যাদি) অকারণে আটকে না যায়, কিন্তু বড় রিগ্রেশন",
+    "(কেউ ভুলে গুরুত্বপূর্ণ ব্রাঞ্চ আনটেস্টেড রেখে দিলে) ধরা পড়ে। CI-তে এই",
+    "মুহূর্তে শুধু informational step হিসেবে যোগ করা হয়েছে (continue-on-error),",
+    "build-gate না — দেখুন .github/workflows/build-apk.yml ও",
+    "ENTERPRISE_MONITORING_PLAN.md ফেজ A।",
+    "সবচেয়ে বেশি survived mutant আছে calcInvoiceTotal-এর আশেপাশে (২৮/১৫০+০১৯৩",
+    "লাইন — optional chaining, discount-ratio শাখা) — ভবিষ্যতে edge-case টেস্ট",
+    "বাড়িয়ে স্কোর ৮০%-এর দিকে নেওয়া যায়, কিন্তু এখনই সেটা এই সেশনের স্কোপ না।",
+    "রান করুন: npm run test:mutation।"
   ]
 }

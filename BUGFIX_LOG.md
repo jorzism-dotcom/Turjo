@@ -25,6 +25,34 @@
 
 ## এন্ট্রি
 
+### ২০২৬-০৭-২২ — এন্টারপ্রাইজ মনিটরিং প্ল্যান ফেজ A (স্তর ১: fuzz + mutation) সম্পূর্ণ
+- কী করা হলো: `ENTERPRISE_MONITORING_PLAN.md`-এর ফেজ A (A1–A3) সম্পূর্ণ করা হলো।
+- A1 — Fuzz test blocking: `tests/logic-fuzz.mjs` (৯টা property, প্রতিটা ১০০০
+  random ইনপুট, fast-check) sandbox-এ ১০ বার আলাদাভাবে চালিয়ে প্রতিবার green
+  পাওয়া গেছে (exit code ০)। `.github/workflows/build-apk.yml`-এ
+  `continue-on-error: true` সরিয়ে fuzz step-কে build-gate-এর অংশ করা হলো।
+- A2 — Mutation score threshold: `npm run test:mutation` (Stryker,
+  শুধু `src/logic.js`) sandbox-এ ২ বার চালিয়ে বেসলাইন **৭২.৫৩%** পাওয়া গেছে
+  (২৬৪ killed / ১০০ survived, মোট ৩৬৪টা covered mutant, ০টা error)।
+  `stryker.conf.json`-এ `thresholds.break: 65` বসানো হয়েছে (বেসলাইনের ~৭.৫
+  পয়েন্ট নিচে, বাফারসহ)। CI workflow-এ নতুন step যোগ করা হয়েছে
+  ("🧬 Mutation score report") — ইচ্ছাকৃতভাবে `continue-on-error: true`,
+  শুধু informational, এখনো build-gate না (প্ল্যানে এভাবেই বলা ছিল)।
+- ব্লাস্ট রেডিয়াস: শুধু CI workflow (`.github/workflows/build-apk.yml`) ও
+  `stryker.conf.json` — কোনো অ্যাপ কোড (App.jsx/logic.js/sync.js) ছোঁয়া হয়নি।
+  fuzz test এখন থেকে সত্যিকারের build-gate, তাই ভবিষ্যতে `src/logic.js`-এ
+  কেউ এমন পরিবর্তন করলে যা negative total/NaN/crash-এর মতো invariant ভাঙে,
+  build সরাসরি আটকে যাবে (আগে শুধু non-blocking warning ছিল)।
+- রিগ্রেশন টেস্ট যোগ হয়েছে কি: না — এই এন্ট্রি নতুন টেস্ট যোগ করেনি, বরং
+  বিদ্যমান fuzz/mutation টেস্টকে CI-তে কার্যকর (enforced/visible) করেছে।
+- যাচাই পদ্ধতি — sandbox বনাম CI: `npm test`, `npm run test:fuzz` (×১০) ও
+  `npm run test:mutation` (×২) সবই এই sandbox-এ সরাসরি চালিয়ে confirm করা
+  হয়েছে (কোড-রিভিউ/অনুমান না)। কিন্তু আসল GitHub Actions runner-এ এখনো এই
+  পরিবর্তিত workflow রান হয়নি — merge-এর পর প্রথম CI রান একবার চোখে দেখে
+  নেওয়া উচিত, বিশেষ করে যেহেতু fuzz test এখন build-blocking।
+
+---
+
 ### ২০২৬-০৭-১৭ — CI-তে নতুন `firestore-rules` জব ফেইল করছিল (JDK 17 vs firebase-tools-এর Java 21+ চাহিদা)
 - উপসর্গ (Symptom): `.github/workflows/build-apk.yml`-এ নতুন যোগ করা
   `firestore-rules` জব প্রতিবার ফেইল করছিল (`Add files via upload #283`,
