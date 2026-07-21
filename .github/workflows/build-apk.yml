@@ -88,11 +88,22 @@ jobs:
       - name: 🧪 Run logic + schema + integration tests (fails build if any core formula/flow is broken)
         run: npm test
 
-      - name: 🔀 Fuzz tests (informational only — does not block build yet)
-        # নতুন যোগ করা হয়েছে, এখনো ব্লকিং না — GitHub Actions-এ কয়েকবার
-        # সত্যিকারভাবে সবুজ দেখে নিশ্চিত হওয়ার পর continue-on-error সরিয়ে
-        # এটাকেও build-gate-এর অংশ করা যায় (দেখুন BUGFIX_LOG.md)।
+      - name: 🔀 Fuzz tests (blocks build — see ENTERPRISE_MONITORING_PLAN.md ফেজ A/A1)
+        # ২২ জুলাই ২০২৬: sandbox-এ ১০ বার আলাদাভাবে চালিয়ে (প্রতিবার ৯টা
+        # property × ১০০০ random রান, fast-check-এর নিজস্ব randomness) সবসময়
+        # green পাওয়া গেছে (দেখুন ENTERPRISE_MONITORING_PLAN.md ফেজ A / A1,
+        # BUGFIX_LOG.md) — তাই continue-on-error সরিয়ে blocking করা হলো।
+        # নোট: এই ১০ রান sandbox-এ (local Node) হয়েছে, GitHub Actions
+        # runner-এ না — যেহেতু এই টেস্ট বিশুদ্ধ Node লজিক টেস্ট (কোনো
+        # network/OS নির্ভরতা নেই), পরিবেশ-ভেদে ফলাফল বদলানোর কথা না, কিন্তু
+        # merge-এর পর প্রথম আসল CI রান একবার চোখে দেখে নেওয়া উচিত।
         run: npm run test:fuzz
+
+      - name: 🧬 Mutation score report (informational only — src/logic.js, does not block build)
+        # ২২ জুলাই ২০২৬: sandbox baseline ৭২.৫৩% (দেখুন stryker.conf.json ও
+        # ENTERPRISE_MONITORING_PLAN.md ফেজ A / A2)। ইচ্ছাকৃতভাবে
+        # continue-on-error — শুধু দৃশ্যমান রিপোর্ট, এখনো build-gate না।
+        run: npm run test:mutation
         continue-on-error: true
 
       - name: Bundle GSI client locally (Capacitor WebView fix)
