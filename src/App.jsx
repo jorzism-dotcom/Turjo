@@ -4029,7 +4029,14 @@ const Haptic = {
 
 
 // ─── App Version ─────────────────────────────────────────────────────────────
-const APP_VERSION = "v1"; // ম্যানুয়াল ডিবাগ সাফিক্স (dbg2/dbg3...) আর দরকার নেই — নিচের APP_BUILD এখন প্রতিটা GitHub Actions বিল্ডে automatically বদলাবে
+// 🔴 ফিক্স: আগে এটা "v1" হিসেবে হার্ডকোড করা ছিল — অটো-বিল্ড সিস্টেম চালু হওয়ার
+// পরও কখনো আপডেট হতো না, তাই Settings-এ সবসময় ভুল "v1" দেখাত (প্রকৃত রানিং
+// ভার্সন 1.0.393 হলেও)। এখন এটা নিচের APP_VERSION_CODE-এর মতোই একই
+// VITE_APP_VERSION বিল্ড env var থেকে সরাসরি পড়ে (GitHub Actions প্রতি বিল্ডে
+// সেট করে দেয়) — তাই UI-তে সবসময় প্রকৃত রানিং ভার্সনই (যেমন "v1.0.393") দেখাবে।
+const APP_VERSION = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_APP_VERSION)
+  ? "v" + import.meta.env.VITE_APP_VERSION
+  : "v1"; // fallback — শুধু লোকাল dev build-এ যেখানে VITE_APP_VERSION সেট করা নেই
 // 🔴 অটো বিল্ড আইডি: GitHub Actions workflow-এ `npm run build` এর আগে
 //   VITE_BUILD_ID=$(date -u +%Y%m%d-%H%M)-${GITHUB_SHA::7}
 // এভাবে env var সেট করলে Vite এটা build-time-এ এখানে বসিয়ে দেবে — প্রতি বিল্ডে
@@ -9584,7 +9591,7 @@ const DARK = {
   accent: "#2dda7a", accentDark: "#1ab860", accentGlow: "#22c55e33", accentPill: "#22c55e22",
   input: "#0c1a0e", inputBorder: "#1e3a27", inputFocus: "#2dda7a44",
   nav: "#0c1a0e", navBorder: "#1e3a27", navActive: "#2dda7a", navPill: "#22c55e18",
-  header: "linear-gradient(160deg,#0a1f0d 0%,#0f2e16 50%,#0d2414 100%)",
+  header:"#0a1f0d",
   stripe: "#0a1a0c", toastBg: "#0f2018",
   stepActive: "#2dda7a", stepDone: "#1ab860", stepInactive: "#1e3a27",
   danger: "#f87171", dangerBg: "#ef444418", warning: "#fbbf24", warningBg: "#f59e0b18",
@@ -9598,7 +9605,7 @@ const LIGHT = {
   accent: "#15803d", accentDark: "#166534", accentGlow: "#16a34a22", accentPill: "#dcfce7",
   input: "#f7fbf8", inputBorder: "#c8e6d0", inputFocus: "#16a34a33",
   nav: "#ffffff", navBorder: "#d4eddb", navActive: "#15803d", navPill: "#dcfce7",
-  header: "linear-gradient(160deg,#14532d 0%,#15803d 50%,#166534 100%)",
+  header:"#14532d",
   stripe: "#f0faf3", toastBg: "#0f2018",
   stepActive: "#15803d", stepDone: "#14532d", stepInactive: "#d4eddb",
   danger: "#dc2626", dangerBg: "#ef444415", warning: "#d97706", warningBg: "#f59e0b15",
@@ -9610,24 +9617,24 @@ const LIGHT = {
 // ─── Theme Presets ────────────────────────────────────────────────────────────
 const THEME_PRESETS = [
   // ── বাম পাশ (Light) | ডান পাশ (Dark) — 2-column grid-এ পাশাপাশি দেখাবে ──
-  { id:"neon", label:"Neo-Tokyo Neon", dark:true, accent:"#00e5ff", accentDark:"#ff2a6d", bg:"#050507", card:"#05191d", border:"#04363e", header:"linear-gradient(160deg,#050507,#043f47,#042227)", statusBar:"#050507", text:"#e8e6f0", sub:"#4dbecb", nav:"#05191d", navActive:"#00e5ff", headingColor:"#64e8f7", meshD:["rgba(0,229,255,0.3)","rgba(255,42,109,0.24)","rgba(0,229,255,0.16)","rgba(255,42,109,0.14)"], meshL:null },
-  { id:"auroraglass", label:"Aurora Glass", dark:true, accent:"#7c7fff", accentDark:"#00c9a7", bg:"#060714", card:"#111229", border:"#202148", header:"linear-gradient(160deg,#060714,#252651,#151733)", statusBar:"#060714", text:"#eef0ff", sub:"#4d50cb", nav:"#111229", navActive:"#7c7fff", headingColor:"#9ea0fa", meshD:["rgba(124,127,255,0.3)","rgba(0,201,167,0.24)","rgba(124,127,255,0.16)","rgba(0,201,167,0.14)"], meshL:null },
-  { id:"bioocean", label:"Bioluminescent Ocean", dark:true, accent:"#00ffb4", accentDark:"#00d4ff", bg:"#020b0c", card:"#02211b", border:"#024131", header:"linear-gradient(160deg,#020b0c,#014a38,#022b22)", statusBar:"#020b0c", text:"#dff7f0", sub:"#4dcba6", nav:"#02211b", navActive:"#00ffb4", headingColor:"#64f7cc", meshD:["rgba(0,255,180,0.3)","rgba(0,212,255,0.24)","rgba(0,255,180,0.16)","rgba(0,212,255,0.14)"], meshL:null },
-  { id:"solarflare", label:"Solar Flare", dark:true, accent:"#ffb703", accentDark:"#ff6a00", bg:"#0c0906", card:"#221906", border:"#412f05", header:"linear-gradient(160deg,#0c0906,#4b3605,#2c2006)", statusBar:"#0c0906", text:"#fff3e6", sub:"#cba74d", nav:"#221906", navActive:"#ffb703", headingColor:"#f7ce67", meshD:["rgba(255,183,3,0.3)","rgba(255,106,0,0.24)","rgba(255,183,3,0.16)","rgba(255,106,0,0.14)"], meshL:null },
-  { id:"vapor", label:"Vaporwave Sunset", dark:true, accent:"#ff6ec7", accentDark:"#ffaa3c", bg:"#1a0b2e", card:"#2f143c", border:"#4c2150", header:"linear-gradient(160deg,#1a0b2e,#562556,#381842)", statusBar:"#1a0b2e", text:"#ffe6f5", sub:"#cb4d9b", nav:"#2f143c", navActive:"#ff6ec7", headingColor:"#fa9ed6", meshD:["rgba(255,110,199,0.3)","rgba(255,170,60,0.24)","rgba(255,110,199,0.16)","rgba(255,170,60,0.14)"], meshL:null },
-  { id:"ruby", label:"Blood Ruby", dark:true, accent:"#ff5c76", accentDark:"#e0a4ad", bg:"#0d0507", card:"#230d11", border:"#42181f", header:"linear-gradient(160deg,#0d0507,#4c1c24,#2c1015)", statusBar:"#0d0507", text:"#ffe9ec", sub:"#cb4d61", nav:"#230d11", navActive:"#ff5c76", headingColor:"#fa9ead", meshD:["rgba(255,92,118,0.3)","rgba(224,164,173,0.24)","rgba(255,92,118,0.16)","rgba(224,164,173,0.14)"], meshL:null },
-  { id:"sapphire", label:"Midnight Sapphire", dark:true, accent:"#5aa8ff", accentDark:"#c9d8ff", bg:"#020712", card:"#0a1527", border:"#152a46", header:"linear-gradient(160deg,#020712,#193150,#0d1c31)", statusBar:"#020712", text:"#e8f1ff", sub:"#4d89cb", nav:"#0a1527", navActive:"#5aa8ff", headingColor:"#9ec9fa", meshD:["rgba(90,168,255,0.3)","rgba(201,216,255,0.24)","rgba(90,168,255,0.16)","rgba(201,216,255,0.14)"], meshL:null },
-  { id:"volt", label:"Volt Lime", dark:true, accent:"#d4ff5c", accentDark:"#a3e635", bg:"#0a0d05", card:"#1c230d", border:"#364218", header:"linear-gradient(160deg,#0a0d05,#3f4c1c,#242c10)", statusBar:"#0a0d05", text:"#f2ffe0", sub:"#aacb4d", nav:"#1c230d", navActive:"#d4ff5c", headingColor:"#e2fa9e", meshD:["rgba(212,255,92,0.3)","rgba(163,230,53,0.24)","rgba(212,255,92,0.16)","rgba(163,230,53,0.14)"], meshL:null },
-  { id:"pearl", label:"Pearl Platinum", dark:false, accent:"#6b6f95", accentDark:"#9a9dc2", bg:"#f7f7fa", card:"#ffffff", border:"#dcdce6", header:"linear-gradient(160deg,#6b6f95,#9a9dc2)", statusBar:"#6b6f95", text:"#0f1015", sub:"#646787", nav:"#ffffff", navActive:"#6b6f95", headingColor:"#0f1015", meshD:null, meshL:["rgba(107,111,149,0.2)","rgba(154,157,194,0.16)","rgba(107,111,149,0.12)","rgba(154,157,194,0.1)"] },
-  { id:"frostmint", label:"Frosted Mint Glass", dark:false, accent:"#0ea472", accentDark:"#34d399", bg:"#eafaf3", card:"#ffffff", border:"#b8ecd4", header:"linear-gradient(160deg,#0ea472,#34d399)", statusBar:"#0ea472", text:"#071c15", sub:"#3fac87", nav:"#ffffff", navActive:"#0ea472", headingColor:"#071c15", meshD:null, meshL:["rgba(14,164,114,0.2)","rgba(52,211,153,0.16)","rgba(14,164,114,0.12)","rgba(52,211,153,0.1)"] },
-  { id:"ivorygold", label:"Ivory Gold Luxe", dark:false, accent:"#a9812f", accentDark:"#e6c581", bg:"#faf6ee", card:"#fffdf8", border:"#d9b978", header:"linear-gradient(160deg,#a9812f,#e6c581)", statusBar:"#a9812f", text:"#19140b", sub:"#9a8251", nav:"#fffdf8", navActive:"#a9812f", headingColor:"#19140b", meshD:null, meshL:["rgba(169,129,47,0.2)","rgba(230,197,129,0.16)","rgba(169,129,47,0.12)","rgba(230,197,129,0.1)"] },
-  { id:"skychrome", label:"Sky Chrome", dark:false, accent:"#1c7aad", accentDark:"#7fc7ec", bg:"#eef6fb", card:"#ffffff", border:"#b8dcef", header:"linear-gradient(160deg,#1c7aad,#7fc7ec)", statusBar:"#1c7aad", text:"#09151b", sub:"#4783a4", nav:"#ffffff", navActive:"#1c7aad", headingColor:"#09151b", meshD:null, meshL:["rgba(28,122,173,0.2)","rgba(127,199,236,0.16)","rgba(28,122,173,0.12)","rgba(127,199,236,0.1)"] },
-  { id:"rosequartz", label:"Blush Rose Quartz", dark:false, accent:"#c25f70", accentDark:"#f4a7b0", bg:"#fdf1f2", card:"#fffbfc", border:"#f0c3c8", header:"linear-gradient(160deg,#c25f70,#f4a7b0)", statusBar:"#c25f70", text:"#170c0e", sub:"#925862", nav:"#fffbfc", navActive:"#c25f70", headingColor:"#170c0e", meshD:null, meshL:["rgba(194,95,112,0.2)","rgba(244,167,176,0.16)","rgba(194,95,112,0.12)","rgba(244,167,176,0.1)"] },
-  { id:"lavender", label:"Cloud Lavender", dark:false, accent:"#7c5cc4", accentDark:"#b6a1ec", bg:"#f4f1fb", card:"#ffffff", border:"#d9cdf2", header:"linear-gradient(160deg,#7c5cc4,#b6a1ec)", statusBar:"#7c5cc4", text:"#100c18", sub:"#6a5794", nav:"#ffffff", navActive:"#7c5cc4", headingColor:"#100c18", meshD:null, meshL:["rgba(124,92,196,0.2)","rgba(182,161,236,0.16)","rgba(124,92,196,0.12)","rgba(182,161,236,0.1)"] },
-  { id:"solarwhite", label:"Solar White", dark:false, accent:"#e07800", accentDark:"#ffb347", bg:"#fffaf3", card:"#ffffff", border:"#ffd9a3", header:"linear-gradient(160deg,#e07800,#ffb347)", statusBar:"#e07800", text:"#1e1305", sub:"#b67a35", nav:"#ffffff", navActive:"#e07800", headingColor:"#1e1305", meshD:null, meshL:["rgba(224,120,0,0.2)","rgba(255,179,71,0.16)","rgba(224,120,0,0.12)","rgba(255,179,71,0.1)"] },
-  { id:"porcelain", label:"Porcelain Jade", dark:false, accent:"#1f8a55", accentDark:"#6fcf97", bg:"#f5faf7", card:"#ffffff", border:"#b9e0c6", header:"linear-gradient(160deg,#1f8a55,#6fcf97)", statusBar:"#1f8a55", text:"#0a1a12", sub:"#4c9e76", nav:"#ffffff", navActive:"#1f8a55", headingColor:"#0a1a12", meshD:null, meshL:["rgba(31,138,85,0.2)","rgba(111,207,151,0.16)","rgba(31,138,85,0.12)","rgba(111,207,151,0.1)"] },
-  { id:"champagne", label:"Champagne Silk", dark:false, accent:"#8a7238", accentDark:"#d9c49a", bg:"#f7f0e6", card:"#fffcf7", border:"#cbb98f", header:"linear-gradient(160deg,#8a7238,#d9c49a)", statusBar:"#8a7238", text:"#17140d", sub:"#91815a", nav:"#fffcf7", navActive:"#8a7238", headingColor:"#17140d", meshD:null, meshL:["rgba(138,114,56,0.2)","rgba(217,196,154,0.16)","rgba(138,114,56,0.12)","rgba(217,196,154,0.1)"] },
-  { id:"arcticday", label:"Arctic Daylight", dark:false, accent:"#2f74c9", accentDark:"#4fa8e8", bg:"#f8fafc", card:"#ffffff", border:"#dbe4ec", header:"linear-gradient(160deg,#2f74c9,#4fa8e8)", statusBar:"#2f74c9", text:"#0a111a", sub:"#4d719d", nav:"#ffffff", navActive:"#2f74c9", headingColor:"#0a111a", meshD:null, meshL:["rgba(47,116,201,0.2)","rgba(79,168,232,0.16)","rgba(47,116,201,0.12)","rgba(79,168,232,0.1)"] },
+  { id:"neon", label:"Neo-Tokyo Neon", dark:true, accent:"#00e5ff", accentDark:"#ff2a6d", bg:"#050507", card:"#05191d", border:"#04363e", header:"#050507", statusBar:"#050507", text:"#e8e6f0", sub:"#4dbecb", nav:"#05191d", navActive:"#00e5ff", headingColor:"#64e8f7", meshD:["rgba(0,229,255,0.3)","rgba(255,42,109,0.24)","rgba(0,229,255,0.16)","rgba(255,42,109,0.14)"], meshL:null },
+  { id:"auroraglass", label:"Aurora Glass", dark:true, accent:"#7c7fff", accentDark:"#00c9a7", bg:"#060714", card:"#111229", border:"#202148", header:"#060714", statusBar:"#060714", text:"#eef0ff", sub:"#4d50cb", nav:"#111229", navActive:"#7c7fff", headingColor:"#9ea0fa", meshD:["rgba(124,127,255,0.3)","rgba(0,201,167,0.24)","rgba(124,127,255,0.16)","rgba(0,201,167,0.14)"], meshL:null },
+  { id:"bioocean", label:"Bioluminescent Ocean", dark:true, accent:"#00ffb4", accentDark:"#00d4ff", bg:"#020b0c", card:"#02211b", border:"#024131", header:"#020b0c", statusBar:"#020b0c", text:"#dff7f0", sub:"#4dcba6", nav:"#02211b", navActive:"#00ffb4", headingColor:"#64f7cc", meshD:["rgba(0,255,180,0.3)","rgba(0,212,255,0.24)","rgba(0,255,180,0.16)","rgba(0,212,255,0.14)"], meshL:null },
+  { id:"solarflare", label:"Solar Flare", dark:true, accent:"#ffb703", accentDark:"#ff6a00", bg:"#0c0906", card:"#221906", border:"#412f05", header:"#0c0906", statusBar:"#0c0906", text:"#fff3e6", sub:"#cba74d", nav:"#221906", navActive:"#ffb703", headingColor:"#f7ce67", meshD:["rgba(255,183,3,0.3)","rgba(255,106,0,0.24)","rgba(255,183,3,0.16)","rgba(255,106,0,0.14)"], meshL:null },
+  { id:"vapor", label:"Vaporwave Sunset", dark:true, accent:"#ff6ec7", accentDark:"#ffaa3c", bg:"#1a0b2e", card:"#2f143c", border:"#4c2150", header:"#1a0b2e", statusBar:"#1a0b2e", text:"#ffe6f5", sub:"#cb4d9b", nav:"#2f143c", navActive:"#ff6ec7", headingColor:"#fa9ed6", meshD:["rgba(255,110,199,0.3)","rgba(255,170,60,0.24)","rgba(255,110,199,0.16)","rgba(255,170,60,0.14)"], meshL:null },
+  { id:"ruby", label:"Blood Ruby", dark:true, accent:"#ff5c76", accentDark:"#e0a4ad", bg:"#0d0507", card:"#230d11", border:"#42181f", header:"#0d0507", statusBar:"#0d0507", text:"#ffe9ec", sub:"#cb4d61", nav:"#230d11", navActive:"#ff5c76", headingColor:"#fa9ead", meshD:["rgba(255,92,118,0.3)","rgba(224,164,173,0.24)","rgba(255,92,118,0.16)","rgba(224,164,173,0.14)"], meshL:null },
+  { id:"sapphire", label:"Midnight Sapphire", dark:true, accent:"#5aa8ff", accentDark:"#c9d8ff", bg:"#020712", card:"#0a1527", border:"#152a46", header:"#020712", statusBar:"#020712", text:"#e8f1ff", sub:"#4d89cb", nav:"#0a1527", navActive:"#5aa8ff", headingColor:"#9ec9fa", meshD:["rgba(90,168,255,0.3)","rgba(201,216,255,0.24)","rgba(90,168,255,0.16)","rgba(201,216,255,0.14)"], meshL:null },
+  { id:"volt", label:"Volt Lime", dark:true, accent:"#d4ff5c", accentDark:"#a3e635", bg:"#0a0d05", card:"#1c230d", border:"#364218", header:"#0a0d05", statusBar:"#0a0d05", text:"#f2ffe0", sub:"#aacb4d", nav:"#1c230d", navActive:"#d4ff5c", headingColor:"#e2fa9e", meshD:["rgba(212,255,92,0.3)","rgba(163,230,53,0.24)","rgba(212,255,92,0.16)","rgba(163,230,53,0.14)"], meshL:null },
+  { id:"pearl", label:"Pearl Platinum", dark:false, accent:"#6b6f95", accentDark:"#9a9dc2", bg:"#f7f7fa", card:"#ffffff", border:"#dcdce6", header:"#6b6f95", statusBar:"#6b6f95", text:"#0f1015", sub:"#646787", nav:"#ffffff", navActive:"#6b6f95", headingColor:"#0f1015", meshD:null, meshL:["rgba(107,111,149,0.2)","rgba(154,157,194,0.16)","rgba(107,111,149,0.12)","rgba(154,157,194,0.1)"] },
+  { id:"frostmint", label:"Frosted Mint Glass", dark:false, accent:"#0ea472", accentDark:"#34d399", bg:"#eafaf3", card:"#ffffff", border:"#b8ecd4", header:"#0ea472", statusBar:"#0ea472", text:"#071c15", sub:"#3fac87", nav:"#ffffff", navActive:"#0ea472", headingColor:"#071c15", meshD:null, meshL:["rgba(14,164,114,0.2)","rgba(52,211,153,0.16)","rgba(14,164,114,0.12)","rgba(52,211,153,0.1)"] },
+  { id:"ivorygold", label:"Ivory Gold Luxe", dark:false, accent:"#a9812f", accentDark:"#e6c581", bg:"#faf6ee", card:"#fffdf8", border:"#d9b978", header:"#a9812f", statusBar:"#a9812f", text:"#19140b", sub:"#9a8251", nav:"#fffdf8", navActive:"#a9812f", headingColor:"#19140b", meshD:null, meshL:["rgba(169,129,47,0.2)","rgba(230,197,129,0.16)","rgba(169,129,47,0.12)","rgba(230,197,129,0.1)"] },
+  { id:"skychrome", label:"Sky Chrome", dark:false, accent:"#1c7aad", accentDark:"#7fc7ec", bg:"#eef6fb", card:"#ffffff", border:"#b8dcef", header:"#1c7aad", statusBar:"#1c7aad", text:"#09151b", sub:"#4783a4", nav:"#ffffff", navActive:"#1c7aad", headingColor:"#09151b", meshD:null, meshL:["rgba(28,122,173,0.2)","rgba(127,199,236,0.16)","rgba(28,122,173,0.12)","rgba(127,199,236,0.1)"] },
+  { id:"rosequartz", label:"Blush Rose Quartz", dark:false, accent:"#c25f70", accentDark:"#f4a7b0", bg:"#fdf1f2", card:"#fffbfc", border:"#f0c3c8", header:"#c25f70", statusBar:"#c25f70", text:"#170c0e", sub:"#925862", nav:"#fffbfc", navActive:"#c25f70", headingColor:"#170c0e", meshD:null, meshL:["rgba(194,95,112,0.2)","rgba(244,167,176,0.16)","rgba(194,95,112,0.12)","rgba(244,167,176,0.1)"] },
+  { id:"lavender", label:"Cloud Lavender", dark:false, accent:"#7c5cc4", accentDark:"#b6a1ec", bg:"#f4f1fb", card:"#ffffff", border:"#d9cdf2", header:"#7c5cc4", statusBar:"#7c5cc4", text:"#100c18", sub:"#6a5794", nav:"#ffffff", navActive:"#7c5cc4", headingColor:"#100c18", meshD:null, meshL:["rgba(124,92,196,0.2)","rgba(182,161,236,0.16)","rgba(124,92,196,0.12)","rgba(182,161,236,0.1)"] },
+  { id:"solarwhite", label:"Solar White", dark:false, accent:"#e07800", accentDark:"#ffb347", bg:"#fffaf3", card:"#ffffff", border:"#ffd9a3", header:"#e07800", statusBar:"#e07800", text:"#1e1305", sub:"#b67a35", nav:"#ffffff", navActive:"#e07800", headingColor:"#1e1305", meshD:null, meshL:["rgba(224,120,0,0.2)","rgba(255,179,71,0.16)","rgba(224,120,0,0.12)","rgba(255,179,71,0.1)"] },
+  { id:"porcelain", label:"Porcelain Jade", dark:false, accent:"#1f8a55", accentDark:"#6fcf97", bg:"#f5faf7", card:"#ffffff", border:"#b9e0c6", header:"#1f8a55", statusBar:"#1f8a55", text:"#0a1a12", sub:"#4c9e76", nav:"#ffffff", navActive:"#1f8a55", headingColor:"#0a1a12", meshD:null, meshL:["rgba(31,138,85,0.2)","rgba(111,207,151,0.16)","rgba(31,138,85,0.12)","rgba(111,207,151,0.1)"] },
+  { id:"champagne", label:"Champagne Silk", dark:false, accent:"#8a7238", accentDark:"#d9c49a", bg:"#f7f0e6", card:"#fffcf7", border:"#cbb98f", header:"#8a7238", statusBar:"#8a7238", text:"#17140d", sub:"#91815a", nav:"#fffcf7", navActive:"#8a7238", headingColor:"#17140d", meshD:null, meshL:["rgba(138,114,56,0.2)","rgba(217,196,154,0.16)","rgba(138,114,56,0.12)","rgba(217,196,154,0.1)"] },
+  { id:"arcticday", label:"Arctic Daylight", dark:false, accent:"#2f74c9", accentDark:"#4fa8e8", bg:"#f8fafc", card:"#ffffff", border:"#dbe4ec", header:"#2f74c9", statusBar:"#2f74c9", text:"#0a111a", sub:"#4d719d", nav:"#ffffff", navActive:"#2f74c9", headingColor:"#0a111a", meshD:null, meshL:["rgba(47,116,201,0.2)","rgba(79,168,232,0.16)","rgba(47,116,201,0.12)","rgba(79,168,232,0.1)"] },
 ];
 
 // ─── হেডার/নেভ টেক্সট অটো-কনট্রাস্ট — ব্যাকগ্রাউন্ড রঙ যেকোনো থিমেই হোক না কেন,
@@ -13063,14 +13070,38 @@ function SmartBusinessMgmt() {
     appleMeta.setAttribute("content", bgIsLight ? "default" : "black-translucent");
 
     // 3. Capacitor StatusBar — window.Capacitor.Plugins only (no static import needed)
-    try {
-      const SB = window.Capacitor?.Plugins?.StatusBar;
-      if (SB && window.Capacitor?.isNativePlatform?.()) {
-        SB.setOverlaysWebView({ overlay: false }).catch(() => {});
-        SB.setBackgroundColor({ color: statusColor }).catch(() => {});
-        SB.setStyle({ style: statusBarStyle }).catch(() => {});
-      }
-    } catch {}
+    // 🔴 ফিক্স: আগে এই কল একবারই fire হতো আর error silently .catch(()=>{}) দিয়ে
+    // গিলে ফেলা হতো — থিম পাল্টানোর ঠিক মুহূর্তে (থিম পিকার বন্ধ হওয়া/মডাল
+    // transition/animation চলাকালীন) native bridge ব্যস্ত থাকলে কলটা silently
+    // miss হয়ে যেত, ফলে বিশেষত ডার্ক থিমে সুইচ করার সময় স্ট্যাটাস বার আগের
+    // থিমের রঙেই আটকে থাকত (screenshot-এ ধরা পড়েছে)। এখন কলটা একবার সাথে সাথে,
+    // আর নিরাপত্তার জন্য আরও দুইবার (150ms ও 600ms পর) retry করা হয় — একই রঙ
+    // বারবার সেট করা সম্পূর্ণ নিরাপদ (idempotent), কিন্তু কোনো একটা কল miss
+    // হয়ে গেলেও পরেরটা ঠিক করে দেয়।
+    // 4. Android system Navigation Bar (নিচের গেসচার/বাটন বার) — header এখন সলিড
+    // কালার (উপরের গ্রেডিয়েন্ট-বাদ ফিক্স দ্রষ্টব্য), তাই সেই একই statusColor
+    // ব্যবহার করলে নিচের অ্যাপ-নেভবার (T.header ব্যবহার করে) আর OS-এর সিস্টেম
+    // নেভিগেশন বার — দুটোই হুবহু এক রঙ, কোনো সিম/অমিল থাকবে না।
+    let cancelled = false;
+    const applyNativeStatusBar = () => {
+      if (cancelled) return;
+      try {
+        const SB = window.Capacitor?.Plugins?.StatusBar;
+        if (SB && window.Capacitor?.isNativePlatform?.()) {
+          SB.setOverlaysWebView({ overlay: false }).catch((e) => console.warn("StatusBar overlay set failed:", e));
+          SB.setBackgroundColor({ color: statusColor }).catch((e) => console.warn("StatusBar bg set failed:", e));
+          SB.setStyle({ style: statusBarStyle }).catch((e) => console.warn("StatusBar style set failed:", e));
+        }
+        const NB = window.Capacitor?.Plugins?.NavigationBar;
+        if (NB && window.Capacitor?.isNativePlatform?.()) {
+          NB.setColor({ color: statusColor, darkButtons: bgIsLight }).catch((e) => console.warn("NavigationBar color set failed:", e));
+        }
+      } catch (e) { console.warn("StatusBar/NavigationBar sync error:", e); }
+    };
+    applyNativeStatusBar();
+    const retry1 = setTimeout(applyNativeStatusBar, 150);
+    const retry2 = setTimeout(applyNativeStatusBar, 600);
+    return () => { cancelled = true; clearTimeout(retry1); clearTimeout(retry2); };
   }, [activeTheme, currentPreset]);
   useEffect(() => { if (loaded) save(LK(SK.fontSize), fontSize); }, [fontSize, loaded]);
   useEffect(() => { if (loaded) save(LK(SK.deletedCustomers), deletedCustomers); }, [deletedCustomers, loaded]);
