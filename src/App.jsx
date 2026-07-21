@@ -10333,30 +10333,50 @@ function KpiCardsGrid({ T, stats, compact = false }) {
     { icon: "⏳", val: `৳${fmt(monthExpiredValue)}`, label: `এই মাসের মেয়াদোত্তীর্ণ পণ্যের মূল্য (${currentMonthNameEn})`, sub: `${monthExpiredCount}টি ব্যাচ সরানো হয়েছে`, color: "#dc2626" },
   ];
 
-  // ── কমপ্যাক্ট লিস্ট-ভিউ — একটাই কলাম, পাতলা রো, সাব-টেক্সট ভ্যালুর পাশেই ──
+  // ── কমপ্যাক্ট লিস্ট-ভিউ — একটাই কলাম, প্রিমিয়াম/ফিউচারিস্টিক রো (আইকন-ব্যাজ +
+  // বাম-পাশে glow accent bar), ডানপাশে শুধু টাকার অংক (৩টা মার্জিন-কার্ডে
+  // "৳৫০০(১০%)" ফরম্যাটে সংখ্যার সাথেই মার্জিন দেখানো হয়, আলাদা sub-text নেই)।
+  // সাইজ আগের তুলনায় ~১৫% বড় (label/val ফন্ট, padding, radius সব)।
   if (compact) {
     return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-        {items.map((item, i) => (
-          <div key={i} style={{
-            display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
-            padding: "6px 9px", borderRadius: 9,
-            background: `linear-gradient(90deg, ${item.color}16, transparent)`,
-            border: `1px solid ${item.color}30`,
-          }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, flex: 1 }}>
-              <span style={{ fontSize: 13, flexShrink: 0, width: 18, textAlign: "center" }}>{item.icon}</span>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {items.map((item, i) => {
+          const marginMatch = /মার্জিন\s*(-?\d+)%/.exec(item.sub || "");
+          const displayVal = marginMatch ? `${item.val}(${marginMatch[1]}%)` : item.val;
+          return (
+            <div key={i} style={{
+              position: "relative", overflow: "hidden",
+              display: "flex", alignItems: "center", justifyContent: "space-between", gap: 9,
+              padding: "8px 11px 8px 13px", borderRadius: 11,
+              background: `linear-gradient(115deg, ${item.color}22, ${item.color}08 60%, transparent)`,
+              border: `1px solid ${item.color}38`,
+              boxShadow: `0 3px 12px ${item.color}20, inset 0 1px 0 rgba(255,255,255,0.06)`,
+            }}>
+              {/* বাম কিনারে glow accent bar — ফিউচারিস্টিক signature */}
+              <div style={{
+                position: "absolute", left: 0, top: 0, bottom: 0, width: 3,
+                background: `linear-gradient(180deg, ${item.color}, ${item.color}40)`,
+                boxShadow: `0 0 8px ${item.color}90`,
+              }} />
+              <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
+                <span style={{
+                  fontSize: 14.5, flexShrink: 0, width: 25, height: 25, display: "flex",
+                  alignItems: "center", justifyContent: "center", borderRadius: 8,
+                  background: `linear-gradient(160deg, ${item.color}35, ${item.color}12)`,
+                  border: `1px solid ${item.color}45`,
+                }}>{item.icon}</span>
+                <span style={{
+                  color: T.text, fontWeight: 750, fontSize: 12, lineHeight: 1.25,
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                }}>{item.label}</span>
+              </div>
               <span style={{
-                color: T.text, fontWeight: 700, fontSize: 10.5, lineHeight: 1.2,
-                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-              }}>{item.label}</span>
+                color: item.color, fontWeight: 900, fontSize: 14.5, whiteSpace: "nowrap", flexShrink: 0,
+                textShadow: `0 0 12px ${item.color}55`,
+              }}>{displayVal}</span>
             </div>
-            <div style={{ textAlign: "right", flexShrink: 0, display: "flex", alignItems: "baseline", gap: 5 }}>
-              <span style={{ color: item.color, fontWeight: 900, fontSize: 12.5, whiteSpace: "nowrap" }}>{item.val}</span>
-              <span style={{ color: T.sub, fontSize: 9, opacity: 0.85, whiteSpace: "nowrap" }}>{item.sub}</span>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     );
   }
