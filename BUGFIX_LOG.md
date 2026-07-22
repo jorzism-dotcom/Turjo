@@ -25,23 +25,67 @@
 
 ## এন্ট্রি
 
-### ২০২৬-০৭-২২ — এন্টারপ্রাইজ মনিটরিং প্ল্যান ফেজ C (স্তর ৩: রিলিজ-ক্যানারি) কোড লেখা হয়েছে (real CI-তে এখনো যাচাই বাকি)
-- কী করা হলো: `ENTERPRISE_MONITORING_PLAN.md`-এর ফেজ C (C1–C3)-এর জন্য
-  `tests/release-canary.mjs` (নতুন, ৫-ধাপ sequential canary) ও CI blocking
-  step যোগ করা হলো।
-- মূল কারণ/প্রসঙ্গ: ফেজ A/B independent unit/integration কভারেজ দেয়, কিন্তু
-  আসল রিলিজের আগে "পুরো একটা ইনভয়েস lifecycle শুরু থেকে শেষ পর্যন্ত একসাথে
-  ভেঙে যায়নি" এই end-to-end নিশ্চয়তা কোথাও ছিল না — ফেজ C এই গ্যাপ বন্ধ করে।
-- ফিক্স কোথায়: `tests/release-canary.mjs` (নতুন), `package.json`
-  (`test:release-canary` script), `.github/workflows/build-apk.yml`
-  (`firestore-rules` জবে B4-এর পরে নতুন blocking step)।
-- ব্লাস্ট রেডিয়াস: `firestore-rules` জব fail করলে `build` জব (এবং তাই
-  APK/GitHub Release) শুরুই হবে না — ফেজ A/B-এর মতোই ইচ্ছাকৃতভাবে blocking।
-- রিগ্রেশন টেস্ট যোগ হয়েছে কি: হ্যাঁ — `tests/release-canary.mjs`, কিন্তু
-  ফেজ B-এর মতোই sandbox-এ network-ব্লকের কারণে emulator চালিয়ে যাচাই করা
-  যায়নি (শুধু `node --check` সিনট্যাক্স + YAML পার্স-যাচাই হয়েছে) — প্রথম
-  আসল CI রান-ই একমাত্র প্রকৃত প্রমাণ হবে, তাই `ENTERPRISE_MONITORING_PLAN.md`-এ
-  C1–C3 এখনো `[ ]` অবস্থাতেই রাখা হয়েছে।
+### ২০২৬-০৭-২২ (দ্বিতীয় সেশন) — এন্টারপ্রাইজ মনিটরিং প্ল্যান D2 (ড্যাশবোর্ড ব্যাজ) ও D3 (ডাউনগ্রেড-রোলব্যাক) সম্পূর্ণ
+- কী করা হলো: D2 — Dashboard ট্যাবে `_errorsCache`-ভিত্তিক ইনভ্যারিয়েন্ট-অ্যালার্ট
+  কাউন্ট কার্ড (নতুন Firestore কোয়েরি ছাড়াই)। D3 — `admin_config/appVersion.
+  rollbackMode` ফ্ল্যাগ দিয়ে `AppVersionCard`-এর `compareVersions()` গেট
+  বাইপাস করে পুরনো ভার্সনে ফেরার পরামর্শ-কার্ড দেখানো, `admin.html`-এ টগল UI।
+- মূল কারণ/প্রসঙ্গ: আগের সেশনে D3-এর "নতুন sync থামানো" অংশ (কিল-সুইচ) সম্পূর্ণ
+  হয়েছিল, কিন্তু "পুরনো ভার্সনে ফিরতে বলা" অংশ বাকি ছিল কারণ বিদ্যমান
+  `forceUpdate`+`updateUrl` মেকানিজম `compareVersions(APP_VERSION_CODE,
+  d.version) < 0` চেকের কারণে শুধু higher-version-নাম্বারেই কাজ করত — real
+  downgrade prompt দিতে পারত না। D2-এর Dashboard badge অংশও আগের সেশনে
+  "পরের সেশনের জন্য নোট" হিসেবে রাখা হয়েছিল।
+- ফিক্স কোথায়: `src/App.jsx` (`AppVersionCard` — version-check condition +
+  render, রোলব্যাক ব্যাজ/কপি), `netlify-site/admin.html` (Dashboard-এ
+  invariantAlertCard + renderInvariantAlertBadge(), Update ফর্মে
+  upd-rollback টগল, publishUpdate/unpublishUpdate/prefillUpdateForm/
+  loadCurrentUpdate সব রোলব্যাক-ফিল্ড-সচেতন করা হয়েছে)।
+- ব্লাস্ট রেডিয়াস: `AppVersionCard`-এর version-check effect শুধুমাত্র সেই
+  একটা কম্পোনেন্টে সীমাবদ্ধ (Settings ট্যাবে রেন্ডার হয়), কোনো অন্য
+  ফাংশন/স্টেট এটার উপর নির্ভর করে না। `rollbackMode` অনুপস্থিত/false থাকলে
+  behavior আগের মতোই — শুধু নতুন default অবস্থায় সম্পূর্ণ no-op। Dashboard
+  badge শুধু UI-লেভেল রিড, কোনো write path ছোঁয়নি।
+- রিগ্রেশন টেস্ট যোগ হয়েছে কি: না (দুটোই UI/দৃশ্যমানতা-লেভেল পরিবর্তন, কোনো
+  নতুন pure ফাংশন যোগ হয়নি যা logic-tests.mjs-এ টেস্ট করা যায়) — sandbox-এ
+  `npx esbuild`/`node --check`/`npm test`/`npm run lint` দিয়ে static
+  যাচাই করা হয়েছে, real ডিভাইস/admin panel-এ চালিয়ে দেখা এখনো বাকি।
+
+### ২০২৬-০৭-২২ — এন্টারপ্রাইজ মনিটরিং প্ল্যান ফেজ C (রিলিজ-ক্যানারি) কোড-সম্পূর্ণ + ফেজ D/D1/D3 (ইনভ্যারিয়েন্ট-চেক ও কিল-সুইচ)
+- কী করা হলো: ফেজ C — `tests/canary-tests.mjs` (নতুন, ইনভয়েস→সিঙ্ক→ব্যাকআপ→
+  রিস্টোর→ভয়েড, real logic.js/sync.js ফাংশন দিয়ে) + CI-তে `release-canary`
+  ব্লকিং জব। ফেজ D1 — `src/logic.js`-এ pure `runInvariantChecks()`
+  (নেগেটিভ স্টক + ক্যাশ-ড্রয়ার mismatch), App.jsx-এ প্রতি ২০ মিনিটে চলা
+  periodic চেক (violation → `app_errors`-এ লগ)। ফেজ D3 — `FSS._syncHalted`
+  কিল-সুইচ (setRecord/setRecordMerge/deleteRecord গেটেড), App.jsx-এ
+  `admin_config/appVersion.haltSync`-এর real-time listener, admin.html-এ
+  টগল UI। ফেজ D2 — বিদ্যমান Errors ট্যাব reuse, `ERROR_KB`-এ নতুন এন্ট্রি।
+- মূল কারণ/প্রসঙ্গ: ফেজ B সম্পূর্ণ হওয়ার পর প্ল্যানের পরের দুই স্তর — একটা
+  ধারাবাহিক real-world ফ্লো ক্যানারি (rules/schema-এর আলাদা-আলাদা টেস্ট
+  একসাথে চালিয়ে দেখা) এবং প্রোডাকশনে চলমান স্বয়ংক্রিয় সেফটি-নেট (রানটাইম
+  ইনভ্যারিয়েন্ট-চেক + জরুরি কিল-সুইচ)।
+- ফিক্স কোথায়: `src/logic.js` (runInvariantChecks), `src/App.jsx` (FSS
+  kill-switch, periodic invariant-check effect, kill-switch listener effect),
+  `tests/canary-tests.mjs` (নতুন), `tests/logic-tests.mjs` (৭ কেস),
+  `package.json` (test:canary), `.github/workflows/build-apk.yml`
+  (release-canary জব), `netlify-site/admin.html` (kill-switch টগল, ERROR_KB
+  এন্ট্রি, quick-filter বাটন)।
+- **সাইড-বাগ ধরা পড়েছে ও ফিক্স হয়েছে (রিভিউয়ের সময়):** `admin.html`-এর
+  `unpublishUpdate()` আগে পুরো `admin_config/appVersion` ডকুমেন্ট
+  `deleteDoc()` করত। কিল-সুইচ ফিল্ড (`haltSync`) একই ডকুমেন্টে যোগ করার
+  পর এই ডিলিট কল কিল-সুইচও নিঃশব্দে বন্ধ করে দিত (ঠিক তখনই যখন হয়তো
+  বন্ধ করাটা উদ্দেশ্য ছিল না)। ফিক্স: `updateDoc()` + `deleteField()` দিয়ে
+  শুধু আপডেট-সংক্রান্ত ফিল্ডগুলো (`version`/`updateUrl`/`updateNotesBn`/
+  `forceUpdate`/`targetPhones`/`publishedAt`) মোছা হয় এখন, কিল-সুইচ ফিল্ড
+  অক্ষত থাকে।
+- ব্লাস্ট রেডিয়াস: `FSS.setRecord`/`setRecordMerge`/`deleteRecord` সব
+  collection-এর একমাত্র write path (useFSSCollection সহ সব সরাসরি কল) —
+  তাই কিল-সুইচ চালু থাকলে সব ধরনের নতুন write ব্লক হবে, ঠিক যেমনটা চাওয়া
+  হয়েছিল। ডিফল্ট অবস্থায় (`haltSync` না থাকলে/false) কোনো আচরণ বদলায়নি।
+- রিগ্রেশন টেস্ট যোগ হয়েছে কি: হ্যাঁ — `tests/logic-tests.mjs`-এ ৭টা নতুন
+  কেস (runInvariantChecks), sandbox-এ ৫০/৫০ পাস কনফার্মড। `tests/canary-tests.mjs`
+  sandbox-এ real emulator না থাকায় রান-ভেরিফাই করা যায়নি (শুধু syntax-check)
+  — দেখুন CLAUDE.md-এর ২২ জুলাই এন্ট্রি।
 
 ### ২০২৬-০৭-২২ — এন্টারপ্রাইজ মনিটরিং প্ল্যান ফেজ B (স্তর ২: emulator-integration টেস্ট) সম্পূর্ণ ✅ (real CI-তে কনফার্মড)
 - কী করা হলো: `ENTERPRISE_MONITORING_PLAN.md`-এর ফেজ B (B1–B4)-এর জন্য
