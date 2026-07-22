@@ -8755,6 +8755,40 @@ function DashModalDateRangePicker({ hook, accentColor = "#1fd15e", T }) {
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─── OldEntryDateNav — TransactionModal-এ "পুরাতন এন্ট্রি" চালু করলে একটা তারিখ
+// নেভিগেটর দেখায় (◄ [তারিখ] ►) — DashModalDateRangePicker-এর কাস্টম-তারিখ
+// ইনপুটেরই একই প্যাটার্ন: লেবেলের ওপর একটা অদৃশ্য native <input type="date">
+// বসানো, তাই ট্যাপ করলেই নেটিভ ক্যালেন্ডার খোলে। ভবিষ্যতের তারিখ max দিয়ে আটকানো। ──
+function OldEntryDateNav({ dateKey, setDateKey, accentColor = "#8b5cf6" }) {
+  const todayKey = todayEn();
+  const isToday = dateKey === todayKey;
+  const shift = (days) => {
+    const d = new Date(dateKey + "T00:00:00");
+    d.setDate(d.getDate() + days);
+    const nk = _dateKeyOf(d);
+    if (nk <= todayKey) setDateKey(nk);
+  };
+  const dateLabel = (() => {
+    try { return new Date(dateKey + "T00:00:00").toLocaleDateString("bn-BD", { day: "numeric", month: "long", year: "numeric" }); }
+    catch { return dateKey; }
+  })();
+  return (
+    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom: 10, background:"rgba(255,255,255,0.03)", border:`1px solid ${accentColor}33`, borderRadius:14, padding:"8px 10px" }}>
+      <button type="button" onClick={() => shift(-1)}
+        style={{ width:34, height:34, borderRadius:10, background:`${accentColor}1f`, border:`1px solid ${accentColor}4d`, color:"#fff", fontSize:16, fontWeight:900, cursor:"pointer", flexShrink:0 }}>‹</button>
+      <div style={{ flex:1, position:"relative", textAlign:"center" }}>
+        <div style={{ color:"#fff", fontSize:12, fontWeight:800 }}>📅 {isToday ? "আজ" : dateLabel}</div>
+        <input type="date" value={dateKey} max={todayKey}
+          onChange={e => e.target.value && setDateKey(e.target.value)}
+          style={{ position:"absolute", inset:0, opacity:0, width:"100%", height:"100%", border:"none", cursor:"pointer" }} />
+      </div>
+      <button type="button" onClick={() => shift(1)} disabled={isToday}
+        style={{ width:34, height:34, borderRadius:10, background:`${accentColor}1f`, border:`1px solid ${accentColor}4d`, color: isToday ? "#4b4566" : "#fff", fontSize:16, fontWeight:900, cursor: isToday ? "default" : "pointer", flexShrink:0 }}>›</button>
+    </div>
+  );
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 function PdfActionBar({ htmlContent, title, T, S }) {
   const [busy, setBusy] = React.useState(false);
   const [dlMsg, setDlMsg] = React.useState("");
@@ -9308,6 +9342,13 @@ const uid      = () => Date.now().toString(36) + Math.random().toString(36).slic
 const todayStr = () => new Date().toLocaleDateString("en-US", { timeZone: "Asia/Dhaka" });
 const nowStr   = () => new Date().toLocaleString("en-US");
 const fmt      = (n) => fmtMoney(n);
+// 🗓️ backdated/পুরাতন এন্ট্রির জন্য: একটা dateKey ("YYYY-MM-DD", BD ক্যালেন্ডার)
+// থেকে todayStr()-এর মতোই en-US ফরম্যাটে date স্ট্রিং বানায় (আলাদা timezone
+// কনভার্শনের দরকার নেই — dateKey নিজেই আগে থেকে BD ক্যালেন্ডার-এর দিন)।
+const dateStrFromKey = (dk) => {
+  try { return new Date(dk + "T00:00:00").toLocaleDateString("en-US"); }
+  catch { return dk; }
+};
 
 // 🗓️ মেয়াদোত্তীর্ণ/মেয়াদের তারিখ — "X দিন আগে/বাকি" এর বদলে সরাসরি মাস ও সাল
 // আকারে দেখানোর জন্য (যেমন "ফেব্রুয়ারি ২০২৬")। অ্যাপের সব জায়গায় এই একটাই
@@ -14121,8 +14162,17 @@ function SmartBusinessMgmt() {
     setSmsCount(prev => Math.max(0, prev - 1));
   }, [shopName, smsGateway, anthropicKey, showToast, smsTemplates]);
 
-  const addTxn = useCallback((customerId, type, amount, balanceAfter, invoiceId = null, note = "", paymentInvoiceId = null, source = "collection") => {
-    const entry = { id: uid(), customerId, type, amount, balanceAfter, invoiceId, paymentInvoiceId, note, source, date: todayStr(), dateKey: todayEn(), time: nowStr() };
+  // 🗓️ ফিক্স (backdated/পুরাতন এন্ট্রি): TransactionModal থেকে একটা পুরাতন
+  // dateKey পাস করা গেলে সেটাই txn-এ বসবে (হার্ডকোডেড todayEn()-এর বদলে)।
+  // opts.isHistorical:true থাকলে entry-তে ট্যাগ হয় — রিপোর্ট/অডিট আলাদা করে চিনতে পারে।
+  const addTxn = useCallback((customerId, type, amount, balanceAfter, invoiceId = null, note = "", paymentInvoiceId = null, source = "collection", opts = {}) => {
+    const { dateKey: dkOverride, isHistorical = false } = opts || {};
+    const dateKey = dkOverride || todayEn();
+    const entry = {
+      id: uid(), customerId, type, amount, balanceAfter, invoiceId, paymentInvoiceId, note, source,
+      date: dkOverride ? dateStrFromKey(dkOverride) : todayStr(), dateKey, time: nowStr(),
+      ...(isHistorical ? { isHistorical: true } : {}),
+    };
     if (FSS.isReady()) pushDurable("txns", entry.id, withTs(entry));
     setTxns(prev => [entry, ...prev]);
     return entry;
@@ -14152,12 +14202,14 @@ function SmartBusinessMgmt() {
     return entry;
   }, [currentUser, setAuditLogs]);
 
-  const createPaymentInvoice = useCallback((customer, amount, note, source = "collection") => {
+  const createPaymentInvoice = useCallback((customer, amount, note, source = "collection", opts = {}) => {
+    const { dateKey: dkOverride, isHistorical = false } = opts || {};
     const inv = {
       id: uid(), customerId: customer.id, customerName: customer.name,
-      customerMobile: customer.mobile, amount, note, date: todayStr(),
-      dateKey: todayEn(), time: nowStr(), shopName, type: "payment",
+      customerMobile: customer.mobile, amount, note, date: dkOverride ? dateStrFromKey(dkOverride) : todayStr(),
+      dateKey: dkOverride || todayEn(), time: nowStr(), shopName, type: "payment",
       source, // "collection" = পুরোনো বাকি আদায়, "partial-sale" = নতুন বিক্রয়ের নগদ অংশ
+      ...(isHistorical ? { isHistorical: true } : {}), // 🗓️ backdated/পুরাতন এন্ট্রি ট্যাগ
       createdAt: new Date().toISOString(), // Bug fix: added for date parsing
       remainingBalance: customer.balance  // জমার পরে অবশিষ্ট বাকি
     };
@@ -23923,6 +23975,12 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
   const [showInv,     setShowInv]     = useState(null);
   const [confirmStep, setConfirmStep] = useState(false); // ২য় ধাপ: নিশ্চিতকরণ
   const [activePreset, setActivePreset] = useState(null);
+  // 🗓️ পুরাতন এন্ট্রি (backdated) — নতুন দোকান অনবোর্ড করার সময় কাস্টমারের পুরোনো
+  // বাকি/জমার হিসাব সঠিক তারিখে বসাতে। ডিফল্ট বন্ধ — সাধারণ ব্যবহারে কোনো পরিবর্তন নেই।
+  const [showOldEntry, setShowOldEntry] = useState(false);
+  const [entryDateKey, setEntryDateKey] = useState(() => todayEn());
+  const [sendSmsBackdated, setSendSmsBackdated] = useState(false); // backdated এন্ট্রিতে SMS ডিফল্ট বন্ধ
+  const isBackdated = showOldEntry && entryDateKey && entryDateKey !== todayEn();
   const PRESETS = [
     { val: 1,     label: "১" },
     { val: 5,     label: "৫" },
@@ -23973,25 +24031,35 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
       await new Promise(r => setTimeout(r, 0));
       newBalance = computedNewBalance ?? (mode === "baki" ? customer.balance + amt : Math.max(0, customer.balance - amt));
     }
+    // 🗓️ পুরাতন এন্ট্রি হলে সিলেক্ট করা dateKey পাস করি — addTxn/createPaymentInvoice
+    // এই dateKey-তেই entry বসাবে, আজকের তারিখে না।
+    const txnOpts = isBackdated ? { dateKey: entryDateKey, isHistorical: true } : {};
     let payInvId = null;
     if (mode === "joma") {
-      const payInv = createPaymentInvoice({ ...customer, balance: newBalance }, amt, note);
+      const payInv = createPaymentInvoice({ ...customer, balance: newBalance }, amt, note, "collection", txnOpts);
       payInvId = payInv.id;
       setShowInv(payInv);
     }
-    addTxn(customer.id, mode, amt, newBalance, null, note, payInvId);
+    addTxn(customer.id, mode, amt, newBalance, null, note, payInvId, "collection", txnOpts);
     // ── বড় অংকের লেনদেন (৫,০০০+) audit log-এ রাখি — সন্দেহজনক activity ধরতে ──
+    // (backdated হলেও log হয়, শুধু isHistorical ট্যাগ দিয়ে আলাদা রাখা হয় যাতে
+    // পুরোনো হিসাব import করাকে ভুল করে নতুন সন্দেহজনক লেনদেন মনে না হয়)
     if (amt >= 5000) {
       auditLog?.(mode === "baki" ? "LARGE_BAKI_ADD" : "LARGE_JOMA_COLLECT", {
         customerId: customer.id, customerName: customer.name,
         amount: amt, newBalance, note: note || "",
+        ...(isBackdated ? { isHistorical: true, entryDate: entryDateKey } : {}),
       });
     }
     await Haptic.heavy();
     // 🔴 ফিক্স (একই root cause — দেখুন createInvoice()-এর SMS ফিক্স): SMS
     // পাঠানো ফায়ার-অ্যান্ড-ফরগেট, নাহলে বাকি/জমা মডাল বন্ধ হতে অকারণে দেরি হয়।
-    sendSMS({ ...customer, balance: newBalance }, mode, amt)
-      .catch(err => logErrorToCentral?.("sendSMS:collect", err, { customerId: customer.id }));
+    // 🗓️ backdated এন্ট্রিতে ডিফল্ট SMS পাঠানো হয় না (কাস্টমার হঠাৎ পুরোনো এন্ট্রির
+    // SMS পেলে বিভ্রান্ত হবেন) — চেকবক্স চেক করা থাকলেই পাঠানো হয়।
+    if (!isBackdated || sendSmsBackdated) {
+      sendSMS({ ...customer, balance: newBalance }, mode, amt)
+        .catch(err => logErrorToCentral?.("sendSMS:collect", err, { customerId: customer.id }));
+    }
     if (mode !== "joma") { showToast(mode === "baki" ? "বাকি যোগ হয়েছে" : "জমা নেওয়া হয়েছে"); setSending(false); onClose(); }
     else setSending(false);
   };
@@ -24067,6 +24135,10 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
               <span style={{ color: T.sub, fontSize: 13 }}>নোট</span>
               <span style={{ color: T.text, fontSize: 13 }}>{note}</span>
             </div> : null}
+            {isBackdated ? <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+              <span style={{ color: "#8b5cf6", fontSize: 13, fontWeight: 700 }}>🗓️ পুরাতন এন্ট্রির তারিখ</span>
+              <span style={{ color: "#8b5cf6", fontSize: 13, fontWeight: 700 }}>{dateStrFromKey(entryDateKey)}</span>
+            </div> : null}
             <div style={{ borderTop: `1px dashed ${T.border}`, paddingTop: 10, display: "flex", justifyContent: "space-between" }}>
               <span style={{ color: T.sub, fontSize: 13, fontWeight: 700 }}>নতুন বাকি</span>
               <span style={{ color: newBalance > 0 ? "#ef4444" : "#22c55e", fontWeight: 900, fontSize: 18 }}>৳{fmt(newBalance)}</span>
@@ -24102,6 +24174,37 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
           )}
           <button style={{ ...S.modeBtn, ...(mode === "joma" ? { background: "#22c55e", color: "#fff" } : {}) }} onClick={() => setMode("joma")}>▼ জমা</button>
         </div>
+        {/* 🗓️ পুরাতন এন্ট্রি টগল — অন করলে নিচে তারিখ নেভিগেটর দেখাবে (ডিফল্ট আজ) */}
+        <div style={{ display:"flex", justifyContent:"flex-end", marginBottom: 8, marginTop: -4 }}>
+          <button type="button"
+            onClick={() => {
+              setShowOldEntry(v => {
+                const next = !v;
+                if (!next) { setEntryDateKey(todayEn()); setSendSmsBackdated(false); }
+                return next;
+              });
+            }}
+            style={{
+              display:"flex", alignItems:"center", gap:6,
+              background: showOldEntry ? "#8b5cf622" : "transparent",
+              border: `1px solid ${showOldEntry ? "#8b5cf666" : T.border}`,
+              borderRadius: 10, padding:"6px 10px",
+              color: showOldEntry ? "#8b5cf6" : T.sub, fontSize:11, fontWeight:800,
+              cursor:"pointer", fontFamily:"inherit",
+            }}>
+            🗓️ পুরাতন এন্ট্রি {showOldEntry ? "✓" : ""}
+          </button>
+        </div>
+        {showOldEntry && (
+          <>
+            <OldEntryDateNav dateKey={entryDateKey} setDateKey={setEntryDateKey}
+              accentColor={mode === "baki" ? "#ef4444" : "#22c55e"} />
+            <label style={{ display:"flex", alignItems:"center", gap:8, marginTop:-4, marginBottom: 10, color: T.sub, fontSize: 11, cursor:"pointer" }}>
+              <input type="checkbox" checked={sendSmsBackdated} onChange={e => setSendSmsBackdated(e.target.checked)} />
+              কাস্টমারকে SMS পাঠান
+            </label>
+          </>
+        )}
         <div style={{ marginBottom: 10 }}>
           <div style={{ color: T.sub, fontSize: 11, marginBottom: 8 }}>দ্রুত পরিমাণ <span style={{ color: T.accent, fontWeight: 700 }}>(একাধিকবার ক্লিক করুন)</span>:</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 7 }}>
