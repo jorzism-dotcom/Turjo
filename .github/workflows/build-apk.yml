@@ -50,19 +50,47 @@ jobs:
         # করা হবে না।
         run: npm run test:sync-emulator
 
-      - name: 🐤 রিলিজ-ক্যানারি (blocks build — ফেজ C, দেখুন ENTERPRISE_MONITORING_PLAN.md)
-        # ২২ জুলাই ২০২৬: end-to-end canary — ইনভয়েস তৈরি → সিঙ্ক → ব্যাকআপ →
-        # রিস্টোর → ভয়েড, একটানা sequential চেইনে (প্রতিটা ধাপ আগেরটার
-        # output-এর উপর নির্ভর করে, আসল রিলিজের সময় যেভাবে ঘটবে ঠিক সেই
-        # ক্রমে)। কোনো ধাপ fail করলে script নিজে থেকেই কোন ধাপে থেমেছে তার
-        # স্পষ্ট রিপোর্ট প্রিন্ট করে exit code 1 দেয় — এই step-ই সেটাকে build
-        # জবের গেট বানায় (এই স্টেপ fail করলে নিচের build জব শুরুই হবে না,
-        # কারণ build জব firestore-rules-এর উপর needs নির্ভরশীল)।
-        run: npm run test:release-canary
+  # ── ফেজ C: রিলিজ-ক্যানারি (ENTERPRISE_MONITORING_PLAN.md স্তর ৩) ──────────
+  # end-to-end পাইপলাইন: ইনভয়েস তৈরি → সিঙ্ক → ব্যাকআপ → রিস্টোর → ভয়েড, real
+  # Firestore Emulator-এ। firestore-rules জবের rules/schema টেস্ট আলাদা-আলাদা
+  # scenario যাচাই করে — এই জবটা সেগুলো একটা ধারাবাহিক real-world ফ্লো হিসেবে
+  # একসাথে চালিয়ে দেখে। fail হলে build জব-ই শুরু হবে না (needs), অর্থাৎ কোনো
+  # খারাপ রিলিজ/APK তৈরি হবে না।
+  release-canary:
+    runs-on: ubuntu-latest
+    needs: firestore-rules
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Java (JDK 21 — firebase-tools emulator-এর জন্য)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: 🐤 রিলিজ-ক্যানারি — ইনভয়েস→সিঙ্ক→ব্যাকআপ→রিস্টোর→ভয়েড (blocks release — ফেজ C, দেখুন ENTERPRISE_MONITORING_PLAN.md)
+        # ২২ জুলাই ২০২৬: এই টেস্ট sandbox-এ চালানো যায়নি (network egress
+        # allowlist-এ storage.googleapis.com নেই, emulator jar ডাউনলোড ব্লক
+        # হয়ে যায় — ঠিক ফেজ B-এর মতো একই সীমাবদ্ধতা)। কোড src/logic.js ও
+        # src/sync.js-এর আসল ফাংশন ব্যবহার করে লেখা এবং tests/sync-emulator-tests.mjs
+        # (ফেজ B, real CI-তে ইতিমধ্যে pass করা)-এর প্রমাণিত প্যাটার্ন অনুসরণ করে —
+        # কিন্তু এই CI রান-ই হবে এর প্রথম আসল যাচাই। প্রথম রান fail করলে root-cause
+        # করে ঠিক করা হবে, revert করা হবে না।
+        run: npm run test:canary
 
   build:
     runs-on: ubuntu-latest
-    needs: firestore-rules
+    needs: [firestore-rules, release-canary]
     permissions:
       contents: write   # 🔴 GitHub Release তৈরি + পুরনো release ডিলিট করার জন্য প্রয়োজন
 
