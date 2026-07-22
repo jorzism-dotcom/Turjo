@@ -880,6 +880,14 @@
         <div><div class="lbl">মাসিক আয় (সক্রিয় গ্রাহক)</div><div class="val" id="st-income">৳০</div></div>
         <div class="icon-big"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div>
       </div>
+      <!-- ফেজ D/D2 (ENTERPRISE_MONITORING_PLAN.md) — ইনভ্যারিয়েন্ট-চেক অ্যালার্ট কাউন্ট।
+           ০ থাকলে সবুজ/লুকানো, ১+ হলে লাল হয়ে সবার আগে চোখে পড়ে — Errors ট্যাবে
+           জাম্প করে সরাসরি ফিল্টার হয়ে যায়। _errorsCache থেকেই গোনা হয় (loadErrors()
+           যেভাবেই চলুক), তাই আলাদা কোনো নতুন Firestore কোয়েরির দরকার হয়নি। -->
+      <div id="invariantAlertCard" class="glass income-card" style="display:none; margin-top:14px; cursor:pointer; border:1px solid rgba(239,68,68,0.35)" onclick="document.getElementById('errorFilterSelect').value='unresolved'; document.getElementById('errorSearchInput').value='invariant_check'; switchTab('errors')">
+        <div><div class="lbl">⚠️ ইনভ্যারিয়েন্ট অ্যালার্ট (প্রোডাকশন সেলফ-চেক)</div><div class="val" id="invariantAlertCount" style="color:var(--red)">০</div></div>
+        <div class="icon-big" style="color:var(--red)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+      </div>
     </div>
 
     <!-- ══ Users ══ -->
@@ -909,6 +917,10 @@
           <option value="all">সব</option>
         </select>
       </div>
+      <div style="display:flex; gap:8px; margin-bottom:14px;">
+        <button class="btn" style="font-size:11.5px;padding:6px 10px" onclick="document.getElementById('errorSearchInput').value='invariant_check'; renderErrors('invariant_check')">⚠️ শুধু ইনভ্যারিয়েন্ট অ্যালার্ট (D1)</button>
+        <button class="btn" style="font-size:11.5px;padding:6px 10px" onclick="document.getElementById('errorSearchInput').value=''; renderErrors('')">✖️ ফিল্টার সাফ করুন</button>
+      </div>
       <div id="errorList"></div>
     </div>
 
@@ -933,6 +945,19 @@
         <p id="ghRelMsg" style="font-size:12px;margin-top:10px;text-align:center;min-height:16px;"></p>
       </div>
 
+      <div class="section-head" style="margin-top:22px"><div class="section-title">🚨 কিল-সুইচ — জরুরি সিঙ্ক-বন্ধ</div></div>
+      <div class="glass card" id="killSwitchBox">
+        <div class="hint" style="margin-bottom:10px">কোনো নতুন রিলিজ প্রোডাকশনে খারাপ আচরণ করলে (ডেটা করাপ্ট হচ্ছে সন্দেহ হলে) এটা চালু করুন — সব দোকানের অ্যাপ তাৎক্ষণিকভাবে (রিস্টার্ট ছাড়াই) নতুন কোনো ডেটা Firestore-এ পাঠানো বন্ধ করে দেবে। দোকানদাররা তখনো তাদের বিদ্যমান ডেটা দেখতে পারবেন (read চলবে), শুধু নতুন write ব্লক হবে — তদন্ত/ফিক্সের সময়টুকু ডেটা সুরক্ষিত থাকবে। সমস্যা সমাধান হয়ে গেলে অবশ্যই বন্ধ করে দিন, নাহলে দোকানগুলো কোনো নতুন বিক্রি/এন্ট্রি সিঙ্ক করতে পারবে না।</div>
+        <div class="toggle-row">
+          <div><div class="t-lbl">সব দোকানে সিঙ্ক বন্ধ করুন</div><div class="t-sub" id="killSwitchStatus">লোড হচ্ছে...</div></div>
+          <label class="switch"><input type="checkbox" id="kill-switch-toggle" onchange="toggleKillSwitch(this.checked)"><span class="slider"></span></label>
+        </div>
+        <div class="form-group" style="margin-top:10px">
+          <label>কারণ (ঐচ্ছিক, ইন্টারনাল নোট — দোকানদার দেখেন না)</label>
+          <input id="kill-switch-reason" placeholder="যেমন: v1.0.412-এ ইনভয়েস-টোটাল বাগ পাওয়া গেছে, তদন্ত চলছে">
+        </div>
+      </div>
+
       <div class="section-head" style="margin-top:22px"><div class="section-title">নতুন আপডেট প্রকাশ করুন</div></div>
       <div class="glass card">
         <div class="form-group">
@@ -953,6 +978,10 @@
         <div class="toggle-row">
           <div><div class="t-lbl">জরুরি হিসেবে চিহ্নিত করুন</div><div class="t-sub">শুধু কার্ডে "জরুরি" ব্যাজ দেখাবে — কোনো জোরপূর্বক লক/পপ-আপ তৈরি করে না</div></div>
           <label class="switch"><input type="checkbox" id="upd-mandatory"><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row" id="upd-rollback-row" style="border:1px solid rgba(239,68,68,0.3);border-radius:12px;padding:10px 12px;margin-top:8px">
+          <div><div class="t-lbl">⏪ রোলব্যাক মোড</div><div class="t-sub">সাধারণত এই কার্ড শুধু <b>নতুন</b> ভার্সন নাম্বারেই দেখা যায়। এই টগল চালু করলে ভার্সন-তুলনা উপেক্ষা করে সব দোকানে দেখানো হবে — অর্থাৎ উপরে <b>পুরনো</b> একটা ভার্সন নাম্বার/লিংক দিয়ে "আগের ভার্সনে ফিরে যান" পরামর্শ দিতে পারবেন। এখনো নীরব/ঐচ্ছিক কার্ড — কোনো জোরপূর্বক লক তৈরি হয় না, দোকানদার নিজেই ইনস্টল করবেন কিনা ঠিক করেন।</div></div>
+          <label class="switch"><input type="checkbox" id="upd-rollback"><span class="slider"></span></label>
         </div>
 
         <div class="form-group" style="margin-top:14px">
@@ -1293,7 +1322,7 @@
 // (এমনকি doLogin() ফাংশনও) কখনো এক্সিকিউট হতো না — ব্রাউজারে স্পিনার চিরকাল
 // ঘুরতেই থাকত। তাই SDK ফাইল দুটো এখন সাইটের নিজের vendor/ ফোল্ডারে সেল্ফ-হোস্টেড।
 import { initializeApp } from "./vendor/firebasejs/10.12.0/firebase-app.js";
-import { getFirestore, collection, getDocs, doc, setDoc, updateDoc, deleteDoc, getDoc, query, orderBy, limit, addDoc, arrayUnion } from "./vendor/firebasejs/10.12.0/firebase-firestore.js";
+import { getFirestore, collection, getDocs, doc, setDoc, updateDoc, deleteDoc, deleteField, getDoc, query, orderBy, limit, addDoc, arrayUnion } from "./vendor/firebasejs/10.12.0/firebase-firestore.js";
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyBzQKeQzVt-GRL1XVe6cNebh89ghi5f_Fc",
@@ -1376,6 +1405,8 @@ window.doLogin = function() {
     loadUsers();
     loadMasterPin();
     loadCurrentUpdate();
+    loadKillSwitchStatus();
+    loadErrors();
   } else {
     document.getElementById('loginErr').textContent = '❌ ভুল পাসওয়ার্ড';
   }
@@ -2023,6 +2054,19 @@ async function loadErrors() {
     _errorsCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
   } catch (e) { _errorsCache = []; }
   renderErrors(document.getElementById('errorSearchInput')?.value || "");
+  renderInvariantAlertBadge();
+}
+
+// ফেজ D/D2 — Dashboard-এ ইনভ্যারিয়েন্ট-চেক অ্যালার্ট কাউন্ট দেখানো। কোনো নতুন
+// Firestore কোয়েরি না করে loadErrors()-এ ইতিমধ্যে fetch করা _errorsCache থেকেই
+// গোনা হয় (সর্বশেষ ২০০টা এরর, unresolved + context "invariant_check" দিয়ে শুরু)।
+function renderInvariantAlertBadge() {
+  const card = document.getElementById('invariantAlertCard');
+  const countEl = document.getElementById('invariantAlertCount');
+  if (!card || !countEl) return;
+  const count = _errorsCache.filter(e => !e.resolved && (e.context || '').startsWith('invariant_check')).length;
+  countEl.textContent = count.toLocaleString('bn-BD');
+  card.style.display = count > 0 ? 'flex' : 'none';
 }
 
 // একই context+message-এর বারবার আসা এরর একটা কার্ডে গ্রুপ করা হয় (নতুনটাই
@@ -2116,6 +2160,26 @@ function statusLabel(s) { return { trial:'ট্রায়াল', active:'স
 // সহ) স্বয়ংক্রিয়ভাবে কারণ/সমাধান দেখা যাবে।
 const ERROR_KB = [
   {
+    match: /invariant_check:negative_stock/i,
+    cause: "পিরিওডিক ইনভ্যারিয়েন্ট-চেক (ENTERPRISE_MONITORING_PLAN.md ফেজ D/D1) একটা পণ্যের stock বা কোনো ব্যাচের qty ঋণাত্মক পেয়েছে — এটা কখনোই স্বাভাবিক না, সাধারণত একই সময়ে একাধিক ডিভাইস থেকে দ্রুত পরপর বিক্রি (রেস কন্ডিশন) বা ম্যানুয়াল স্টক-এডিট থেকে হতে পারে।",
+    solution: "message-এ উল্লেখিত পণ্য/ব্যাচ Firebase Console-এ গিয়ে সরাসরি দেখুন, স্টক ম্যানুয়ালি ঠিক করে দিন (০ বা প্রকৃত সংখ্যায়)। বারবার একই পণ্যে ঘটলে সেই দোকানে সাম্প্রতিক sync/stockMovement এন্ট্রিগুলো যাচাই করুন।",
+  },
+  {
+    match: /invariant_check:cash_drawer_mismatch/i,
+    cause: "পিরিওডিক ইনভ্যারিয়েন্ট-চেক ক্যাশ ড্রয়ার হিসাব (opening + cashSale + joma − withdrawal) ঋণাত্মক পেয়েছে — মানে দোকানের হিসাবে কোথাও ভুল ডেটা ঢুকেছে (ডাবল-এন্ট্রি, মিসিং txn, বা ভুল withdrawal সংখ্যা)।",
+    solution: "সেই দোকানের সাম্প্রতিক cashLogs ও txns কালেকশন Firebase Console-এ দেখুন। দোকানদারকে জিজ্ঞেস করে আসল ক্যাশ ড্রয়ার গুনে অ্যাপের হিসাবের সাথে মিলিয়ে দেখতে বলুন।",
+  },
+  {
+    match: /invariant_check:runner/i,
+    cause: "পিরিওডিক ইনভ্যারিয়েন্ট-চেক নিজেই চালানোর সময় ক্র্যাশ করেছে (buildDailySummaryData()/runInvariantChecks()-এ কোনো bug) — এটা ডেটার সমস্যা না, কোড-লেভেল bug।",
+    solution: "message ও stack দেখে src/logic.js-এর runInvariantChecks() বা App.jsx-এর buildDailySummaryData() ফাংশনে কোড-ফিক্স প্রয়োজন।",
+  },
+  {
+    match: /kill_switch/i,
+    cause: "এটা কোনো error না — admin.html থেকে কিল-সুইচ চালু করা হয়েছে বলে এই ডিভাইস নিশ্চিত করছে যে সে ফ্ল্যাগ দেখেছে ও নতুন sync বন্ধ করে দিয়েছে (ENTERPRISE_MONITORING_PLAN.md ফেজ D/D3)।",
+    solution: "সমস্যা সমাধান হয়ে গেলে Update ট্যাব → কিল-সুইচ টগল বন্ধ করে দিন — তাহলে এই দোকান আবার স্বাভাবিকভাবে সিঙ্ক করতে পারবে।",
+  },
+  {
     match: /can't update a document that doesn't exist/i,
     cause: "কোডে updateDoc() কল করা হয়েছে এমন একটা Firestore ডকুমেন্টে যেটা এখনো তৈরিই হয়নি — updateDoc() শুধু বিদ্যমান ডকুমেন্ট বদলাতে পারে, নতুন তৈরি করতে পারে না।",
     solution: "যেখান থেকে এই কল হচ্ছে সেখানে updateDoc()-এর বদলে setDoc(ref, data, { merge: true }) ব্যবহার করুন — এটা ডকুমেন্ট না থাকলে তৈরি করবে, থাকলে merge করবে। App.jsx-এ context অনুযায়ী (এখানে transaction:balance) সংশ্লিষ্ট ফাংশনটি খুঁজে ঠিক করুন।",
@@ -2190,7 +2254,7 @@ async function loadCurrentUpdate() {
             <div class="lu-ver">v${d.version}</div>
             <div style="font-size:11.5px;color:var(--sub);margin-top:2px">প্রকাশিত: ${d.publishedAt ? new Date(d.publishedAt).toLocaleString('bn-BD') : '—'}</div>
           </div>
-          ${d.forceUpdate ? '<span class="badge expired"><span class="dot"></span>জরুরি</span>' : '<span class="badge active"><span class="dot"></span>লাইভ</span>'}
+          ${d.rollbackMode ? '<span class="badge blocked"><span class="dot"></span>⏪ রোলব্যাক মোড</span>' : (d.forceUpdate ? '<span class="badge expired"><span class="dot"></span>জরুরি</span>' : '<span class="badge active"><span class="dot"></span>লাইভ</span>')}
         </div>
         ${d.updateNotesBn ? `<div class="lu-notes">${d.updateNotesBn.replace(/</g,'&lt;')}</div>` : ''}
         <div class="lu-meta">🔗 ${d.updateUrl || '—'}</div>
@@ -2200,7 +2264,7 @@ async function loadCurrentUpdate() {
           <button class="btn btn-block" onclick="unpublishUpdate()">🗑️ প্রত্যাহার করুন</button>
         </div>
       </div>`;
-    box.dataset.version = d.version; box.dataset.url = d.updateUrl || ''; box.dataset.notes = d.updateNotesBn || ''; box.dataset.mandatory = d.forceUpdate ? '1' : '0';
+    box.dataset.version = d.version; box.dataset.url = d.updateUrl || ''; box.dataset.notes = d.updateNotesBn || ''; box.dataset.mandatory = d.forceUpdate ? '1' : '0'; box.dataset.rollback = d.rollbackMode ? '1' : '0';
     box.dataset.targets = JSON.stringify(targets);
   } catch(e) {
     box.innerHTML = emptyState('লোড করা যায়নি: ' + e.message);
@@ -2212,6 +2276,7 @@ window.prefillUpdateForm = function() {
   document.getElementById('upd-url').value = box.dataset.url || '';
   document.getElementById('upd-notes').value = box.dataset.notes || '';
   document.getElementById('upd-mandatory').checked = box.dataset.mandatory === '1';
+  document.getElementById('upd-rollback').checked = box.dataset.rollback === '1';
   try { updSelectedPhones = JSON.parse(box.dataset.targets || '[]'); } catch { updSelectedPhones = []; }
   renderUpdShopPicker();
   document.getElementById('upd-version').scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -2320,22 +2385,68 @@ window.toggleUpdShop = function(phone) {
   renderUpdShopPicker();
 };
 
+// ── 🚨 কিল-সুইচ (ENTERPRISE_MONITORING_PLAN.md ফেজ D/D3) ──────────────────
+// admin_config/appVersion-এই haltSync/haltSyncReason ফিল্ড রাখা হয়েছে (আলাদা
+// ডকুমেন্ট না) — App.jsx-এর একটা live onSnapshot লিসেনার এই একই ডকুমেন্ট শোনে,
+// তাই আলাদা কোনো নতুন রিড-পাথ লাগেনি।
+async function loadKillSwitchStatus() {
+  const statusEl = document.getElementById('killSwitchStatus');
+  const toggleEl = document.getElementById('kill-switch-toggle');
+  const reasonEl = document.getElementById('kill-switch-reason');
+  if (!statusEl || !toggleEl) return;
+  try {
+    const snap = await getDoc(doc(db, "admin_config", "appVersion"));
+    const d = snap.exists() ? snap.data() : {};
+    const halted = !!d.haltSync;
+    toggleEl.checked = halted;
+    reasonEl.value = d.haltSyncReason || '';
+    statusEl.textContent = halted
+      ? '🔴 সিঙ্ক বন্ধ আছে — সব দোকানে নতুন write ব্লক করা হয়েছে'
+      : '🟢 স্বাভাবিক — সব দোকান সিঙ্ক করতে পারছে';
+    statusEl.style.color = halted ? 'var(--red)' : 'var(--sub)';
+  } catch (e) {
+    statusEl.textContent = 'লোড করা যায়নি: ' + e.message;
+  }
+}
+window.toggleKillSwitch = async function(checked) {
+  const reasonEl = document.getElementById('kill-switch-reason');
+  const statusEl = document.getElementById('killSwitchStatus');
+  if (checked && !confirm('নিশ্চিত? এটা চালু করলে সব দোকানের অ্যাপ তাৎক্ষণিকভাবে নতুন কোনো ডেটা (ইনভয়েস/কাস্টমার/স্টক ইত্যাদি) Firestore-এ পাঠানো বন্ধ করে দেবে — শুধু জরুরি পরিস্থিতিতে ব্যবহার করুন।')) {
+    document.getElementById('kill-switch-toggle').checked = false;
+    return;
+  }
+  try {
+    await setDoc(doc(db, "admin_config", "appVersion"), {
+      haltSync: checked,
+      haltSyncReason: reasonEl.value.trim(),
+      haltSyncSetAt: new Date().toISOString(),
+    }, { merge: true });
+    toast(checked ? '🚨 কিল-সুইচ চালু হয়েছে — সিঙ্ক বন্ধ করা হয়েছে' : '✅ কিল-সুইচ বন্ধ হয়েছে — সিঙ্ক আবার স্বাভাবিক', checked ? 'err' : 'ok');
+    await loadKillSwitchStatus();
+  } catch (e) {
+    toast('আপডেট ব্যর্থ: ' + e.message, 'err');
+    document.getElementById('kill-switch-toggle').checked = !checked;
+  }
+};
+
 window.publishUpdate = async function() {
   const version = document.getElementById('upd-version').value.trim();
   const url     = document.getElementById('upd-url').value.trim();
   const notes   = document.getElementById('upd-notes').value.trim();
   const mandatory = document.getElementById('upd-mandatory').checked;
+  const rollbackMode = document.getElementById('upd-rollback').checked;
   const msg = document.getElementById('updMsg');
   if (!/^\d+\.\d+\.\d+$/.test(version)) { msg.style.color = '#f87171'; msg.textContent = '⚠️ ভার্সন অবশ্যই x.y.z ফরম্যাটে হতে হবে (যেমন: 1.1.0)'; return; }
   if (!url) { msg.style.color = '#f87171'; msg.textContent = '⚠️ ডাউনলোড লিংক আবশ্যক'; return; }
   const targetPhones = updSelectedPhones.slice();
-  const confirmMsg = targetPhones.length
-    ? `শুধু ${targetPhones.length}টি নির্দিষ্ট দোকানে এই আপডেট পাঠাবেন?`
-    : `কোনো দোকান বাছা হয়নি — এই আপডেট সব দোকানে যাবে। নিশ্চিত?`;
+  const confirmMsg = (rollbackMode ? '⏪ রোলব্যাক মোড চালু আছে — ভার্সন-তুলনা উপেক্ষা করে সবাইকে (বা বাছাই করা দোকানে) দেখানো হবে।\n\n' : '')
+    + (targetPhones.length
+      ? `শুধু ${targetPhones.length}টি নির্দিষ্ট দোকানে এই আপডেট পাঠাবেন?`
+      : `কোনো দোকান বাছা হয়নি — এই আপডেট সব দোকানে যাবে। নিশ্চিত?`);
   if (!confirm(confirmMsg)) return;
   try {
     await setDoc(doc(db, "admin_config", "appVersion"), {
-      version, updateUrl: url, updateNotesBn: notes, forceUpdate: mandatory,
+      version, updateUrl: url, updateNotesBn: notes, forceUpdate: mandatory, rollbackMode,
       targetPhones,
       publishedAt: new Date().toISOString()
     }, { merge: true });
@@ -2350,7 +2461,16 @@ window.publishUpdate = async function() {
 window.unpublishUpdate = async function() {
   if (!confirm('বর্তমান প্রকাশিত আপডেট প্রত্যাহার করবেন? এরপর কোনো দোকানদার আর এই আপডেট দেখতে পাবেন না।')) return;
   try {
-    await deleteDoc(doc(db, "admin_config", "appVersion"));
+    // 🔴 ফিক্স (ফেজ D/D3-এর সাথে সংঘর্ষ এড়াতে): আগে পুরো ডকুমেন্ট deleteDoc()
+    // দিয়ে মুছে ফেলা হতো — কিন্তু এখন haltSync/haltSyncReason (কিল-সুইচ) একই
+    // ডকুমেন্টে থাকে, তাই পুরো ডকুমেন্ট মুছলে কিল-সুইচ চালু থাকা অবস্থাতেই
+    // নিঃশব্দে বন্ধ হয়ে যেত। এখন শুধু আপডেট-সংক্রান্ত ফিল্ডগুলো মোছা হয়,
+    // কিল-সুইচ ফিল্ড অক্ষত থাকে।
+    await updateDoc(doc(db, "admin_config", "appVersion"), {
+      version: deleteField(), updateUrl: deleteField(), updateNotesBn: deleteField(),
+      forceUpdate: deleteField(), targetPhones: deleteField(), publishedAt: deleteField(),
+      rollbackMode: deleteField(),
+    });
     toast('আপডেট প্রত্যাহার করা হয়েছে', 'ok');
     await loadCurrentUpdate();
   } catch(e) { toast('প্রত্যাহার ব্যর্থ: ' + e.message, 'err'); }
@@ -2364,7 +2484,7 @@ window.switchTab = function(tab) {
   if (tab === 'payments') renderPayments();
   if (tab === 'alerts')   renderAlerts();
   if (tab === 'errors')   loadErrors();
-  if (tab === 'update')   { loadCurrentUpdate(); renderUpdShopPicker(); }
+  if (tab === 'update')   { loadCurrentUpdate(); loadKillSwitchStatus(); renderUpdShopPicker(); }
   if (tab === 'settings') loadBizTypeAuditLog();
   if (tab === 'fbdeploy') fbInitTab();
 };
