@@ -14,7 +14,7 @@ import {
   calcCashDrawer, restoreBatchQty, isBatchExpired, getSortedActiveBatches,
   getActiveBatch, getSellableStock, computeSupplierDueMap, calcNextBatch,
   runInvariantChecks, getReturnedQtyForInvoice, getReturnedAmountForInvoice,
-  calcReturnRefundAmount,
+  calcReturnRefundAmount, scaleBatchBreakdownForVoid,
 } from "../src/logic.js";
 
 let passCount = 0;
@@ -234,6 +234,44 @@ t("ব্যাচ রিস্টোর সূত্র", "অন্য ব্�
   const result = restoreBatchQty([{ batchNo: "B1", qty: 5 }, { batchNo: "B2", qty: 10 }], "B1", 3);
   const b2 = result.find(b => b.batchNo === "B2")?.qty;
   return { pass: b2 === 10, expected: 10, actual: b2 };
+});
+
+// ── ভয়েডের সময় batchBreakdown scale-down (ক্রিটিক্যাল ডাবল-স্টক বাগ ফিক্স) ────
+t("ব্যাচ-ব্রেকডাউন ভয়েড-স্কেল", "কোনো রিটার্ন না থাকলে পুরো breakdown অপরিবর্তিত থাকা উচিত", () => {
+  const bd = [{ batchNo: "B1", qty: 6 }, { batchNo: "B2", qty: 4 }];
+  const result = scaleBatchBreakdownForVoid(bd, 0);
+  const total = result.reduce((s, b) => s + b.qty, 0);
+  return { pass: total === 10 && result.length === 2, expected: "total=10, 2 entries", actual: `total=${total}, ${result.length} entries` };
+});
+t("ব্যাচ-ব্রেকডাউন ভয়েড-স্কেল", "আংশিক রিটার্ন হলে প্রথম ব্যাচ থেকে (FIFO) বাদ যাওয়া উচিত", () => {
+  const bd = [{ batchNo: "B1", qty: 6 }, { batchNo: "B2", qty: 4 }];
+  const result = scaleBatchBreakdownForVoid(bd, 3);
+  const total = result.reduce((s, b) => s + b.qty, 0);
+  const b1 = result.find(b => b.batchNo === "B1")?.qty;
+  return { pass: total === 7 && b1 === 3, expected: "total=7, B1 qty=3", actual: `total=${total}, B1 qty=${b1}` };
+});
+t("ব্যাচ-ব্রেকডাউন ভয়েড-স্কেল", "প্রথম ব্যাচ পুরোপুরি রিটার্ন হয়ে থাকলে সেটা বাদ পড়ে, দ্বিতীয়টা আংশিক কমে", () => {
+  const bd = [{ batchNo: "B1", qty: 6 }, { batchNo: "B2", qty: 4 }];
+  const result = scaleBatchBreakdownForVoid(bd, 8);
+  const total = result.reduce((s, b) => s + b.qty, 0);
+  const hasB1 = result.some(b => b.batchNo === "B1");
+  return { pass: total === 2 && !hasB1, expected: "total=2, B1 বাদ", actual: `total=${total}, B1 আছে=${hasB1}` };
+});
+t("ব্যাচ-ব্রেকডাউন ভয়েড-স্কেল", "সব qty রিটার্ন হয়ে গেলে খালি array আসা উচিত (ডাবল-স্টক প্রতিরোধ)", () => {
+  const bd = [{ batchNo: "B1", qty: 6 }, { batchNo: "B2", qty: 4 }];
+  const result = scaleBatchBreakdownForVoid(bd, 10);
+  return { pass: result.length === 0, expected: 0, actual: result.length };
+});
+t("ব্যাচ-ব্রেকডাউন ভয়েড-স্কেল", "costPrice/expiryDate/batchNo মেটাডেটা অক্ষত থাকা উচিত", () => {
+  const bd = [{ batchNo: "B1", qty: 6, costPrice: 12, expiryDate: "2027-01-01" }];
+  const result = scaleBatchBreakdownForVoid(bd, 2);
+  const b1 = result.find(b => b.batchNo === "B1");
+  return { pass: b1?.qty === 4 && b1?.costPrice === 12 && b1?.expiryDate === "2027-01-01", expected: "qty=4, costPrice=12", actual: JSON.stringify(b1) };
+});
+t("ব্যাচ-ব্রেকডাউন ভয়েড-স্কেল", "খালি/অবৈধ input দিলে খালি array (crash না করা)", () => {
+  const a = scaleBatchBreakdownForVoid(null, 5);
+  const b = scaleBatchBreakdownForVoid(undefined, 5);
+  return { pass: Array.isArray(a) && a.length === 0 && Array.isArray(b) && b.length === 0, expected: "[] উভয় ক্ষেত্রে", actual: `${JSON.stringify(a)}, ${JSON.stringify(b)}` };
 });
 
 // ── isBatchExpired / getSortedActiveBatches / getSellableStock (নতুন) ────────
