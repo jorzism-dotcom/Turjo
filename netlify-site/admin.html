@@ -1322,7 +1322,7 @@
 // (এমনকি doLogin() ফাংশনও) কখনো এক্সিকিউট হতো না — ব্রাউজারে স্পিনার চিরকাল
 // ঘুরতেই থাকত। তাই SDK ফাইল দুটো এখন সাইটের নিজের vendor/ ফোল্ডারে সেল্ফ-হোস্টেড।
 import { initializeApp } from "./vendor/firebasejs/10.12.0/firebase-app.js";
-import { getFirestore, collection, getDocs, doc, setDoc, updateDoc, deleteDoc, deleteField, getDoc, query, orderBy, limit, addDoc, arrayUnion } from "./vendor/firebasejs/10.12.0/firebase-firestore.js";
+import { getFirestore, initializeFirestore, collection, getDocs, doc, setDoc, updateDoc, deleteDoc, deleteField, getDoc, query, orderBy, limit, addDoc, arrayUnion } from "./vendor/firebasejs/10.12.0/firebase-firestore.js";
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyBzQKeQzVt-GRL1XVe6cNebh89ghi5f_Fc",
@@ -1368,7 +1368,15 @@ window.toggleLightTheme = function() {
 })();
 
 const app = initializeApp(FIREBASE_CONFIG);
-const db  = getFirestore(app);
+// 🆕 ফিক্স (২৪ জুলাই ২০২৬): কিছু মোবাইল নেটওয়ার্ক/ক্যারিয়ার প্রক্সি Firestore-এর
+// ডিফল্ট WebChannel streaming connection ব্লক করে দেয় — পেজ লোড (সাধারণ HTTPS)
+// ঠিকই কাজ করে, কিন্তু setDoc()/getDocs() চিরকাল "লেখা হচ্ছে..." স্পিনারে আটকে
+// থাকে (কোনো error/timeout ছাড়াই)। experimentalAutoDetectLongPolling দিলে
+// Firestore নিজে থেকেই এমন নেটওয়ার্কে long-polling (সাধারণ HTTP রিকোয়েস্টের
+// মতো)-এ ফলব্যাক করে, আবার ভালো নেটওয়ার্কে স্বাভাবিক গতিতেই streaming ব্যবহার করে।
+const db = initializeFirestore(app, {
+  experimentalAutoDetectLongPolling: true,
+});
 
 let users        = [];
 let editingPhone = null;
